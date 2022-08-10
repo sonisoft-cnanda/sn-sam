@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SAMPReserveEntitlementUtil</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SAMPReserveEntitlementUtil</name>
+        <script><![CDATA[function SAMPReserveEntitlementUtil() {}
+
+SAMPReserveEntitlementUtil.ENTITLEMENT_TABLE = 'alm_license';
+
+SAMPReserveEntitlementUtil.getDerivedReserveEntitlementDetail = function (sourceEntitlementSysId) {
+	var sourceEntitlementStartDate;
+	var entitlementGr = new GlideRecord('alm_license');
+	entitlementGr.get(sourceEntitlementSysId);
+
+	if (entitlementGr.getValue('end_date')) {
+		sourceEntitlementStartDate = new GlideDate();
+		sourceEntitlementStartDate.setValue(entitlementGr.getValue('start_date'));
+		var sourceEntitlementEndDate = new GlideDate();
+		sourceEntitlementEndDate.setValue(entitlementGr.getValue('end_date'));
+
+		var entitlementDuration = GlideDate.subtract(sourceEntitlementStartDate, sourceEntitlementEndDate);
+		var days = entitlementDuration.getDayPart();
+
+		var startDate = new GlideDateTime(entitlementGr.getValue('start_date'));
+		var endDate = new GlideDateTime(entitlementGr.getValue('end_date'));
+
+		var nextYear = new GlideDateTime();
+		nextYear.addYearsUTC(1);
+
+		var reserveEntitlementEndDate = new GlideDateTime();
+		reserveEntitlementEndDate.setMonthUTC(endDate.getMonthUTC());
+		reserveEntitlementEndDate.setDayOfMonthUTC(endDate.getDayOfMonthUTC());
+		if (reserveEntitlementEndDate < new GlideDateTime()) {
+			reserveEntitlementEndDate.setYearUTC(nextYear.getYearUTC());
+		}
+
+		var startYear = startDate.getYearUTC();
+		var endYear = endDate.getYearUTC();
+
+		var months = 0;
+
+		if (startYear !== endYear) {
+			months = startDate.getMonth() - endDate.getMonth() + (endYear - startYear) * 12;
+		} else {
+			var monthDiff = endDate.getMonth() - startDate.getMonth();
+			months = monthDiff > 0 ? monthDiff : 1;
+		}
+
+		var unitCost = entitlementGr.getValue('unit_cost');
+		var monthlyUnitCost = parseFloat(unitCost / months).toFixed(2);
+
+		return {
+			endDate: days > 365 ? reserveEntitlementEndDate.getDate().toString() : sourceEntitlementEndDate.toString(),
+			monthlyUnitCost: monthlyUnitCost,
+			minDate: sourceEntitlementStartDate.toString(),
+			maxDate: sourceEntitlementEndDate.toString(),
+		};
+	} if (entitlementGr.getValue('start_date')) {
+		sourceEntitlementStartDate = new GlideDate();
+		sourceEntitlementStartDate.setValue(entitlementGr.getValue('start_date'));
+
+		return {
+			minDate: sourceEntitlementStartDate.toString(),
+		};
+	}
+
+	return {};
+};
+
+SAMPReserveEntitlementUtil.processExpiredReserveEntitlements = function () {
+	try {
+		var fieldsToCopy = SAMPReserveEntitlementUtil.getAllEntitlementFieldsToCopy()
+			.filter(function (f) { return f !== 'source_entitlement'; });
+		fieldsToCopy.push('source_entitlement.end_date', 'source_entitlement.sys_id');
+
+		var today = new GlideDate();
+		var IN_USE = 1;
+		new GlideQuery(SAMPReserveEntitlementUtil.ENTITLEMENT_TABLE)
+			.where('reserve_entitlement', true)
+			.whereNotNull('source_entitlement')
+			.whereNotNull('end_date')
+			.where('end_date', '<', today)
+			.where('source_entitlement.end_date', '>', today)
+			.where('install_status', IN_USE)
+			.select(fieldsToCopy)
+			.forEach(function (reserveEntitlement) {
+				var monthlyCost = reserveEntitlement.unit_cost / SAMPReserveEntitlementUtil.monthsBetween(reserveEntitlement.start_date, reserveEntitlement.end_date);
+				var inUseUnitCost = SAMPReserveEntitlementUtil.calculateTermUnitCost(today, reserveEntitlement.source_entitlement.end_date, monthlyCost);
+
+				new GlideQuery(SAMPReserveEntitlementUtil.ENTITLEMENT_TABLE)
+					.insert(GQ.merge(reserveEntitlement, {
+						reserve_entitlement: false,
+						start_date: today,
+						end_date: reserveEntitlement.source_entitlement.end_date,
+						source_entitlement: reserveEntitlement.source_entitlement.sys_id,
+						unit_cost: inUseUnitCost,
+						cost: inUseUnitCost * reserveEntitlement.purchased_rights,
+					}), ['install_status'])
+					.get();
+			});
+	} catch (err) {
+		gs.error('SAMPReserveEntitlementUtil.processExpiredReserveEntitlements() failed: ' + err);
+	}
+};
+
+SAMPReserveEntitlementUtil.monthsBetween = function (startDate, endDate) {
+	var start = new GlideDateTime(startDate);
+	var end = new GlideDateTime(endDate);
+
+	var startYear = start.getYearUTC();
+	var endYear = end.getYearUTC();
+	var startMonthOffset = start.getDayOfMonthUTC() > 15 ? 1 : 0;
+	var endMonthOffset = end.getDayOfMonthUTC() > 15 ? 1 : 0;
+
+	var months = 0;
+
+	var startMonth = start.getMonthUTC();
+	var roundedEndMonth = end.getMonthUTC() + endMonthOffset;
+
+	if (startYear !== endYear) {
+		months = (12 - startMonth) + roundedEndMonth + (endYear - startYear - 1) * 12;
+	} else {
+		var monthDiff = roundedEndMonth - startMonth;
+		months = monthDiff > 0 ? monthDiff : 1;
+	}
+
+	return months;
+};
+
+SAMPReserveEntitlementUtil.getAllEntitlementFieldsToCopy = function () {
+	var doNotCopy = {
+		allocations_available: true,
+		asset_tag: true,
+		po_numer: true,
+		rights: true,
+		purchase_date: true,
+	};
+
+	return Object.keys(Schema.of('alm_license', ['*']).alm_license)
+		.filter(function (f) { return !f.startsWith('sys_') && !doNotCopy[f]; });
+};
+
+SAMPReserveEntitlementUtil.calculateTermUnitCost = function (startDate, endDate, monthlyUnitCost) {
+	var months = SAMPReserveEntitlementUtil.monthsBetween(startDate, endDate);
+
+	return parseFloat(monthlyUnitCost * months).toFixed(2);
+};
+
+SAMPReserveEntitlementUtil.copyValuesFromSourceEntitlementToReserveEntitlementAndCalculateCost = function (current, recordProducer) {
+	SAMPReserveEntitlementUtil.getAllEntitlementFieldsToCopy()
+		.forEach(function (f) {
+			current[f] = recordProducer.source_entitlement[f];
+		});
+
+	var termUnitCost = SAMPReserveEntitlementUtil.calculateTermUnitCost(recordProducer.start_date, recordProducer.end_date, recordProducer.unit_cost);
+	current.unit_cost = termUnitCost;
+	current.cost = termUnitCost * recordProducer.purchased_rights;
+	current.reserve_entitlement = true;
+	current.start_date = recordProducer.start_date;
+	current.end_date = recordProducer.end_date;
+	current.purchased_rights = recordProducer.purchased_rights;
+	current.source_entitlement = recordProducer.source_entitlement;
+};
+
+SAMPReserveEntitlementUtil.eligibleForReservedEntitlements = function(entitlementGr) {
+	return !!(gs.nil(entitlementGr.source_entitlement)
+				&& entitlementGr.software_model.product.subscription_software
+				&& entitlementGr.software_model.product.publisher == ReconciliationConstants.MICROSOFT_PUBLISHER_SYS_ID
+				&& entitlementGr.product_type == 'subscription'
+				&& entitlementGr.license_metric == LicenseMetric.USER_SUBSCRIPTION.toString()
+				&& entitlementGr.metric_group == ReconciliationConstants.MICROSOFT_METRIC_GROUP);
+};
+]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:41</sys_created_on>
+        <sys_id>c7d52d6c47111110c859fee3846d4371</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SAMPReserveEntitlementUtil</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_c7d52d6c47111110c859fee3846d4371</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:41</sys_updated_on>
+    </sys_script_include>
+</record_update>

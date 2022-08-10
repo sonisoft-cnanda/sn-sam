@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamFindProductDefinitionSuggestions</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamFindProductDefinitionSuggestions</name>
+        <script><![CDATA[var SamFindProductDefinitionSuggestions = Class.create();
+SamFindProductDefinitionSuggestions.prototype = {
+	initialize: function() {
+	},
+	runJob: function() {
+		var sjlGr = new GlideRecord('samp_job_log');
+		sjlGr.setValue('name', 'SAM - Find Product Definition Suggestions');
+		sjlGr.insert();
+		try {
+			// Handle invalid suggestions
+			new GlideQuery('samp_sw_part_number_suggestion')
+				.where('status', 'new')
+				.where('suggested_part_number.active', false)
+				.deleteMultiple();
+
+			// Populate new suggestions
+			new GlideQuery('samp_custom_sw_product_definition')
+				.where('active', true)
+				.select('publisher_part_number', 'sys_domain')
+				.forEach(function(customPPN) {
+					new GlideQuery('samp_sw_product_definition')
+						.where('publisher_part_number', customPPN.publisher_part_number)
+						.where('sys_class_name', 'samp_sw_product_definition')
+						.where('active', true)
+						.where('sys_domain', 'global')
+						.select()
+						.forEach(function(contentPPN) {
+							var customPPNId = customPPN.sys_id;
+							var customPPNDomain = customPPN.sys_domain;
+							var contentPPNId = contentPPN.sys_id;
+							var alreadyExists = new GlideQuery('samp_sw_part_number_suggestion')
+								.where('custom_part_number', customPPNId)
+								.where('suggested_part_number', contentPPNId)
+								.selectOne('status')
+								.isPresent();
+							if (!alreadyExists) {
+								new GlideQuery('samp_sw_part_number_suggestion')
+									.insert({
+										status: 'new',
+										custom_part_number: customPPNId,
+										suggested_part_number: contentPPNId,
+										sys_domain: customPPNDomain,
+									});
+							}
+						});
+				});
+			sjlGr.setValue('status', 'completed');
+		} catch (err) {
+			sjlGr.setValue('status', 'fail');
+		}
+		sjlGr.update();
+	},
+	type: 'SamFindProductDefinitionSuggestions',
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:37</sys_created_on>
+        <sys_id>79d5e96c47111110c859fee3846d4359</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamFindProductDefinitionSuggestions</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_79d5e96c47111110c859fee3846d4359</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:37</sys_updated_on>
+    </sys_script_include>
+</record_update>

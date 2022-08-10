@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="DELETE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamFindProductDefinitionSuggestions</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamFindProductDefinitionSuggestions</name>
+        <script><![CDATA[var SamFindProductDefinitionSuggestions = Class.create();
+SamFindProductDefinitionSuggestions.prototype = {
+	initialize: function() {
+	},
+	runJob: function() {
+		var sjlGr = new GlideRecord('samp_job_log');
+		sjlGr.setValue('name', 'SAM - Find Product Definition Suggestions');
+		sjlGr.insert();
+		try {
+			// Handle invalid suggestions
+			new GlideQuery('samp_sw_part_number_suggestion')
+				.where('status', 'new')
+				.where('suggested_part_number.active', false)
+				.deleteMultiple();
+
+			// Populate new suggestions
+			new GlideQuery('samp_custom_sw_product_definition')
+				.where('active', true)
+				.select('publisher_part_number', 'sys_domain')
+				.forEach(function(customPPN) {
+					new GlideQuery('samp_sw_product_definition')
+						.where('publisher_part_number', customPPN.publisher_part_number)
+						.where('sys_class_name', 'samp_sw_product_definition')
+						.where('active', true)
+						.where('sys_domain', 'global')
+						.select()
+						.forEach(function(contentPPN) {
+							var customPPNId = customPPN.sys_id;
+							var customPPNDomain = customPPN.sys_domain;
+							var contentPPNId = contentPPN.sys_id;
+							var alreadyExists = new GlideQuery('samp_sw_part_number_suggestion')
+								.where('custom_part_number', customPPNId)
+								.where('suggested_part_number', contentPPNId)
+								.selectOne('status')
+								.isPresent();
+							if (!alreadyExists) {
+								new GlideQuery('samp_sw_part_number_suggestion')
+									.insert({
+										status: 'new',
+										custom_part_number: customPPNId,
+										suggested_part_number: contentPPNId,
+										sys_domain: customPPNDomain,
+									});
+							}
+						});
+				});
+			sjlGr.setValue('status', 'completed');
+		} catch (err) {
+			sjlGr.setValue('status', 'fail');
+		}
+		sjlGr.update();
+	},
+	type: 'SamFindProductDefinitionSuggestions',
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:50:22</sys_created_on>
+        <sys_id>a7d4612c47111110c859fee3846d4334</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamFindProductDefinitionSuggestions</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_a7d4612c47111110c859fee3846d4334</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:50:22</sys_updated_on>
+    </sys_script_include>
+    <sys_update_version action="INSERT_OR_UPDATE">
+        <action>DELETE</action>
+        <application display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</application>
+        <file_path/>
+        <instance_id>4e2646e7dbf513888264f70fbf96195b</instance_id>
+        <instance_name>dev58455</instance_name>
+        <name>sys_script_include_a7d4612c47111110c859fee3846d4334</name>
+        <payload>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;record_update table="sys_script_include"&gt;&lt;sys_script_include action="INSERT_OR_UPDATE"&gt;&lt;access&gt;public&lt;/access&gt;&lt;active&gt;true&lt;/active&gt;&lt;api_name&gt;x_807586_sam_scrip.SamFindProductDefinitionSuggestions&lt;/api_name&gt;&lt;caller_access/&gt;&lt;client_callable&gt;false&lt;/client_callable&gt;&lt;description/&gt;&lt;name&gt;SamFindProductDefinitionSuggestions&lt;/name&gt;&lt;script&gt;&lt;![CDATA[var SamFindProductDefinitionSuggestions = Class.create();
+SamFindProductDefinitionSuggestions.prototype = {
+	initialize: function() {
+	},
+	runJob: function() {
+		var sjlGr = new GlideRecord('samp_job_log');
+		sjlGr.setValue('name', 'SAM - Find Product Definition Suggestions');
+		sjlGr.insert();
+		try {
+			// Handle invalid suggestions
+			new GlideQuery('samp_sw_part_number_suggestion')
+				.where('status', 'new')
+				.where('suggested_part_number.active', false)
+				.deleteMultiple();
+
+			// Populate new suggestions
+			new GlideQuery('samp_custom_sw_product_definition')
+				.where('active', true)
+				.select('publisher_part_number', 'sys_domain')
+				.forEach(function(customPPN) {
+					new GlideQuery('samp_sw_product_definition')
+						.where('publisher_part_number', customPPN.publisher_part_number)
+						.where('sys_class_name', 'samp_sw_product_definition')
+						.where('active', true)
+						.where('sys_domain', 'global')
+						.select()
+						.forEach(function(contentPPN) {
+							var customPPNId = customPPN.sys_id;
+							var customPPNDomain = customPPN.sys_domain;
+							var contentPPNId = contentPPN.sys_id;
+							var alreadyExists = new GlideQuery('samp_sw_part_number_suggestion')
+								.where('custom_part_number', customPPNId)
+								.where('suggested_part_number', contentPPNId)
+								.selectOne('status')
+								.isPresent();
+							if (!alreadyExists) {
+								new GlideQuery('samp_sw_part_number_suggestion')
+									.insert({
+										status: 'new',
+										custom_part_number: customPPNId,
+										suggested_part_number: contentPPNId,
+										sys_domain: customPPNDomain,
+									});
+							}
+						});
+				});
+			sjlGr.setValue('status', 'completed');
+		} catch (err) {
+			sjlGr.setValue('status', 'fail');
+		}
+		sjlGr.update();
+	},
+	type: 'SamFindProductDefinitionSuggestions',
+};]]&gt;&lt;/script&gt;&lt;sys_class_name&gt;sys_script_include&lt;/sys_class_name&gt;&lt;sys_created_by&gt;admin&lt;/sys_created_by&gt;&lt;sys_created_on&gt;2022-08-10 15:50:22&lt;/sys_created_on&gt;&lt;sys_id&gt;a7d4612c47111110c859fee3846d4334&lt;/sys_id&gt;&lt;sys_mod_count&gt;0&lt;/sys_mod_count&gt;&lt;sys_name&gt;SamFindProductDefinitionSuggestions&lt;/sys_name&gt;&lt;sys_package display_value="SAM Scripts" source="x_807586_sam_scrip"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_package&gt;&lt;sys_policy&gt;protected&lt;/sys_policy&gt;&lt;sys_scope display_value="SAM Scripts"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_scope&gt;&lt;sys_update_name&gt;sys_script_include_a7d4612c47111110c859fee3846d4334&lt;/sys_update_name&gt;&lt;sys_updated_by&gt;admin&lt;/sys_updated_by&gt;&lt;sys_updated_on&gt;2022-08-10 15:50:22&lt;/sys_updated_on&gt;&lt;/sys_script_include&gt;&lt;/record_update&gt;</payload>
+        <payload_hash>337796034</payload_hash>
+        <record_name>SamFindProductDefinitionSuggestions</record_name>
+        <reverted_from/>
+        <source>6ea42de847111110c859fee3846d434c</source>
+        <source_table>sys_update_set</source_table>
+        <state>previous</state>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:50:22</sys_created_on>
+        <sys_id>a3d4612c47111110c859fee3846d4336</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_recorded_at>18288731fd40000001</sys_recorded_at>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:50:22</sys_updated_on>
+        <type>Script Include</type>
+        <update_guid>ebd4612c36111110a937f02e7354e335</update_guid>
+        <update_guid_history>ebd4612c36111110a937f02e7354e335:337796034</update_guid_history>
+    </sys_update_version>
+    <sys_metadata_delete action="INSERT_OR_UPDATE">
+        <sys_audit_delete/>
+        <sys_class_name>sys_metadata_delete</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:52:25</sys_created_on>
+        <sys_db_object display_value="" name="sys_script_include">sys_script_include</sys_db_object>
+        <sys_id>8859ee3434e4419f974499c4ed3bf6f9</sys_id>
+        <sys_metadata>a7d4612c47111110c859fee3846d4334</sys_metadata>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamFindProductDefinitionSuggestions</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_parent/>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_scope_delete display_value="">0011b6f5266e481c80012473557b6490</sys_scope_delete>
+        <sys_update_name>sys_script_include_a7d4612c47111110c859fee3846d4334</sys_update_name>
+        <sys_update_version display_value="sys_script_include_a7d4612c47111110c859fee3846d4334">a3d4612c47111110c859fee3846d4336</sys_update_version>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:52:25</sys_updated_on>
+    </sys_metadata_delete>
+</record_update>

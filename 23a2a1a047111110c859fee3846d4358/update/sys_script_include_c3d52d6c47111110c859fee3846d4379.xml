@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamSoftwareLicenseReconciliation</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamSoftwareLicenseReconciliation</name>
+        <script><![CDATA[var SamSoftwareLicenseReconciliation = Class.create();
+SamSoftwareLicenseReconciliation.prototype = Object.extendsObject(AssetManagementPerDomainAssetProcessSettingBaseJob, {
+	initialize: function() {
+		this.reconEngine = new ReconciliationEngine();
+	},
+
+	getDomains: function() {
+		if (!gs.nil(this.reconParams) && !gs.nil(this.reconParams.domains)) {
+			return this.reconParams.domains;
+		}
+		var domainArray = [];
+		var gr = new GlideRecord('alm_domain_asset_process_setting');
+		gr.addQuery('run_asset_process', true);
+		gr.query();
+		while (gr.next()) {
+			domainArray.push(gr.getValue('sys_domain'));
+		}
+		return domainArray;
+	},
+
+	start: function(runFromUI, reconParams) {
+		this.runFromUI = runFromUI;
+		this.reconParams = reconParams || {};
+
+		if (SAMPremiumUtils.isReconRunning(runFromUI)) {
+			gs.log(this.type + ': Previous reconciliation is already in progress');
+			return;
+		}
+
+		// Populate and update recon task queue
+		var lock = SAMPremiumUtils.getLock(ReconciliationConstants.RECONCILIATION_TASK_QUEUE,
+			ReconciliationConstants.RECON_JOB_SYS_ID);
+		try {
+			SAMPremiumUtils.cleanTable(ReconciliationConstants.RECONCILIATION_PARAMETERS_TABLE);
+			SAMPremiumUtils.cleanTable(ReconciliationConstants.RECONCILIATION_TASK_QUEUE);
+			this.process();
+			this.reconParams.numberOfReconWorkers = this.getNumberOfReconWorkers();
+			this.insertTerminateWorkerTasks(this.reconParams.numberOfReconWorkers);
+			this.markReconTasksReady();
+		} finally {
+			lock.release();
+		}
+
+		// run tasks
+		this.reconEngine.process(runFromUI, this.reconParams);
+	},
+
+	runJob: function() {
+		this.reconEngine.setupRecon(this.reconParams);
+	},
+
+	getNumberOfReconWorkers: function() {
+		var schedulers = GlideProperties.getInt('glide.sys.schedulers', 2);
+		var numberOfReconWorkers = this.runFromUI
+			? Math.max(Math.min(GlideProperties.getInt('com.snc.samp.recon.max_workers', 1), schedulers)
+				- (SAMPremiumUtils.getActiveReconWorkersCount() - 1),
+			1)
+			: 1;
+		return numberOfReconWorkers;
+	},
+
+	insertTerminateWorkerTasks: function(numberOfReconWorkers) {
+		var reconWrapUpIds = this.getReconWrapUpIds();
+
+		var terminateWorkerIds = [];
+		for (var i = 0; i < numberOfReconWorkers; i++) {
+			var terminateWorkerId = ParallelJobUtils.insertTask(ReconciliationConstants.RECONCILIATION_TASK_QUEUE,
+				ReconciliationConstants.RECON_JOB_SYS_ID, null, null, SAMScheduledJobConstants.TERMINATE_WORKER_TASK,
+				null, reconWrapUpIds, []);
+			terminateWorkerIds.push(terminateWorkerId);
+		}
+
+		// update dependencies on the recon wrap up tasks
+		var reconTaskGr = new GlideRecord(ReconciliationConstants.RECONCILIATION_TASK_QUEUE);
+		reconTaskGr.addQuery(SAMScheduledJobConstants.SYS_ID_COL, 'IN', reconWrapUpIds);
+		reconTaskGr.setValue(SAMScheduledJobConstants.DOWNSTREAM_COL, terminateWorkerIds);
+		reconTaskGr.updateMultiple();
+	},
+
+	getReconWrapUpIds: function() {
+		var reconWrapUpIds = [];
+		var reconWrapUpGr = new GlideRecord(ReconciliationConstants.RECONCILIATION_TASK_QUEUE);
+		reconWrapUpGr.addQuery(SAMScheduledJobConstants.TASK_TYPE_COL,
+			ReconciliationConstants.RECONCILIATION_WRAP_UP_TASK);
+		reconWrapUpGr.query();
+		while (reconWrapUpGr.next()) {
+			reconWrapUpIds.push(reconWrapUpGr.getValue(SAMScheduledJobConstants.SYS_ID_COL));
+		}
+		return reconWrapUpIds;
+	},
+
+	markReconTasksReady: function() {
+		var reconTaskGr = new GlideRecord(ReconciliationConstants.RECONCILIATION_TASK_QUEUE);
+		reconTaskGr.setValue(SAMScheduledJobConstants.STATUS_COL, SAMScheduledJobConstants.READY_STATUS);
+		reconTaskGr.updateMultiple();
+	},
+
+	type: 'SamSoftwareLicenseReconciliation',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:42</sys_created_on>
+        <sys_id>c3d52d6c47111110c859fee3846d4379</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamSoftwareLicenseReconciliation</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_c3d52d6c47111110c859fee3846d4379</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:42</sys_updated_on>
+    </sys_script_include>
+</record_update>

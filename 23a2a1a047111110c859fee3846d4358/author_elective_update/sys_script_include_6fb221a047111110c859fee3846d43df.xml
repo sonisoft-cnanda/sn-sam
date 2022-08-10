@@ -1,0 +1,4245 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="DELETE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SAMPEntitlementUtil</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>SAMP Entitlement Import Util</description>
+        <name>SAMPEntitlementUtil</name>
+        <script><![CDATA[var SAMPEntitlementUtil = Class.create();
+SAMPEntitlementUtil.prototype = {
+	PPN_NOT_FOUND: gs.getMessage('Publisher part number not found. Please specify an existing publisher part number or create a new one'),
+	PPN_AND_SM_NOT_FOUND: gs.getMessage('Publisher Part Number and software model not found. Please ensure that a DMAP exists in the Content Service library for this publisher/product/version/edition'),
+	MULTIPLE_SM: gs.getMessage('Multiple software models found for the Publisher Part number. Please choose a software model'),
+	GENERIC_ERROR: gs.getMessage('Import template customized resulting in one or many fields being invalid'),
+	MULTIPLE_ERRORS: gs.getMessage('Multiple reasons for error: '),
+	RIGHTS_PER_LICENSE_PACK: gs.getMessage('Rights per license pack should be greater than 0'),
+	NUMBER_OF_PACKS: gs.getMessage('Number of packs should be greater than 0'),
+	PURCHASED_RIGHTS: gs.getMessage('Number of purchased rights should be greater than 0'),
+	DUPLICATE_ENTRY: gs.getMessage('Duplicate entitlement. You can either import the record as is or fix the errors to avoid creating a duplicate record'),
+	DATABASE_ERROR: function (option) {
+		return gs.getMessage('Invalid Database option ({0}). Please select a valid Oracle database option', option);
+	},
+	CN_ERROR: function (contractNumber) {
+		return gs.getMessage('Contract number ({0}) not found. Please enter a valid contract number', contractNumber);
+	},
+	ORACLE_METRIC_GROUP_ERROR: gs.getMessage('Invalid metric group. Please specify a valid metric group for the Oracle database option.'),
+	ORACLE_PLUGIN_ERROR:
+		gs.getMessage(
+			"Database option requires 'Software Asset Management Professional for Oracle' plugin to be installed"
+		),
+	UNMAPPED_CUSTOM_COLUMN_ERROR: function (columnList) {
+		return gs.getMessage(
+			"These custom columns do not exist on the Entitlement table: [ '{0}' ]",
+			[columnList.join("', '").toString()]
+		);
+	},
+	CUSTOM_NUMERIC_COLUMN_ERROR: function (key) {
+		return gs.getMessage("The custom field '{0}' must have a numeric value", [key]);
+	},
+	UNSUPPORTED_CUSTOM_COLUMN_TYPE_ERROR: function (key, typeLabel) {
+		return gs.getMessage("The custom field '{0}' has a field type which is not supported: '{1}'. Please enter a valid field type", [key, typeLabel]);
+	},
+	CUSTOM_REFERENCE_COLUMN_ERROR: function (refField, refTable) {
+		return gs.getMessage(
+			"The custom column field '{0}' contains an invalid reference to the '{1}' table",
+			[refField, refTable]
+		);
+	},
+	MANDATORY_CUSTOM_COLUMN_EMPTY_ERROR: function (key) {
+		return gs.getMessage("The custom column field '{0}' is mandatory. Please enter a valid value", [key]);
+	},
+	MANDATORY_CUSTOM_COLUMN_NOT_PRESENT_ERROR: function (key) {
+		return gs.getMessage("The custom column field '{0}' is mandatory. Please enter a valid value", [key]);
+	},
+	INVALID_DATE_CUSTOM_COLUMN_ERROR: function (key) {
+		return gs.getMessage("The date entered in the custom column field '{0}' is not in a valid format", [key]);
+	},
+	CUSTOM_CURRENCY_COLUMN_ERROR: function (key) {
+		return gs.getMessage("The custom field '{0}' contains an invalid currency value. Currency values are expected to be formatted with the currency code followed by a semicolon  and the value. For example, USD;123.45", [key]);
+	},
+	ACL_CUSTOM_COLUMN_ERROR: function (key) {
+		return gs.getMessage("Security changes do not allow you to make changes to the custom column field '{0}'", [key]);
+	},
+	SAP_PLUGIN_ERROR: gs.getMessage(
+		"SAP license metric requires 'Software Asset Management Professional for SAP' plugin to be installed"
+	),
+	IMPORT_TABLE: 'samp_entitlement_import',
+	ENTITLEMENT_PARENT_TABLE: 'alm_asset',
+	ENTITLEMENT_TABLE: 'alm_license',
+	CONTRACT_NUMBER_TABLE: 'clm_m2m_contract_asset',
+	CUSTOM_PRODUCT_DEFINITION_TABLE: 'samp_custom_sw_product_definition',
+	PRODUCT_DEFINITION_TABLE: 'samp_sw_product_definition',
+	ENTITLEMENT_DEFINITION_TABLE: 'samp_sw_entitlement_definition',
+	CUSTOM_ENTITLEMENT_DEFINITION_TABLE: 'samp_custom_sw_entitlement_definition',
+	PRODUCT_NAMED_USERS: '5e73bc41dbab570024cd68461b9619f5',
+	PRODUCT_ORACLE_DB_SERVER: 'db5d5c770b1722000725c84463673a55',
+	PUBLISHER_SAP: '28dcccc20b3022002d6c650d37673ab8',
+	MICROSOFT_PUB_ID: '28dcccc20b3022002d6c650d37673ab2',
+	ORACLE_DB_SERVER_ID: 'db5d5c770b1722000725c84463673a55',
+	ORACLE_METRIC_GROUP_ID: '9e18c5517f222200fa0d328c4efa9186',
+	CONSUMPTION_METRIC_GROUP: '00f3ec4e1d471010fa9b04385273cc8f',
+	MICROSOFT_METRIC_GROUP: '85253c9593222200caef14f1b47ffb02',
+	PER_CORE_LICENSE_METRIC: 'ef64c370534323005d74ddeeff7b1238',
+	PER_CORE_WITH_CAL_LICENSE_METRIC: '22796ca493322200f2ef14f1b47ffb28',
+	PER_PROCESSOR_METRIC: '4c2701d693872200f2ef14f1b47ffb72',
+	SQL_SERVER_PRODUCT: '4b20dc060b3022002d6c650d37673a9e',
+	WINDOWS_SERVER_PRODUCT: 'ac3010460b3022002d6c650d37673a24',
+	MAXIMUM_PROCESSORS_PER_RIGHT_DEFAULT_METRIC_ATTRIBUTE: '0bb42c3f0b53220037af440ff6673a1c',
+	IMPORT_FIELDS_LOOKUP: {},
+	ENTITLEMENT_FIELDS_LOOKUP: {},
+	ENTITLEMENT_IMPORT_SYS_ID: null,
+	IS_ANYTHING_OPTION: 'is_anything',
+	SUPPORTED_CUSTOM_COLUMN_TYPES:
+		['string', 'string_full_utf8', 'integer', 'float', 'longint', 'decimal',
+			'reference', 'glide_date', 'date', 'glide_date_time', 'datetime', 'due_date',
+			'calendar_date_time', 'currency', 'price'],
+	MANDATORY_NON_CUSTOM_FIELDS:
+		['model', 'model_category', 'quantity', 'license_metric', 'purchased_rights',
+			'software_model', 'product_type'],
+	LICENSE_TYPES_FOR_IGNORING_DATE_FIELDS: ['full', 'upgrade'],
+	ERROR_FIELDS: [],
+	CONTENT_TABLES_REFERENCED: ['samp_sw_product', 'samp_sw_publisher', 'samp_named_user_type', 'samp_sw_product_definition', 'samp_language',	'samp_oracle_option_set'],
+	MICROSOFT_PUBLISHER_ID: '28dcccc20b3022002d6c650d37673ab2',
+	CONTRACT_MODEL_SW_LICENSE: 'd781e836c3102000b959fd251eba8f89',
+	MLS_TRANSACTION_DATA_TAB_NOT_FOUND: gs.getMessage("Transaction Data tab not found. Please upload a MLS document with 'Transaction Data' tab."),
+	MLS_CUSTOMER_NAME_HEADER_NOT_FOUND: gs.getMessage("Customer Name on Agreement header not found. Please upload a MLS document with 'Customer Name on Agreement' header."),
+	NO_DATA_FOUND: gs.getMessage('There was no data found in the selected file. Ensure the correct file was selected and the desired data is in the first sheet of the document.'),
+	initialize: function() {
+		/* Build entitlement import field label to column lookup
+			Have to use getDisplayValue instead of getValue since the translation
+			changes only the display text not the column label or column name
+		*/
+		this._createFieldLookups(this.IMPORT_FIELDS_LOOKUP, this.IMPORT_TABLE);
+		this._createFieldLookups(this.ENTITLEMENT_FIELDS_LOOKUP, this.ENTITLEMENT_PARENT_TABLE);
+		this._createFieldLookups(this.ENTITLEMENT_FIELDS_LOOKUP, this.ENTITLEMENT_TABLE);
+		this.entitlementPermissions = this._getPermissionsByElementName(this.ENTITLEMENT_TABLE);
+		this.isSapPluginActive = new GlidePluginManager().isActive('com.sn_samp_sap');
+		this.microsoftMetricGroup = '85253c9593222200caef14f1b47ffb02';
+		this.canonicalManfID = new SAMCoreCompanyUtil().resolveCoreCompanyForSoftwarePublisher(
+			this.MICROSOFT_PUBLISHER_ID
+		);
+		this.metricGroupCache = this._getMetricGroupCache();
+		this.licenseMetricCache = this._getLicenseMetricCache();
+		this.licenseTypeCache = this._getSysChoiceCache(this.IMPORT_TABLE, 'license_type');
+		this.subscriptionPeriodCache = this._getSysChoiceCache(this.ENTITLEMENT_TABLE, 'subscription_period');
+		this.agreementTypeCache = this._getAgreementTypeCache();
+	},
+	_createFieldLookups: function (obj, table) {
+		var tab = new GlideRecord('sys_dictionary');
+		tab.addQuery('name', table);
+		tab.addQuery('internal_type', '!=', 'collection');
+		tab.query();
+		while (tab.next()) {
+			var colLabel = (tab.getDisplayValue('column_label'));
+			var colName = tab.getValue('element');
+			if (!gs.nil(colLabel) && !gs.nil(colName)) {
+				obj[colLabel.toLowerCase()] = {
+					colName: colName,
+					table: table,
+				};
+			}
+		}
+	},
+	processFile: function(entitlementImportGr) {
+		var errorCount = 0;
+		var entitlementCount = 0;
+		var entitlementBuildCount = 0;
+		var result = null;
+		var headerRowStart = 0;
+		var dataSource = entitlementImportGr.getValue('import_type');
+		var attachmentSysId = entitlementImportGr.getValue('file');
+		this.ENTITLEMENT_IMPORT_SYS_ID = entitlementImportGr.getUniqueValue();
+		var attachment = new GlideSysAttachment();
+		var parser = new sn_impex.GlideExcelParser();
+		var res = parser.parse(attachment.getContentStream(attachmentSysId));
+		if (!gs.nil(res)) {
+			var importSet = 'SET1000001';
+			var importGR = new GlideRecord('samp_entitlement_import');
+			var row;
+			importGR.addNotNullQuery('import_set');
+			importGR.orderByDesc('import_set');
+			importGR.setLimit(1);
+			importGR.query();
+			if (importGR.next()) {
+				var setNum = importGR.getValue('import_set');
+				var matchNum = setNum.match(/\d.+/g)[0];
+				var parseNum = parseInt(matchNum, 10);
+				parseNum += 1;
+				var parseString = parseNum.toString();
+				importSet = 'SET' + parseString;
+			}
+			if (dataSource === 'custom') {
+				var headers = parser.getColumnHeaders();
+				while (parser.next()) {
+					row = parser.getRow();
+					var rowData = {};
+					for (var i = 0; i < headers.length; i++) {
+						var col = ((headers[i].toLowerCase()).trim());
+						rowData[col] = row[headers[i]];
+					}
+					var jsonRowData = JSON.stringify(rowData);
+					result = this.uploadExcel(jsonRowData, dataSource, importSet);
+					if (result.import_error_count > 0) {
+						errorCount += 1;
+					} else if (!gs.nil(result.license_id)) {
+						entitlementCount += 1;
+					}
+				}
+			} else if (dataSource === 'mls') {
+				try {
+					var createContract = entitlementImportGr.getValue('create_contracts');
+					var samMLSExcelParserAPI = new global.SamMLSExcelParser();
+					headerRowStart = samMLSExcelParserAPI.findAndValidateExcelHeaderRow(attachmentSysId);
+					if (headerRowStart >= 0) {
+						var mlsParser = samMLSExcelParserAPI.parseRowByRow(headerRowStart, attachmentSysId);
+						var mlsParserRow;
+						while (mlsParser.next()) {
+							row = mlsParser.getRow();
+							mlsParserRow = samMLSExcelParserAPI.parseRow(row, createContract);
+							// Create contract for mls
+							if (createContract === String(1)) {
+								this.createContract(mlsParserRow[1], this.ENTITLEMENT_IMPORT_SYS_ID);
+							}
+							// Create entitlement for mls
+							result = this.uploadExcel(mlsParserRow[0], dataSource, importSet);
+							if (result.import_error_count > 0) {
+								errorCount += 1;
+							} else if (!gs.nil(result.license_id)) {
+								entitlementCount += 1;
+							}
+						} // end while
+					}
+				} catch (error) {
+					gs.error('SAMPEntitlementUtil processFile MLS: ' + error);
+					var allNull = true;
+					for (var column in row) {
+						if (gs.nil(row[column])) {
+							allNull = true;
+						} else {
+							allNull = false;
+							break;
+						}
+					}
+					if (!allNull) {
+						headerRowStart = -3;
+					}
+				}
+			}
+			entitlementBuildCount = this.getNumberOfEntitlementsBuildState(this.ENTITLEMENT_IMPORT_SYS_ID);
+		}
+		var status = 'completed';
+		var errorReason = '';
+		if (headerRowStart < 0 || (errorCount === 0 && entitlementCount === 0)) {
+			status = 'failed';
+			errorReason = this.NO_DATA_FOUND;
+			if (headerRowStart < 0) {
+				switch (headerRowStart) {
+				case -1:
+					errorReason = this.MLS_CUSTOMER_NAME_HEADER_NOT_FOUND;
+					break;
+				case -2:
+					errorReason = this.MLS_TRANSACTION_DATA_TAB_NOT_FOUND;
+					break;
+				case -3:
+					errorReason = this.GENERIC_ERROR;
+					break;
+				default:
+					errorReason = '';
+					gs.log('SAMPEntitlementUtil.processFile: Default case likely to not happen.');
+				}
+			}
+		} else if (errorCount > 0 || entitlementBuildCount > 0) {
+			status = 'completed_errors';
+		}
+		this._updateEntitlementImportRecord(errorCount, entitlementCount, entitlementBuildCount, status, errorReason);
+	},
+	_updateEntitlementImportRecord: function (errorCount, entitlementCount, buildCount, status, errorReason) {
+		var record = new GlideQuery('samp_bulk_import')
+			.where('sys_id', this.ENTITLEMENT_IMPORT_SYS_ID);
+		if (status === 'failed') {
+			record.update({
+				rows_processed: '' + (errorCount + entitlementCount),
+				rows_successful: '' + entitlementCount,
+				total_errors: '' + errorCount,
+				number_build_entitlements: '' + buildCount,
+				status: status,
+				error_reason: errorReason,
+			});
+		} else {
+			record.update({
+				rows_processed: '' + (errorCount + entitlementCount),
+				rows_successful: '' + entitlementCount,
+				total_errors: '' + errorCount,
+				number_build_entitlements: '' + buildCount,
+				status: status,
+			});
+		}
+	},
+	_addToErrorField: function(field) {
+		if (this.ERROR_FIELDS.indexOf(field) === -1) { this.ERROR_FIELDS.push(field); }
+	},
+	/* Handle rows from excel file uploaded
+		params:
+			excel - Object from REST API which is the row content from excel
+					{col1: val, col2: val,...}
+			dataSource - Entitlement imported type, only option is Custom
+			import_set - import set number used to create import error records
+	*/
+	uploadExcel: function (excel, dataSource, importSet) {
+		var importCount = 0;
+		var entitlementCount = 0;
+		this.unmappedCustomColumnList = [];
+		var ppn = { value: null, error: null, product_type: null };
+		var licenseID;
+		var row;
+		if (dataSource === 'custom') {
+			row = this._constructRow(new JSON().decode(excel)); // eslint-disable-line no-new-wrappers
+		} else if (dataSource === 'mls') {
+			row = this._constructRow(excel);
+		}
+		if (!this._isRowEmpty(row)) {
+			row.data_source = dataSource;
+			row.import_set = importSet;
+			var reasons = [];
+			var mandFields = [];
+			var sm = { value: null, error: null, mandatory: null };
+			if (gs.nil(row.publisher_part_number)) {
+				if (dataSource === 'mls') {
+					this._addToList(reasons, ppn.error);
+					this._addToErrorField('publisher_part_number');
+				} else if (dataSource === 'custom') {
+					sm = this._findSM(row, false, false, false);
+					if (gs.nil(sm.value)) {
+						sm = { value: null, error: null, mandatory: null };
+						sm = this._findBestMatchSM(row, false);
+					}
+					if (gs.nil(sm.value)) {
+						this._addToList(reasons, this.PPN_AND_SM_NOT_FOUND);
+						this._addToList(mandFields, sm.mandatory);
+						this._addToErrorField('publisher_part_number');
+						this._addToErrorField('software_model');
+					} else { row.software_model = sm.value; }
+				}
+			} else {
+				ppn = this._findPPN(row.publisher_part_number);
+				if (!gs.nil(ppn.error)) {
+					this._addToList(reasons, ppn.error);
+					this._addToErrorField('publisher_part_number');
+				} else {
+					sm = this._getSoftwareModel(ppn.value);
+					this._addToList(reasons, sm.error);
+					this._addToList(mandFields, sm.mandatory);
+					if (!gs.nil(sm.error)) { this._addToErrorField('software_model'); }
+					row.software_model = sm.value;
+				}
+			}
+			// Retrieve license metric
+			var metricGroup = null;
+			var licenseMetric = { value: null, error: null, mandatory: null };
+			if (gs.nil(row.license_metric)) {
+				var userEnteredMetricGroup = null;
+				if (!gs.nil(row.metric_group)) {
+					userEnteredMetricGroup = this._setMetricGroup(row.metric_group);
+				}
+				var MGAndLMFromEntitlement = JSON.parse(
+					new SAMPremiumUtils().findLicenseMetricAndMetricGroupForEntitlement(
+						ppn.value, row.software_model, userEnteredMetricGroup
+					)
+				);
+				if (!gs.nil(MGAndLMFromEntitlement.metricGrpSysID)) {
+					metricGroup = MGAndLMFromEntitlement.metricGrpSysID;
+					licenseMetric.value = MGAndLMFromEntitlement.licenseMetricSysID;
+				}
+			}
+			if (gs.nil(licenseMetric.value)) {
+				metricGroup = this._setMetricGroup(row.metric_group);
+				licenseMetric = this._setLicenseMetric(row.license_metric, metricGroup);
+			}
+			row.metric_group = metricGroup;
+			row.license_metric = this._assignValue(licenseMetric.value);
+			this._addToList(reasons, licenseMetric.error);
+			if (!gs.nil(licenseMetric.error)) { this._addToErrorField('license_metric'); }
+			// if it is Microsoft per core/ pre core with CAL
+			if (this._isMicrosoftCorePackOrCorePackWithCAL(metricGroup, licenseMetric.value)) {
+				// check mls import
+				if (dataSource === 'mls' && !gs.nil(row.software_model)) {
+					var smGr = new GlideRecord('cmdb_software_product_model');
+					smGr.get(row.software_model);
+					if (smGr.getValue('product') === this.SQL_SERVER_PRODUCT || smGr.getValue('product') === this.WINDOWS_SERVER_PRODUCT) {
+						if (row.product_description.includes('2Lic CoreLic')) {
+							row.rights_per_license_pack = '2';
+							row.number_of_packs = row.purchased_rights;
+							row.purchased_rights = null;
+						}
+					}
+				}
+				// check Rights per pack:
+				var rightsPerLicensePack = this._evaluateRights(row.rights_per_license_pack,
+					'rights_per_license_pack', this.RIGHTS_PER_LICENSE_PACK);
+				row.rights_per_license_pack = this._assignValue(rightsPerLicensePack.value);
+				this._addToList(reasons, rightsPerLicensePack.error);
+				if (!gs.nil(rightsPerLicensePack.error)) { this._addToErrorField('rights_per_license_pack'); }
+				// check Number of packs:
+				var numberOfPacks = this._evaluateRights(
+					row.number_of_packs, 'number_of_packs', this.NUMBER_OF_PACKS
+				);
+				row.number_of_packs = this._assignValue(numberOfPacks.value);
+				this._addToList(reasons, numberOfPacks.error);
+				if (!gs.nil(numberOfPacks.error)) { this._addToErrorField('number_of_packs'); }
+				/* NOTE: instead of ignoreing it, we need to assign the correct value of purchase
+							rights here for the following 2 reasons:
+                1. Total cost calculation to create entitlement is based on the value of purchase rights.
+                2. For duplicate check, the quey needs a parsed value of purchase rights */
+				if (!gs.nil(rightsPerLicensePack.value) && !gs.nil(numberOfPacks.value)) {
+					row.purchased_rights = this._assignValue(rightsPerLicensePack.value * numberOfPacks.value);
+				} else {
+					row.purchased_rights = null;
+				}
+			} else {
+				// ignore rights per license pack & number of packs:
+				row.rights_per_license_pack = null;
+				row.number_of_packs = null;
+				// validate purchased rights, which will be mandatory in this case:
+				var purchasedRights = this._evaluateRights(row.purchased_rights,
+					'purchased_rights', this.PURCHASED_RIGHTS);
+				row.purchased_rights = this._assignValue(purchasedRights.value);
+				this._addToList(reasons, purchasedRights.error);
+				if (!gs.nil(purchasedRights.error)) { this._addToErrorField('purchased_rights'); }
+			}
+			var agreementType = this._setAgreementType(row.agreement_type, metricGroup);
+			row.agreement_type = this._assignValue(agreementType.value);
+			if (gs.nil(row.agreement_type)) {
+				this._addToList(reasons, this.GENERIC_ERROR);
+				this._addToList(mandFields, 'agreement_type');
+				this._addToErrorField('agreement_type');
+			}
+			if (!gs.nil(row.license_type) || !gs.nil(row.publisher_part_number)) {
+				var licenseType = this._setLicenseType(row.license_type, row.publisher_part_number);
+				row.license_type = this._assignValue(licenseType.value);
+				this._addToList(reasons, licenseType.error);
+				if (!gs.nil(licenseType.error)) { this._addToErrorField('license_type'); }
+				// now that we have licenseType, validate for Microsoft
+				var msLicenseTypeError = this._validateMicrosoftLicenseType(row.software_model, licenseType.value);
+				if (!gs.nil(msLicenseTypeError)) {
+					row.license_type = '';
+					this._addToList(reasons, msLicenseTypeError);
+					this._addToList(mandFields, 'license_type');
+					this._addToErrorField('license_type');
+				}
+			} else {
+				this._addToList(reasons, this.GENERIC_ERROR);
+			}
+			row.subscription_period = this._setSubscriptionPeriod(row.subscription_period, row.license_type);
+			var glideDate = new GlideDate();
+			if (!gs.nil(row.start_date)) {
+				glideDate.setDisplayValue(row.start_date);
+				row.start_date = glideDate.getValue();
+			}
+			if (!gs.nil(row.end_date)) {
+				glideDate.setDisplayValue(row.end_date);
+				row.end_date = glideDate.getValue();
+			}
+			if (!gs.nil(row.license_type)) {
+				if (row.license_type === 'subscription') {
+					if (gs.nil(row.start_date)) {
+						this._addToList(reasons, this.GENERIC_ERROR);
+						this._addToList(mandFields, 'start_date');
+						this._addToErrorField('start_date');
+					}
+					if (gs.nil(row.subscription_period)) {
+						this._addToList(reasons, this.GENERIC_ERROR);
+						this._addToList(mandFields, 'subscription_period');
+						this._addToErrorField('subscription_period');
+					} else if (row.subscription_period === 'entire_subscription_period') {
+						if (!gs.nil(row.start_date) && !gs.nil(row.end_date)
+						&& !this._validateDate(row.start_date, row.end_date)) {
+							// we dont care about end_date when subscription_period = 'entire_subscription_period'
+							row.end_date = '';
+						}
+					} else if (gs.nil(row.end_date)) { // end date is mandatory and validate end > start
+						this._addToList(reasons, this.GENERIC_ERROR);
+						this._addToList(mandFields, 'end_date');
+						this._addToErrorField('end_date');
+					} else if (!this._validateDate(row.start_date, row.end_date)) {
+						row.end_date = '';
+						this._addToList(reasons, this.GENERIC_ERROR);
+						this._addToList(mandFields, 'end_date');
+						this._addToErrorField('end_date');
+					}
+				} else if ((row.license_type === 'software_assurance')
+					|| (row.license_type === 'perpetual_software_assurance')
+					|| (row.license_type === 'step_up')
+					|| (row.license_type === 'maintenance')
+					|| (row.license_type === 'perpetual_maintenance')) {
+					if (gs.nil(row.start_date)) {
+						this._addToList(reasons, this.GENERIC_ERROR);
+						this._addToList(mandFields, 'start_date');
+						this._addToErrorField('start_date');
+					}
+					// end date is mandatory and validate end > start
+					if (gs.nil(row.end_date)) {
+						this._addToList(reasons, this.GENERIC_ERROR);
+						this._addToList(mandFields, 'end_date');
+						this._addToErrorField('end_date');
+					} else if (!this._validateDate(row.start_date, row.end_date)) {
+						row.end_date = '';
+						this._addToList(reasons, this.GENERIC_ERROR);
+						this._addToList(mandFields, 'end_date');
+						this._addToErrorField('end_date');
+					}
+				}
+			}
+			if (!gs.nil(row.sap_license_metric) && !this.isSapPluginActive) {
+				this._addToList(reasons, this.SAP_PLUGIN_ERROR);
+			}
+			var originalContract;
+			if (!gs.nil(row.contract)) {
+				var cn = this._findReferenceValue('ast_contract', row.contract, 'vendor_contract');
+				originalContract = row.contract;
+				row.contract = this._assignValue(cn.value);
+			}
+			if (gs.nil(row.contract) && row.contract != null) {
+				this._addToList(reasons, this.CN_ERROR(originalContract));
+				this._addToErrorField('contract');
+			}
+			if (!gs.nil(row.custom_columns)) {
+				var cc = row.custom_columns;
+				this._validateCustomColumns(row, cc, reasons, mandFields);
+				row.custom_columns = JSON.stringify(row.custom_columns);
+				if (this.unmappedCustomColumnList.length > 0) {
+					this._addToList(reasons, this.UNMAPPED_CUSTOM_COLUMN_ERROR(this.unmappedCustomColumnList));
+				}
+			}
+			if (!gs.nil(row.owned_by)) {
+				var ownedBy = this._findReferenceValue('sys_user', row.owned_by, 'name');
+				if (!gs.nil(ownedBy.error)) {
+					ownedBy = this._findReferenceValue('sys_user', row.owned_by, 'user_name');
+				}
+				row.owned_by = this._assignValue(ownedBy.value);
+			}
+			if (!gs.nil(row.company)) {
+				var company = this._findReferenceValue('core_company', row.company, 'name');
+				row.company = this._assignValue(company.value);
+			}
+			if (!gs.nil(row.vendor)) {
+				var vendor = this._findReferenceValue('core_company', row.vendor, 'name');
+				row.vendor = this._assignValue(vendor.value);
+			}
+			if (!gs.nil(row.department)) {
+				var dept = this._findReferenceValue('cmn_department', row.department, 'name');
+				row.department = this._assignValue(dept.value);
+			}
+			if (!gs.nil(row.location)) {
+				var location = this._findReferenceValue('cmn_location', row.location, 'name');
+				row.location = this._assignValue(location.value);
+			}
+			if (!gs.nil(row.cost_center)) {
+				var costCenter = this._findReferenceValue('cmn_cost_center', row.cost_center, 'name');
+				row.cost_center = this._assignValue(costCenter.value);
+			}
+			// load list of error fields
+			row.error_fields = this.ERROR_FIELDS.join(',');
+			// Found errors in excel data, create entitlement import error record
+			var impID = null;
+			if (reasons.length > 0 || mandFields.length > 0) {
+				if (reasons.length > 1) {
+					impID = this._createImportError(row,
+						this.MULTIPLE_ERRORS + reasons.join('; '), mandFields.join(','));
+				} else {
+					impID = this._createImportError(row, reasons.join('; '), mandFields.join(','));
+				}
+				if (!gs.nil(impID)) {
+					importCount += 1;
+				}
+			} else {
+				var alm = {
+					publisher_part_number: row.publisher_part_number,
+					metric_group: row.metric_group,
+					license_metric: row.license_metric,
+					purchased_rights: row.purchased_rights,
+					po_number: row.po_number,
+					software_model: sm.value,
+					publisher: row.publisher,
+					product: row.product,
+					version: row.version,
+					edition: row.edition,
+					platform: row.platform,
+					language: row.language,
+					named_user_type: row.named_user_type,
+					database_option: row.database_option,
+					rights_per_license_pack: row.rights_per_license_pack,
+					number_of_packs: row.number_of_packs,
+					contract: row.contract,
+					sap_license_metric: row.sap_license_metric,
+					start_date: row.start_date,
+					end_date: row.end_date,
+					license_type: row.license_type,
+					agreement_type: row.agreement_type,
+					unit_cost: row.unit_cost,
+					data_source: dataSource,
+				};
+				var existingSysId = this._findEntitlement(alm, false);
+				if (!gs.nil(existingSysId)) {
+					// Found an existing entitlement, create a duplicate entitlement import error record
+					row.alm_license = existingSysId;
+					impID = this._createImportError(row, this.DUPLICATE_ENTRY, '');
+					if (!gs.nil(impID)) {
+						importCount += 1;
+					}
+				} else if (!gs.nil(sm.value)) {
+					// This is a unique record, create software entitlement
+					var almID = this._createSoftwareEntitlement(row, sm.value, ppn.value, true, dataSource);
+					if (!gs.nil(almID)) {
+						licenseID = almID;
+						entitlementCount += 1;
+					}
+				}
+			}
+		}
+		var ret = { import_error_count: importCount, entitlement_count: entitlementCount, license_id: licenseID };
+		return ret;
+	},
+	/* When entitlement is deleted, delete the import error records associated */
+	removeImportErrorOnDelete: function(licenseID) {
+		var err = new GlideRecord(this.IMPORT_TABLE);
+		err.addQuery('alm_license', licenseID);
+		err.deleteMultiple();
+	},
+	/* Reference qualifier for Software Model on import error table */
+	softwareModelOnImportErrorFilter: function(importGR) {
+		var filter = '';
+		var smGR;
+		var reasons = (importGR.getValue('reason')).split('; ');
+		if (importGR.getValue('error_status') === 'open') {
+			/* Find all the software models associated with PPN */
+			if (reasons.indexOf(this.MULTIPLE_SM) !== -1) {
+				var ppn = this._findReferenceValue(this.PRODUCT_DEFINITION_TABLE,
+					importGR.getValue('publisher_part_number'), 'publisher_part_number');
+				filter = new global.SAMPremiumUtils().getFilterForSM(ppn.value);
+			} else if (!gs.nil(importGR.getValue('product'))) {
+				/* return filter on product first if not available then on publisher in reference software */
+				smGR = new GlideRecord('cmdb_software_product_model');
+				smGR.addQuery('product.prod_name', importGR.getValue('product'));
+				smGR.setLimit(1);
+				smGR.query();
+				if (smGR.hasNext()) { filter += 'product.prod_name=' + importGR.getValue('product'); }
+			}
+			if (gs.nil(filter) && !gs.nil(importGR.getValue('publisher'))) {
+				smGR = new GlideRecord('cmdb_software_product_model');
+				smGR.addQuery('manufacturer.name', importGR.getValue('publisher'));
+				smGR.setLimit(1);
+				smGR.query();
+				if (smGR.hasNext()) { filter += 'manufacturer.name=' + importGR.getValue('publisher'); }
+			}
+		} else {
+			filter = '';
+		}
+		return filter;
+	},
+	/*
+		Find reference software details for Create Part Number UI action popup
+	*/
+	findReferenceSoftware: function (importID) {
+		var obj = {
+			has_product: false,
+			language: null,
+			version: null,
+			edition: null,
+			platform: null,
+			product: null,
+			named_user_type: null,
+			database_option: null,
+			sap_license_metric: null,
+		};
+		var importGR = new GlideRecord(this.IMPORT_TABLE);
+		if (importGR.get(importID)) {
+			if (!gs.nil(importGR.getValue('product'))) {
+				var prod = this._findProduct(importGR.getValue('product'), importGR.getValue('publisher'));
+				if (!gs.nil(prod.value)) {
+					obj.has_product = true;
+					obj.product = prod.value;
+				}
+			}
+			obj.language = this.findLanguage(importGR.getValue('language'));
+			obj.version = importGR.getValue('version');
+			obj.edition = importGR.getValue('edition');
+			obj.platform = this.findPlatform(importGR.getValue('platform'));
+			obj.named_user_type = this.findNamedUserType(importGR.getValue('named_user_type'));
+			obj.database_option = this.findDataBaseOption(importGR.getValue('database_option'));
+			obj.sap_license_metric = this.findSAPLicenseMetric(importGR.getValue('sap_license_metric'), obj.product);
+		}
+		return new JSON().encode(obj); // eslint-disable-line no-new-wrappers
+	},
+	findDataBaseOption: function(databaseOption) {
+		if (gs.nil(databaseOption)) { return null; }
+		var referenceValue = this._findReferenceValue('samp_oracle_option_set', databaseOption, 'oracle_option');
+		return referenceValue.value;
+	},
+	findNamedUserType: function(namedUserType) {
+		if (gs.nil(namedUserType)) { return null; }
+		var referenceValue = this._findReferenceValue('samp_named_user_type', namedUserType, 'name');
+		return referenceValue.value;
+	},
+	findSAPLicenseMetric: function(sapLicenseMetric, product) {
+		if (!this.isSapPluginActive) {
+			return null;
+		}
+		if (gs.nil(sapLicenseMetric) || gs.nil(product)) { return null; }
+		var referenceValue = this._findReference(
+			'samp_sap_license_metric', {
+				license_metric_name: sapLicenseMetric,
+				engine: product,
+			}
+		);
+		return referenceValue.value;
+	},
+	findLanguage: function(lang) {
+		if (gs.nil(lang)) { return '832bec5493212200caef14f1b47ffb56'; } // --Anything-- is the default one to use
+		var language = this._findReferenceValue('samp_language', lang, 'language');
+		// --Anything-- is the default one to use
+		if (gs.nil(language.value)) { language.value = '832bec5493212200caef14f1b47ffb56'; }
+		return language.value;
+	},
+	ignoreImportError: function (importID) {
+		var importGR = new GlideRecord(this.IMPORT_TABLE);
+		if (importGR.get(importID)) {
+			// Ignore the record only if its in Open status
+			if (importGR.getValue('error_status') === 'open') {
+				importGR.error_status = 'ignored';
+				importGR.reason_list = '';
+				importGR.update();
+				return true;
+			}
+			gs.addErrorMessage(gs.getMessage('Can not ignore a fixed import record'));
+		}
+		return false;
+	},
+	/* Used by Create Entitlement UI action */
+	showCreateEntitlement: function (importGR) {
+		if (importGR.getValue('reason') === this.DUPLICATE_ENTRY
+			&& importGR.getValue('error_status') === 'open') { return true; }
+		return false;
+	},
+	createEntitlementFromImport: function (importGR) {
+		this.ENTITLEMENT_IMPORT_SYS_ID = importGR.getValue('import_record');
+		var ppn = { value: null, error: null };
+		if (!gs.nil(importGR.getValue('publisher_part_number'))) {
+			ppn = this._findReferenceValue('samp_sw_product_definition',
+				importGR.publisher_part_number, 'publisher_part_number');
+		}
+		if (!gs.nil(ppn.value) || !gs.nil(importGR.getValue('software_model'))) {
+			var entID = this._createSoftwareEntitlement(
+				importGR, importGR.getValue('software_model'), ppn.value, false, importGR.getValue('data_source')
+			);
+			if (!gs.nil(entID)) {
+				gs.addInfoMessage(gs.getMessage('Successfully created Software Entitlement'));
+				importGR.error_status = 'fixed';
+				importGR.reason = '';
+				importGR.alm_license = entID;
+				importGR.update();
+			} else { gs.addErrorMessage(gs.getMessage('Unable to create Software Entitlement')); }
+		} else {
+			this.validateImportRecord(importGR, true);
+			gs.addErrorMessage(this.PPN_AND_SM_NOT_FOUND);
+		}
+	},
+	isDuplicateError: function (importGR) {
+		return (this.DUPLICATE_ENTRY === importGR.getValue('reason'));
+	},
+	notifyUserPPNExists: function(importGR) {
+		var ppn = this._findPPN(importGR.getValue('publisher_part_number'));
+		if (gs.nil(ppn.error) && (this._doesReasonExist(this.PPN_NOT_FOUND, importGR.getValue('reason')) !== -1)) {
+			return true;
+		}
+		return false;
+	},
+	showCreatePPN: function (importGR) {
+		var ppn = this._findPPN(importGR.getValue('publisher_part_number'));
+		if (!gs.nil(importGR.getValue('publisher_part_number')) && importGR.getValue('error_status') === 'open'
+			&& (this._doesReasonExist(this.PPN_NOT_FOUND, importGR.getValue('reason')) !== -1)
+			&& (ppn.value === importGR.getValue('publisher_part_number'))) {
+			return true;
+		}
+		return false;
+	},
+	createPPNWithDmap: function(dmapID, importID) {
+		var importRec = new GlideRecord(this.IMPORT_TABLE);
+		if (importRec.get(importID)) {
+			// Create a PPN and associate with dmapID
+			var ppn = new GlideRecord(this.PRODUCT_DEFINITION_TABLE);
+			ppn.addQuery('publisher_part_number', importRec.getValue('publisher_part_number'));
+			ppn.addQuery('entitlement_definition', dmapID);
+			ppn.query();
+			if (ppn.next()) {
+				gs.addErrorMessage(gs.getMessage('Publisher Part Number already exists'));
+				importRec.setAbortAction(true);
+			} else {
+				ppn = new GlideRecord(this.CUSTOM_PRODUCT_DEFINITION_TABLE);
+				ppn.setValue('publisher_part_number', importRec.getValue('publisher_part_number'));
+				ppn.setValue('entitlement_definition', dmapID);
+				ppn.setValue('product_type', importRec.getValue('license_type'));
+				ppn.setValue('license_metric', importRec.getValue('license_metric'));
+				if (ppn.insert()) {
+					gs.addInfoMessage(
+						gs.getMessage('Successfully added Publisher Part Number to Product Definition')
+					);
+				}
+			}
+			this.validateImportRecord(importRec, true);
+		}
+	},
+	entitlementDefinitionFilter: function(importGR) {
+		var filter = '';
+		var dmapList = this.findEntitlementDefinition(importGR);
+		if (dmapList.length > 0) { filter = 'sys_idIN' + dmapList.join(','); }
+		return filter;
+	},
+	findEntitlementDefinition: function (importGR) {
+		var dmapList = [];
+		var product = this._findProduct(importGR.getValue('product'), importGR.getValue('publisher'));
+		if (!gs.nil(product.value)) {
+			var language = importGR.getValue('language');
+			var platform = importGR.getValue('platform');
+			var edition = importGR.getValue('edition');
+			var version = importGR.getValue('version');
+			var namedUserType = importGR.getValue('named_user_type');
+			var databaseOption = importGR.getValue('database_option');
+			var sapLicenseMetric = importGR.getValue('sap_license_metric');
+			var lang = this._findReferenceValue('samp_language', language, 'language');
+			var plat = this.findPlatform(platform);
+			var dmap = new GlideRecord('samp_sw_entitlement_definition');
+			this._addORSetQuery(dmap, 'sw_product', product.value, 'add');
+			if (!gs.nil(edition)) { this._addORSetQuery(dmap, 'edition', edition, 'add'); }
+			if (!gs.nil(version)) { this._addORSetQuery(dmap, 'version', version, 'add'); }
+			if (!gs.nil(namedUserType)) {
+				var nut = this._findReferenceValue('samp_named_user_type', namedUserType, 'name');
+				if (!gs.nil(nut.value)) { this._addORSetQuery(dmap, 'named_user_type', nut.value, 'add'); }
+			}
+			if (!gs.nil(databaseOption)) {
+				var dbOption = this._findReferenceValue('samp_oracle_option_set', databaseOption, 'oracle_option');
+				if (!gs.nil(dbOption.value)) { this._addORSetQuery(dmap, 'database_option', dbOption.value, 'add'); }
+			}
+			if (!gs.nil(sapLicenseMetric)) {
+				var slm = this.findSAPLicenseMetric(sapLicenseMetric, product.value);
+				if (!gs.nil(slm)) { this._addORSetQuery(dmap, 'sap_license_metric', slm, 'add'); }
+			}
+			this._addORSetQuery(dmap, 'platform', plat, 'add');
+			if (gs.nil(lang.value)) {
+				this._addORSetQuery(dmap, 'language', '832bec5493212200caef14f1b47ffb56', 'add'); // --Anything--
+			} else { this._addORSetQuery(dmap, 'language', lang.value, 'add'); }
+			dmap.query();
+			while (dmap.next()) {
+				dmapList.push(dmap.getUniqueValue());
+			}
+		}
+		return dmapList;
+	},
+	createPPN: function(importID) {
+		var ret = { status: false, ppn: null };
+		var interGR = new GlideRecord(this.IMPORT_TABLE);
+		if (interGR.get(importID)) {
+			ret.ppn = interGR.getValue('publisher_part_number');
+			var ppn = new GlideRecord(this.PRODUCT_DEFINITION_TABLE);
+			ppn.addQuery('publisher_part_number', interGR.getValue('publisher_part_number'));
+			ppn.query();
+			if (ppn.next()) {
+				gs.addErrorMessage(gs.getMessage('Publisher Part Number already exists'));
+				interGR.setAbortAction(true);
+				ret.status = null;
+			} else if (!gs.nil(interGR.getValue('entitlement_definition'))) { // If DMAP is pre-selected create PPN
+				this.createPPNWithDmap(interGR.getValue('entitlement_definition'), importID);
+				ret.status = true;
+			} else {
+				var dmapList = this.findEntitlementDefinition(interGR);
+				if (dmapList.length === 1) {
+					this.createPPNWithDmap(dmapList.toString(), importID);
+					ret.status = true;
+				} else if (dmapList.length > 1) { ret.status = 'multiple'; }
+			}
+		}
+		return new JSON().encode(ret); // eslint-disable-line no-new-wrappers
+	},
+	/* params:
+		importGR: entitlement import record
+		: boolean value to determine if entitlement import record should be updated after validating
+	*/
+	validateImportRecord: function(importGR, shouldUpdate) {
+		var reasons = [];
+		var mandFields = [];
+		var key;
+		if (gs.nil(importGR.getValue('publisher_part_number'))) {
+			if (gs.nil(importGR.getValue('software_model'))) {
+				// Look for SM based on related software information
+				var sm = this._findSM(importGR, false, false, false);
+				importGR.setValue('software_model', this._assignValue(sm.value));
+				if (!gs.nil(sm.error)) {
+					this._addToList(reasons, this.PPN_AND_SM_NOT_FOUND);
+					this._addToList(mandFields, sm.mandatory);
+					this._addToErrorField('software_model');
+					this._addToErrorField('publisher_part_number');
+				}
+			}
+		} else {
+			var ppn = this._findPPN(importGR.publisher_part_number);
+			if (gs.nil(ppn.error)) {
+				if (gs.nil(importGR.getValue('software_model'))) {
+					// Find SM when PPN found
+					var model = this._getSoftwareModel(ppn.value);
+					importGR.setValue('software_model', this._assignValue(model.value));
+					this._addToList(reasons, model.error);
+					this._addToList(mandFields, model.mandatory);
+					if (!gs.nil(model.error)) { this._addToErrorField('software_model'); }
+				} else if (!shouldUpdate) { // Make sure PPN and SM match
+					var smForPPN = new global.SAMPremiumUtils().getSMFromProductDefinition(
+						ppn.value, importGR.getValue('software_model')
+					);
+					if (smForPPN !== importGR.getValue('software_model')) {
+						gs.addErrorMessage(
+							gs.getMessage('The Publisher part number ({0}) and Software model ({1}) conflict. Change either the part number or the software model reference.',
+								[importGR.publisher_part_number, importGR.getDisplayValue('software_model')])
+						);
+						importGR.publisher_part_number = '';
+						importGR.software_model = '';
+						importGR.setAbortAction(true);
+						return;
+					}
+				}
+			} else {
+				this._addToList(reasons, ppn.error);
+				if (!gs.nil(ppn.error)) { this._addToErrorField('publisher_part_number'); }
+			}
+		}
+		var msLicenseTypeError = this._validateMicrosoftLicenseType(
+			importGR.getValue('software_model'), importGR.getValue('license_type')
+		);
+		if (!gs.nil(msLicenseTypeError)) {
+			this._addToList(reasons, msLicenseTypeError);
+			this._addToErrorField('license_type');
+		}
+		// Metric group
+		if (gs.nil(importGR.getValue('metric_group'))) {
+			this._addToList(reasons, this.GENERIC_ERROR);
+			this._addToList(mandFields, 'metric_group');
+			this._addToErrorField('metric_group');
+		}
+		// Custom columns
+		var cc = this._getCustomColumns(importGR.sys_id);
+		if (!gs.nil(cc)) {
+			var unmappedCustomColumns = [];
+			for (key in cc) {
+				if (gs.nil(this.ENTITLEMENT_FIELDS_LOOKUP[key]) && cc[key]) {
+					this._addToList(unmappedCustomColumns, key);
+				}
+			}
+			this._validateCustomColumns(importGR, cc, reasons, mandFields);
+			if (unmappedCustomColumns.length > 0) {
+				this._addToList(reasons, this.UNMAPPED_CUSTOM_COLUMN_ERROR(unmappedCustomColumns));
+			}
+		}
+		// Start date is mandatory for subscription , P+SA, SA, step-up, P+M, M
+		if (importGR.getValue('license_type') === 'subscription') {
+			if (gs.nil(importGR.getValue('start_date'))) {
+				this._addToList(reasons, this.GENERIC_ERROR);
+				this._addToList(mandFields, 'start_date');
+				this._addToErrorField('start_date');
+			}
+			if (gs.nil(importGR.getValue('subscription_period'))) {
+				this._addToList(reasons, this.GENERIC_ERROR);
+				this._addToList(mandFields, 'subscription_period');
+				this._addToErrorField('subscription_period');
+			} else if (importGR.getValue('subscription_period') === 'monthly'
+				|| importGR.getValue('subscription_period') === 'quarterly'
+				|| importGR.getValue('subscription_period') === 'annually') {
+				// End date is mandatory for subscription period = monthly, quarterly and annually
+				if (gs.nil(importGR.end_date)) {
+					this._addToList(reasons, this.GENERIC_ERROR);
+					this._addToList(mandFields, 'end_date');
+					this._addToErrorField('end_date');
+				}
+			}
+		} else if (importGR.getValue('license_type') === 'software_assurance'
+			|| importGR.getValue('license_type') === 'perpetual_software_assurance'
+			|| importGR.getValue('license_type') === 'step_up'
+			|| importGR.getValue('license_type') === 'maintenance'
+			|| importGR.getValue('license_type') === 'perpetual_maintenance') {
+			if (gs.nil(importGR.getValue('start_date'))) {
+				this._addToList(reasons, this.GENERIC_ERROR);
+				this._addToList(mandFields, 'start_date');
+				this._addToErrorField('start_date');
+			}
+			// End date is mandatory for P+SA, SA, step-up
+			if (gs.nil(importGR.getValue('end_date'))) {
+				this._addToList(reasons, this.GENERIC_ERROR);
+				this._addToList(mandFields, 'end_date');
+				this._addToErrorField('end_date');
+			}
+		}
+		// if it is Microsoft per core/ pre core with CAL
+		if (this._isMicrosoftCorePackOrCorePackWithCAL(
+			importGR.getValue('metric_group'), importGR.getValue('license_metric')
+		)) {
+			// Rights per pack:
+			var rightsPerLicensePack = 				this._evaluateRights(importGR.rights_per_license_pack,
+				'rights_per_license_pack', this.RIGHTS_PER_LICENSE_PACK);
+			importGR.setValue('rights_per_license_pack', this._assignValue(rightsPerLicensePack.value));
+			this._addToList(mandFields, rightsPerLicensePack.mandatory);
+			this._addToList(reasons, rightsPerLicensePack.error);
+			if (!gs.nil(rightsPerLicensePack.error)) { this._addToErrorField('rights_per_license_pack'); }
+			// Number of packs:
+			var numberOfPacks = this._evaluateRights(
+				importGR.number_of_packs, 'number_of_packs', this.NUMBER_OF_PACKS
+			);
+			importGR.setValue('number_of_packs', this._assignValue(numberOfPacks.value));
+			this._addToList(mandFields, numberOfPacks.mandatory);
+			this._addToList(reasons, numberOfPacks.error);
+			if (!gs.nil(numberOfPacks.error)) { this._addToErrorField('number_of_packs'); }
+		}
+		// Purchased rights
+		var rights = this._evaluateRights(importGR.purchased_rights, 'purchased_rights', this.PURCHASED_RIGHTS);
+		importGR.setValue('purchased_rights', this._assignValue(rights.value));
+		this._addToList(mandFields, rights.mandatory);
+		this._addToList(reasons, rights.error);
+		if (!gs.nil(rights.error)) { this._addToErrorField('purchased_rights'); }
+		// make sure all mandatory fields are populated
+		if (gs.nil(importGR.getValue('license_type')) || gs.nil(importGR.getValue('license_metric'))
+			|| gs.nil(importGR.getValue('metric_group')) || gs.nil(importGR.getValue('purchased_rights'))) {
+			this._addToList(reasons, this.GENERIC_ERROR);
+		}
+		// Check for duplicate
+		if (gs.nil(reasons.join(', ')) && gs.nil(mandFields.join(','))) {
+			var existingSysId = this._findEntitlement(importGR, false);
+			if (!gs.nil(existingSysId)) {
+				importGR.setValue('alm_license', existingSysId);
+				this._addToList(reasons, this.DUPLICATE_ENTRY);
+			}
+		}
+		// load list of error fields
+		importGR.error_fields = this.ERROR_FIELDS.join(',');
+		if (reasons.length > 1) {
+			importGR.setValue('reason',
+				this._assignValue(this.MULTIPLE_ERRORS) + this._assignValue(reasons.join('; ')));
+		} else {
+			importGR.setValue('reason', this._assignValue(reasons.join('; ')));
+		}
+		importGR.setValue('reason_list', this._assignValue(mandFields.join(',')));
+		if (shouldUpdate) { importGR.update(); }
+	},
+	findPlatform: function(platform) {
+		var ret = 'anything';
+		if (!gs.nil(platform) && !gs.nil(platform.toString())) {
+			var choice = new GlideRecord('sys_choice');
+			choice.addQuery('name', this.ENTITLEMENT_DEFINITION_TABLE);
+			choice.addQuery('element', 'platform');
+			choice.addQuery('label', platform.toLowerCase());
+			choice.query();
+			if (choice.next()) { ret = choice.getValue('value'); }
+		}
+		return ret;
+	},
+	/* Validate start date is before end date
+		params: start_date: string
+				end_date: string
+	*/
+	_validateDate: function (startDateVal, endDateVal) {
+		var startDate = new GlideDate();
+		startDate.setDisplayValue(startDateVal);
+		var endDate = new GlideDate();
+		endDate.setDisplayValue(endDateVal);
+		if (startDate < endDate) { return true; }
+		return false;
+	},
+	/* Construct row object with dictionary column names
+		params: row: row object that comes from REST API with column_label: val key value pair
+	*/
+	_constructRow: function(restRow) {
+		var row = {};
+		var customRow = {};
+		for (var key in restRow) {
+			if (key === 'product description') {
+				row.product_description = restRow[key];
+			} else if (gs.nil(this.IMPORT_FIELDS_LOOKUP[key]) && !gs.nil(this.ENTITLEMENT_FIELDS_LOOKUP[key])) {
+				customRow[key] = gs.nil(restRow[key]) ? '' : restRow[key];
+			} else if (!gs.nil(this.IMPORT_FIELDS_LOOKUP[key])) {
+				row[this.IMPORT_FIELDS_LOOKUP[key].colName] = restRow[key];
+			} else if (gs.nil(this.IMPORT_FIELDS_LOOKUP[key])
+				&& gs.nil(this.ENTITLEMENT_FIELDS_LOOKUP[key]) && restRow[key]) {
+				customRow[key] = restRow[key];
+				this._addToList(this.unmappedCustomColumnList, key);
+			}
+		}
+		if (!gs.nil(customRow)) {
+			row.custom_columns = customRow;
+		}
+		return row;
+	},
+	/*
+		Look up if there is an existing alm_license during excel import and import error evaluation
+		Params:
+			sourceGR: GlideRecord of staging or import error record
+			shouldValidate: Boolean value to determine if import record should run a form validation
+	*/
+	_findEntitlement: function(sourceGR, shouldValidate) {
+		var sm = { value: null, error: null, mandatory: null };
+		if (gs.nil(sourceGR.software_model)) { sm = this._findSM(sourceGR, true, false, false); }
+		var ppn;
+		var canQuery = false; // run the query to search entitlment if there is PPN / SM
+		// Look for an existing software entitlement with license metric + purchased rights + PO number + PPN / SM
+		var alm = new GlideRecord(this.ENTITLEMENT_TABLE);
+		alm.addQuery('license_metric', sourceGR.license_metric);
+		if (this.LICENSE_TYPES_FOR_IGNORING_DATE_FIELDS.indexOf(sourceGR.license_type) === -1) {
+			alm.addQuery('start_date', sourceGR.start_date);
+			alm.addQuery('end_date', sourceGR.end_date);
+		}
+		alm.addQuery('product_type', sourceGR.license_type);
+		if (sourceGR.data_source === 'custom') {
+			if (gs.nil(sourceGR.unit_cost)) {
+				alm.addQuery('unit_cost', 0);
+			} else {
+				alm.addQuery('unit_cost', sourceGR.unit_cost);
+			}
+		}
+		if (gs.nil(sourceGR.agreement_type)) {
+			alm.addQuery('agreement_type', 'generic');
+		} else {
+			alm.addQuery('agreement_type', sourceGR.agreement_type);
+		}
+		// If it is Microsoft per core or per core with CAL
+		if (this._isMicrosoftPerCoreOrPerCoreWithCAL(sourceGR.metric_group, sourceGR.license_metric)) {
+			alm.addQuery('rights_per_license_pack', sourceGR.rights_per_license_pack);
+			alm.addQuery('number_of_packs', sourceGR.number_of_packs);
+		} else {
+			alm.addQuery('purchased_rights', sourceGR.purchased_rights);
+		}
+		if (!gs.nil(sourceGR.po_number)) { alm.addQuery('po_number', sourceGR.po_number); }
+		// If PPN is empty
+		if (gs.nil(sourceGR.publisher_part_number)) {
+			if (!gs.nil(sourceGR.software_model)) {
+				alm.addQuery('software_model', sourceGR.software_model);
+				canQuery = true;
+			} else if (gs.nil(sm.error)) {
+				alm.addQuery('software_model', 'IN', sm.value);
+				canQuery = true;
+			}
+		} else {
+			ppn = this._findReferenceValue(
+				'samp_sw_product_definition', sourceGR.publisher_part_number, 'publisher_part_number'
+			);
+			if (gs.nil(ppn.error)) {
+				if (gs.nil(sourceGR.software_model) && !gs.nil(sm.value)) {
+					alm.addEncodedQuery('publisher_part_number=' + ppn.value + '^ORsoftware_modelIN' + sm.value);
+					canQuery = true;
+				} else {
+					alm.addEncodedQuery(
+						'publisher_part_number=' + ppn.value + '^ORsoftware_model=' + sourceGR.software_model
+					);
+					canQuery = true;
+				}
+			}
+		}
+		if (canQuery) {
+			alm.query();
+			if (alm.next()) { return alm.getValue('sys_id'); }
+		} else if (shouldValidate) { this.validateImportRecord(sourceGR, true); }
+		return null;
+	},
+	/* Create an entitlement during excel importing or when Create Entitlement UI action is clicked
+		Params:
+			row: row in the excel or entitlement import gliderecord
+			dataSource: What type of excel or import is trying to create the entitlement. Option is custom
+			sm: Software model sys_id
+			ppn: PPN sys_id
+			shouldUpdate: Boolean value to determine if the request came from Create Entitlement UI action
+			which requires software model to be set after the creation of entitlement
+	*/
+	_createSoftwareEntitlement: function(row, sm, ppn, createdByExcelUpload, dataSource) {
+		var fields = ['po_number', 'agreement_type', 'vendor', 'company', 'department', 'asset_tag', 'owned_by',
+			'gl_account', 'cost_center', 'location', 'metric_group', 'license_metric', 'purchased_rights',
+			'data_source', 'rights_per_license_pack', 'number_of_packs', 'subscription_period'];
+		var alm = new GlideRecord(this.ENTITLEMENT_TABLE);
+		alm.setValue('publisher_part_number', ppn);
+		// License type
+		var licenseType = this._setLicenseType(row.license_type, row.publisher_part_number);
+		if (!gs.nil(licenseType.value)) {
+			alm.setValue('product_type', licenseType.value);
+		} else {
+			alm.setValue('product_type', row.license_type);
+		}
+		if (alm.getValue('product_type') === 'software_assurance' || alm.getValue('product_type') === 'step_up') {
+			alm.setValue('install_status', 11);
+		}
+		var prodType = alm.getValue('product_type');
+		alm.setValue('software_model', sm);
+		// set date fields
+		if (this.LICENSE_TYPES_FOR_IGNORING_DATE_FIELDS.indexOf(prodType) === -1) {
+			this._setDateField(alm, 'end_date', row.end_date);
+			this._setDateField(alm, 'start_date', row.start_date);
+		}
+		var timeSpan = 1;
+		if (prodType === 'subscription') {
+			timeSpan = this._calculateTimeSpanFromSubscriptionPeriod(alm.getValue('start_date'), alm.getValue('end_date'), row.subscription_period.toString());
+		}
+		var currencyCode;
+		if (!gs.nil(row.unit_cost)) {
+			if (row.isValidRecord()) { // handle cost if row is GlideRecord
+				currencyCode = row.unit_cost.getCurrencyCode();
+				var currencyValue = row.unit_cost.getCurrencyValue();
+				alm.setValue('unit_cost', currencyCode + ';' + currencyValue);
+			} else { // handle cost if row is a row from Excel
+				alm.setValue('unit_cost', row.unit_cost);
+				currencyCode = alm.unit_cost.getCurrencyCode();
+			}
+			var total = (alm.unit_cost.getCurrencyValue()) * parseInt(row.purchased_rights, 10) * timeSpan;
+			alm.setValue('cost', currencyCode + ';' + total);
+		}
+		// handle Total units for Consumption metric group
+		if (row.metric_group.toString() === this.CONSUMPTION_METRIC_GROUP) {
+			var totalUnits = timeSpan * parseInt(row.purchased_rights, 10);
+			alm.setValue('total_units', totalUnits);
+		}
+		// handle Custom Columns
+		var customCols;
+		if (createdByExcelUpload) {
+			customCols = JSON.parse(row.custom_columns);
+		} else {
+			customCols = this._getCustomColumns(row.sys_id);
+		}
+		if (!gs.nil(customCols)) {
+			this._setCustomCols(this.ENTITLEMENT_TABLE, customCols, alm);
+			this._setCustomCols(this.ENTITLEMENT_PARENT_TABLE, customCols, alm);
+		}
+		for (var i = 0; i < fields.length; i++) {
+			alm.setValue(fields[i], row[fields[i]]);
+		}
+		// set purchase date
+		if (!(gs.nil(row.purchase_date))) {
+			this._setDateField(alm, 'purchase_date', row.purchase_date);
+		}
+		var almID = alm.insert();
+		// if it is MLS import, license metric is per processor and product description contains 1 pro
+		if (dataSource === 'mls' && row.license_metric.toString() === this.PER_PROCESSOR_METRIC) {
+			if ((!createdByExcelUpload && row.excel_row.product_description.includes('MVL 1Pro'))
+				|| (createdByExcelUpload && row.product_description.includes('MVL 1Pro'))) {
+				var metricAttributeGr = new GlideRecord('samp_sw_metric_attribute');
+				metricAttributeGr.addQuery('software_model', row.software_model);
+				metricAttributeGr.addQuery('attribute', 'max_processor_per_right');
+				metricAttributeGr.addQuery('license_metric', this.PER_PROCESSOR_METRIC);
+				metricAttributeGr.query();
+				if (metricAttributeGr.next()) {
+					var defaultMetricAttribute = new GlideRecord('samp_sw_default_metric_attribute');
+					defaultMetricAttribute.get(this.MAXIMUM_PROCESSORS_PER_RIGHT_DEFAULT_METRIC_ATTRIBUTE);
+					if ((defaultMetricAttribute.getValue('attribute_value_is_unlimited') === metricAttributeGr.getValue('attribute_value_is_unlimited')
+						&& (defaultMetricAttribute.getValue('attribute_value') === metricAttributeGr.getValue('attribute_value')))) {
+						metricAttributeGr.setValue('attribute_value', 1);
+						metricAttributeGr.update();
+					}
+				}
+			}
+		}
+		if (!gs.nil(row.contract)) {
+			// Create M2M row for contract to asset using almID <-> contract reference
+			var contractRecord = new GlideRecord(this.CONTRACT_NUMBER_TABLE);
+			var gd = new GlideDate();
+			contractRecord.initialize();
+			contractRecord.setValue('contract', row.contract);
+			contractRecord.setValue('asset', almID);
+			contractRecord.setValue('added', gd.getDisplayValue());
+			contractRecord.insert();
+		}
+		// Connect alm_license and samp_bulk_import
+		new global.GlideQuery('samp_m2m_alm_license_import')
+			.insert({ import_record: this.ENTITLEMENT_IMPORT_SYS_ID, alm_license: almID })
+			.get();
+		return almID;
+	},
+	_calculateTimeSpanFromSubscriptionPeriod: function(inputStartDate, inputEndDate, subscriptionPeriod) {
+		if (!inputStartDate || !inputEndDate || !subscriptionPeriod) {
+			return 1;
+		}
+		var startDate = new GlideDateTime(inputStartDate);
+		var endDate = new GlideDateTime(inputEndDate);
+		endDate.addDays(1);
+		var timeSpan;
+		var leftDays;
+		var yearDiff = endDate.getYearUTC() - startDate.getYearUTC();
+		var monthDiff = endDate.getMonthUTC() - startDate.getMonthUTC();
+		var dayDiff = endDate.getDayOfMonthUTC() - startDate.getDayOfMonthUTC();
+		if (dayDiff < 0) {
+			monthDiff -= 1;
+		}
+		if (monthDiff < 0) {
+			yearDiff -= 1;
+			monthDiff += 12;
+		}
+		if (yearDiff < 0) {
+			return 1;
+		}
+		var leftQuarter = Math.floor(monthDiff / 3);
+		var totalQuarter = yearDiff * 4 + leftQuarter;
+		if (subscriptionPeriod === 'annually') {
+			startDate.addYearsUTC(yearDiff);
+			leftDays = GlideDateTime.subtract(startDate, endDate).getRoundedDayPart();
+			timeSpan = yearDiff + leftDays / 365;
+		} else if (subscriptionPeriod === 'quarterly') {
+			startDate.addYearsUTC(yearDiff);
+			startDate.addMonthsUTC(leftQuarter * 3);
+			leftDays = GlideDateTime.subtract(startDate, endDate).getRoundedDayPart();
+			timeSpan = totalQuarter + leftDays / 91;
+		} else if (subscriptionPeriod === 'monthly') {
+			var daysInStartMonth = startDate.getDaysInMonthUTC();
+			startDate.addYearsUTC(yearDiff);
+			startDate.addMonthsUTC(monthDiff);
+			leftDays = GlideDateTime.subtract(startDate, endDate).getRoundedDayPart();
+			timeSpan = yearDiff * 12 + monthDiff + leftDays / daysInStartMonth;
+		} else { // Entire subscription period
+			timeSpan = 1;
+		}
+		return timeSpan;
+	},
+	_setCustomCols: function(table, cc, alm) {
+		for (var key in cc) {
+			var entitlementInfo = new GlideRecord('sys_dictionary');
+			entitlementInfo.addQuery('name', table);
+			entitlementInfo.addQuery('column_label', key);
+			entitlementInfo.query();
+			if (entitlementInfo.next()) {
+				var element = entitlementInfo.getValue('element');
+				var type = entitlementInfo.getValue('internal_type');
+				if (this.SUPPORTED_CUSTOM_COLUMN_TYPES.indexOf(type) !== -1) {
+					var value = cc[key];
+					if (type === 'reference') {
+						var refTable = this._getCustomReferenceTable(
+							this.ENTITLEMENT_FIELDS_LOOKUP[key].table, key
+						);
+						value = this._getCustomReferenceID(key, value, refTable.name).value;
+					} else if (type === 'glide_date' || type === 'date') {
+						value = this._validateCustomDate(value);
+					} else if (type === 'glide_date_time' || type === 'datetime' || type === 'due_date'
+								|| type === 'calendar_date_time') {
+						value = this._validateCustomDateTime(value);
+					}
+					alm.setValue(element, value);
+				}
+			}
+		}
+	},
+	_setDateField: function(glideRec, dateField, dateVal) {
+		// get instance date format
+		var format = gs.getDateFormat();
+		var dateValue = new GlideDate();
+		dateValue.setDisplayValue(dateVal);
+		glideRec[dateField] = dateValue.getByFormat(format);
+	},
+	_createImportError: function(row, reasons, mandFields) {
+		var fields = ['edition', 'language', 'platform', 'po_number', 'agreement_type', 'vendor', 'company',
+			'department', 'asset_tag', 'product', 'license_type', 'owned_by', 'version', 'gl_account',
+			'cost_center', 'unit_cost', 'publisher', 'location', 'publisher_part_number',
+			'license_metric', 'purchased_rights', 'metric_group', 'software_model', 'import_set',
+			'data_source', 'alm_license', 'named_user_type', 'database_option', 'unit_of_consumption', 'contract',
+			'rights_per_license_pack', 'number_of_packs', 'sap_license_metric', 'purchase_date', 'subscription_period', 'error_fields'];
+		var staging = new GlideRecord(this.IMPORT_TABLE);
+		for (var i = 0; i < fields.length; i++) {
+			var val = (gs.nil(row[fields[i]])) ? '' : row[fields[i]];
+			staging.setValue(fields[i], val);
+		}
+		// Dates need special handling
+		this._setDateField(staging, 'end_date', row.end_date);
+		this._setDateField(staging, 'start_date', row.start_date);
+		staging.setValue('error_status', 'open');
+		staging.setValue('reason', reasons);
+		staging.setValue('reason_list', mandFields);
+		staging.setValue('import_record', this.ENTITLEMENT_IMPORT_SYS_ID);
+		if (row.hasOwnProperty('product_description')) {
+			staging.excel_row.product_description = row.product_description;
+		}
+		var stagingSysID = staging.insert();
+		var customColumns = row.custom_columns;
+		if (!gs.nil(customColumns)) {
+			customColumns = JSON.parse(customColumns);
+			for (var key in customColumns) {
+				new GlideQuery('samp_import_custom_column')
+					.insert({ name: key, value: customColumns[key], import_error: stagingSysID })
+					.get();
+			}
+		}
+		return stagingSysID;
+	},
+	_setAgreementType: function(agreementType, metricGroup) {
+		var ret = { value: null, error: null, mandatory: null };
+		if (this.agreementTypeCache.hasOwnProperty(metricGroup)) {
+			var element = this.agreementTypeCache[metricGroup];
+			if (element.hasOwnProperty(agreementType)) {
+				ret.value = element[agreementType];
+			}
+		}
+		if (gs.nil(ret.value)) {
+			ret.error = this.GENERIC_ERROR;
+			ret.mandatory = 'agreement_type';
+		}
+		return ret;
+	},
+	_getAgreementTypeCache: function() {
+		var agreementMap = {};
+		var choiceGr = new GlideRecord('sys_choice');
+		choiceGr.addQuery('name', this.ENTITLEMENT_TABLE);
+		choiceGr.addQuery('element', 'agreement_type');
+		choiceGr.query();
+		while (choiceGr.next()) {
+			if (agreementMap.hasOwnProperty(choiceGr.getValue('dependent_value'))) {
+				var element = agreementMap[choiceGr.getValue('dependent_value')];
+				element[choiceGr.getValue('label')] = choiceGr.getValue('value');
+			} else {
+				var agreement = {};
+				agreement[choiceGr.getValue('label')] = choiceGr.getValue('value');
+				agreementMap[choiceGr.getValue('dependent_value')] = agreement;
+			}
+		}
+		return agreementMap;
+	},
+	_setMetricGroup: function(metricGroup) {
+		if (!gs.nil(metricGroup)) {
+			if (this.metricGroupCache.hasOwnProperty(metricGroup)) {
+				return this.metricGroupCache[metricGroup];
+			}
+		}
+		return '6e2a21987f222200fa0d328c4efa915c';// Common
+	},
+	_getMetricGroupCache: function() {
+		var metricMap = {};
+		var metricGr = new GlideRecord('samp_sw_metric_group');
+		metricGr.query();
+		while (metricGr.next()) {
+			metricMap[metricGr.getValue('name')] = metricGr.getValue('sys_id');
+		}
+		return metricMap;
+	},
+	_setLicenseMetric: function(licenseMetric, grp) {
+		var license = { value: null, error: null, mandatory: null };
+		if (!gs.nil(licenseMetric)) {
+			for (var idx in this.licenseMetricCache) {
+				if (!gs.nil(this.licenseMetricCache[idx].metric_group)
+				&& this.licenseMetricCache[idx].name === licenseMetric
+				&& this.licenseMetricCache[idx].metric_group.indexOf(grp, 0) !== -1) {
+					license.value = this.licenseMetricCache[idx].sys_id;
+					break;
+				}
+			}
+			if (gs.nil(license.value)) { // try translations if we can't match in English
+				var translatedLicenseMetric = new GlideRecord('sys_translated_text');
+				translatedLicenseMetric.addQuery('tablename', 'samp_sw_license_metric');
+				translatedLicenseMetric.addQuery('fieldname', 'name');
+				translatedLicenseMetric.addQuery('value', licenseMetric);
+				translatedLicenseMetric.query();
+				// since the same license metric name can be used in multiple metric groups ...
+				// get all the license metric sys ids and then query against the metric group
+				// entered by the user to get a single license metric
+				var licenseMetricSysIds = [];
+				while (translatedLicenseMetric.next()) {
+					licenseMetricSysIds.push(translatedLicenseMetric.getValue('documentkey'));
+				}
+				var lic = new GlideRecord('samp_sw_license_metric');
+				lic.addQuery('metric_group', grp);
+				lic.addQuery('sys_id', licenseMetricSysIds);
+				lic.query();
+				if (lic.next()) { license.value = lic.getUniqueValue(); }
+			}
+		}
+		if (gs.nil(license.value)) {
+			license.error = this.GENERIC_ERROR;
+			license.mandatory = 'license_metric';
+		}
+		return license;
+	},
+	_getLicenseMetricCache: function() {
+		var licenseMetricMap = [];
+		var metricGr = new GlideRecord('samp_sw_license_metric');
+		metricGr.query();
+		while (metricGr.next()) {
+			var license = {
+				metric_group: metricGr.getValue('metric_group'),
+				name: metricGr.getValue('name'),
+				sys_id: metricGr.getValue('sys_id'),
+			};
+			licenseMetricMap.push(license);
+		}
+		return licenseMetricMap;
+	},
+	_findPPN: function(ppnName) {
+		var p = { value: null, error: null, product_type: null };
+		var ppn = new GlideRecord('samp_sw_product_definition');
+		ppn.addQuery('publisher_part_number', ppnName);
+		ppn.addQuery('active', true);
+		ppn.query();
+		if (ppn.next()) {
+			p.value = ppn.getUniqueValue();
+			p.product_type = ppn.getValue('product_type');
+		} else {
+			p.value = ppnName;
+			p.error = this.PPN_NOT_FOUND;
+		}
+		return p;
+	},
+	// validation for Microsoft per core and per core with CAL
+	_isMicrosoftCorePackOrCorePackWithCAL: function(metricGroup, licenseMetric) {
+		if (metricGroup === this.MICROSOFT_METRIC_GROUP && (licenseMetric === this.PER_CORE_LICENSE_METRIC
+			|| licenseMetric === this.PER_CORE_WITH_CAL_LICENSE_METRIC)) {
+			return true;
+		}
+		return false;
+	},
+	// refactored from _evaluatePurchaseRights
+	_evaluateRights: function(purchaseRights, columnName, errorMessage) {
+		var right = { value: null, error: null, mandatory: null };
+		var purchaseRightsInt;
+		if (!gs.nil(purchaseRights)) { purchaseRightsInt = parseInt(purchaseRights.replace(/,/g, ''), 10); }
+		if (!gs.nil(purchaseRights) && (purchaseRightsInt >= 0)) {
+			right.value = purchaseRightsInt;
+		} else {
+			right.error = errorMessage;
+			right.mandatory = columnName;
+		}
+		return right;
+	},
+	_getSoftwareModel: function (ppnID) {
+		var model = { value: null, error: null, mandatory: null };
+		var mdl = new SAMPremiumUtils().getSMFromProductDefinition(ppnID, null);
+		if (mdl === 'multiple') {
+			model.error = this.MULTIPLE_SM;
+			model.mandatory = 'software_model';
+		} else { model.value = mdl; }
+		return model;
+	},
+	_doesReasonExist: function(reason, reasonList) {
+		if (gs.nil(reasonList)) { return -1; }
+		return reasonList.indexOf(reason);
+	},
+	_setLicenseType: function(productType, ppnName) {
+		var type = { value: null, error: null, mandatory: null };
+		var licenseType = null;
+		// License type priority is user's choice. If not, get license type from PPN
+		if (!gs.nil(productType)) {
+			if (this.licenseTypeCache.hasOwnProperty(productType)) {
+				licenseType = this.licenseTypeCache[productType];
+			}
+		} else if (!gs.nil(ppnName)) {
+			var ppn = new GlideRecord('samp_sw_product_definition');
+			ppn.addQuery('publisher_part_number', ppnName);
+			ppn.addQuery('active', true);
+			ppn.query();
+			if (ppn.next()) { licenseType = ppn.getValue('product_type'); }
+		}
+		// If user entered an invalid license type and ppn is not present, throw an error
+		if (gs.nil(licenseType)) {
+			type.error = this.GENERIC_ERROR;
+			type.mandatory = 'license_type';
+		} else { type.value = licenseType; }
+		return type;
+	},
+	_setSubscriptionPeriod: function(subscriptionPeriod, licenseType) {
+		var value = '';
+		if (licenseType !== 'subscription') {
+			return value;
+		}
+		if (this.subscriptionPeriodCache.hasOwnProperty(subscriptionPeriod)) {
+			value = this.subscriptionPeriodCache[subscriptionPeriod];
+		}
+		return value;
+	},
+	_getSysChoiceCache: function(name, element) {
+		var map = {};
+		var choiceGr = new GlideRecord('sys_choice');
+		choiceGr.addQuery('name', name);
+		choiceGr.addQuery('element', element);
+		choiceGr.query();
+		while (choiceGr.next()) {
+			map[choiceGr.getValue('label')] = choiceGr.getValue('value');
+		}
+		return map;
+	},
+	_validateMicrosoftLicenseType: function(softwareModel, licenseType) {
+		if (gs.nil(softwareModel) || gs.nil(licenseType)) { return null; }
+		var publisher = new global.SAMPLicenseTypeUtils().getPublisherFromSm(softwareModel);
+		if (licenseType === 'upgrade'
+			|| licenseType === 'maintenance'
+			|| licenseType === 'perpetual_maintenance') {
+			if (publisher === this.MICROSOFT_PUB_ID) { return this.GENERIC_ERROR; }
+		} else if (licenseType === 'step_up'
+            || licenseType === 'software_assurance'
+            || licenseType === 'perpetual_software_assurance') {
+			if (publisher !== this.MICROSOFT_PUB_ID) { return this.GENERIC_ERROR; }
+		}
+		return null;
+	},
+	_addORSetQuery: function(dmapGR, name, value, kind) {
+		if (!gs.nil(value)) {
+			if (kind === 'add') {
+				dmapGR.addQuery(name, value);
+			} else {
+				dmapGR.setValue(name, value);
+			}
+		}
+	},
+	_addToList: function(list, val) {
+		if (!gs.nil(val)) {
+			if (list.indexOf(val) === -1) { list.push(val); }
+		}
+	},
+	_findBestMatchSM: function(sourceGr, returnSMList) {
+		var model = { value: null, error: null, mandatory: null };
+		var platform = this.findPlatform(sourceGr.platform);
+		var language = this.findLanguage(sourceGr.language);
+		// check for platform and language 'Anything'
+		if (platform === 'anything' && language === '832bec5493212200caef14f1b47ffb56') {
+			model.error = 'Invalid';
+			model.mandatory = 'software_model';
+			return model;
+		}
+		model = this._findSM(sourceGr, true, true, true);
+		if (!gs.nil(model.value)) {
+			if (returnSMList) {
+				return model;
+			}
+			var sm = new global.GlideQuery('cmdb_software_product_model')
+				.where('sys_id', 'IN', model.value.split(','));
+			if (platform !== 'anything' && sm.where('platform', platform).selectOne().isPresent()) {
+				model.value = sm.where('platform', platform).selectOne().orElse({ sys_id: null }).sys_id;
+			} else if (language !== '832bec5493212200caef14f1b47ffb56' && sm.where('language', language).selectOne().isPresent()) {
+				model.value = sm.where('language', language).selectOne().orElse({ sys_id: null }).sys_id;
+			} else {
+				model.value = sm.where('platform', 'anything')
+					.where('language', '832bec5493212200caef14f1b47ffb56').selectOne().orElse({ sys_id: null }).sys_id;
+			}
+		}
+		if (gs.nil(model.value)) {
+			model.error = 'Invalid';
+			model.mandatory = 'software_model';
+		}
+		return model;
+	},
+	_findSM: function(sourceGr, returnSMList, anyLanguage, anyPlatform) {
+		var product = sourceGr.product;
+		var publisher = sourceGr.publisher;
+		var version = sourceGr.version;
+		var edition = sourceGr.edition;
+		var platform = sourceGr.platform;
+		var language = sourceGr.language;
+		var namedUserType = sourceGr.named_user_type;
+		var databaseOption = sourceGr.database_option;
+		var sapLicenseMetric = sourceGr.sap_license_metric;
+		var unitOfConsumption = sourceGr.unit_of_consumption;
+		var model = { value: null, error: null, mandatory: null };
+		var setError = false;
+		if (!gs.nil(product)) {
+			var prod = this._findProduct(product, publisher);
+			var sm;
+			if (!gs.nil(prod.value)) {
+				sm = new GlideRecord('cmdb_software_product_model');
+				sm.addQuery('product', prod.value);
+			} else {
+				// Cannot find a valid product
+				setError = true;
+			}
+			var prodGr = new GlideRecord('samp_sw_product');
+			prodGr.get(prod.value);
+			if (!setError && prodGr.subscription_software && prodGr.ignore_installs) {
+				if (!gs.nil(unitOfConsumption)) {
+					sm.addQuery('unit_of_consumption', unitOfConsumption);
+				} else {
+					sm.addNullQuery('unit_of_consumption');
+				}
+			}
+			if (!setError && prod.value === this.PRODUCT_ORACLE_DB_SERVER) {
+				if (!gs.nil(databaseOption)) {
+					var dBOption = this._findReferenceValue('samp_oracle_option_set', databaseOption, 'oracle_option');
+					if (!gs.nil(dBOption.value)) {
+						sm.addQuery('database_option', dBOption.value);
+					} else {
+						setError = true;
+					}
+				} else {
+					sm.addNullQuery('database_option');
+				}
+			}
+			if (prod.value === this.PRODUCT_NAMED_USERS) {
+				if (!gs.nil(namedUserType)) {
+					var nut = this._findReferenceValue('samp_named_user_type', namedUserType, 'name');
+					if (!gs.nil(nut.value)) {
+						sm.addQuery('named_user_type', nut.value);
+					} else {
+						// Cannot find a valid NUT
+						setError = true;
+					}
+				} else {
+					setError = true;
+				}
+			} else if (
+				(prod.value && prod.record.publisher === this.PUBLISHER_SAP)
+				&& this.isSapPluginActive
+				&& new global.SAMPAjaxProcessor().checkSAPProductExistAsEngine(prod.value)) {
+				if (!gs.nil(sapLicenseMetric)) {
+					var slm = this._findReference(
+						'samp_sap_license_metric', {
+							license_metric_name: sapLicenseMetric,
+							engine: prod.value,
+						}
+					);
+					if (!gs.nil(slm.value)) {
+						sm.addQuery('sap_license_metric', slm.value);
+					} else {
+						setError = true;
+					}
+				} else {
+					setError = true;
+				}
+			} else if (!setError) {
+				if (anyLanguage) {
+					var sm1 = sm.addQuery('language', this.findLanguage(language));
+					sm1.addOrCondition('language', this.findLanguage(''));
+				} else {
+					sm.addQuery('language', this.findLanguage(language));
+				}
+				if (anyPlatform) {
+					var sm2 = sm.addQuery('platform', this.findPlatform(platform));
+					sm2.addOrCondition('platform', this.findPlatform(''));
+				} else {
+					sm.addQuery('platform', this.findPlatform(platform));
+				}
+				if (gs.nil(version)) {
+					sm.addQuery('version_operator', this.IS_ANYTHING_OPTION);
+				} else {
+					sm.addQuery('version', version);
+				}
+				if (gs.nil(edition)) {
+					sm.addQuery('edition_operator', this.IS_ANYTHING_OPTION);
+				} else {
+					sm.addQuery('edition', edition);
+				}
+			}
+			if (!setError) {
+				if (!returnSMList) {
+					sm.setLimit(1);
+					sm.query();
+					if (sm.next()) { model.value = sm.getUniqueValue(); }
+				} else {
+					sm.query();
+					var smList = [];
+					while (sm.next()) { smList.push(sm.getUniqueValue()); }
+					if (smList.length > 0) { model.value = smList.join(','); }
+				}
+			}
+			if (gs.nil(model.value)) { setError = true; }
+		} else { setError = true; }
+		if (setError) {
+			model.error = 'Invalid';
+			model.mandatory = 'software_model';
+		}
+		return model;
+	},
+	_assignValue: function(val) {
+		return ((gs.nil(val)) ? '' : val);
+	},
+	_findReferenceValue: function(table, value, colName) {
+		var ret = { value: null, error: null };
+		var reference = new GlideRecord(table);
+		reference.addQuery(colName, value);
+		if (this.CONTENT_TABLES_REFERENCED.indexOf(table) !== -1 && reference.isValidField('active')) {
+			reference.addQuery('active', true);
+		}
+		reference.query();
+		if (reference.next()) { ret.value = reference.getUniqueValue(); } else { ret.error = 'Invalid'; }
+		return ret;
+	},
+	_findReference: function(table, keyValues, columns) {
+		var ret = { value: null, error: 'Invalid', record: null };
+		new GlideQuery(table)
+			.getBy(keyValues, columns)
+			.ifPresent(function(row) {
+				ret.value = row.sys_id;
+				ret.error = null;
+				ret.record = row;
+			});
+		return ret;
+	},
+	_findProduct: function(productName, publisherName) {
+		var publisherSysId;
+		var product;
+		if (!gs.nil(publisherName)) {
+			publisherSysId = this._findReferenceValue('samp_sw_publisher', publisherName, 'name').value;
+		}
+		if (!gs.nil(publisherSysId)) {
+			product = this._findReference(
+				'samp_sw_product', { prod_name: productName, publisher: publisherSysId }, ['sys_id']
+			);
+		} else {
+			product = this._findReferenceValue('samp_sw_product', productName, 'prod_name');
+		}
+		return product;
+	},
+	_isRowEmpty: function(row) {
+		for (var prop in row) {
+			if (prop === 'custom_columns' || row[prop] === null) {
+				continue;
+			} else {
+				return false;
+			}
+		}
+		// Go through the custom columns
+		var customColumns = row.custom_columns;
+		for (var _ in customColumns) {
+			return false;
+		}
+		return true;
+	},
+	_isOraclePluginInstalled: function() {
+		var gr = new GlideRecord('samp_sw_metric_group');
+		return gr.get(this.ORACLE_METRIC_GROUP_ID);
+	},
+	_validateCustomDate: function(value) {
+		var glideDate = new GlideDate();
+		glideDate.setDisplayValue('0001-01-01');
+		glideDate.setDisplayValue(value);
+		var displayValue = glideDate.getDisplayValue() + '';
+		if (displayValue !== '0001-01-01') {
+			return '' + glideDate.getValue();
+		}
+		return null;
+	},
+	_validateCustomDateTime: function(value) {
+		var glideDateTime = new GlideDateTime('');
+		glideDateTime.setDisplayValue(value);
+		return '' + glideDateTime.getValue();
+	},
+	_validateCurrencyColumn: function(table, column, value) {
+		var sentinel = '-' + '271828'.repeat(17);
+		var gr = new GlideRecord(table);
+		gr.setValue(column, sentinel);
+		gr.setValue(column, value);
+		var parsed = gr.getValue(column);
+		return parsed !== sentinel ? parsed : null;
+	},
+	_validateCustomColumns: function(row, cc, reasons, mandFields) {
+		var key;
+		var elementName;
+		for (key in cc) {
+			var dict = this._getColumnDefinition(key);
+			if (cc[key]) {
+				switch (dict.internal_type) {
+				case 'currency':
+				case 'price':
+					if (!this._validateCurrencyColumn(dict.name, dict.element, cc[key])) {
+						this._addToList(reasons, this.CUSTOM_CURRENCY_COLUMN_ERROR(key));
+					}
+					break;
+				case 'integer':
+				case 'float':
+				case 'longint':
+				case 'decimal':
+					if (isNaN(cc[key])) {
+						this._addToList(reasons, this.CUSTOM_NUMERIC_COLUMN_ERROR(key));
+					}
+					break;
+				case 'glide_date':
+				case 'date':
+					var validatedDate = this._validateCustomDate(cc[key]);
+					if (!validatedDate) {
+						this._addToList(reasons, this.INVALID_DATE_CUSTOM_COLUMN_ERROR(key));
+					}
+					break;
+				case 'glide_date_time':
+				case 'datetime':
+				case 'due_date':
+				case 'calendar_date_time':
+					var validatedDateTime = this._validateCustomDateTime(cc[key]);
+					if (!validatedDateTime) {
+						this._addToList(reasons, this.INVALID_DATE_CUSTOM_COLUMN_ERROR(key));
+					}
+					break;
+				case 'reference':
+					var refTable = this._getCustomReferenceTable(this.ENTITLEMENT_FIELDS_LOOKUP[key].table, key);
+					var refID = this._getCustomReferenceID(key, cc[key], refTable.name);
+					if (!refID.value) {
+						this._addToList(reasons, this.CUSTOM_REFERENCE_COLUMN_ERROR(key, refTable.label));
+					}
+					break;
+				default:
+					if (this.SUPPORTED_CUSTOM_COLUMN_TYPES.indexOf(dict.internal_type) === -1
+						&& !gs.nil(dict.internal_type)) {
+						this._addToList(reasons, this.UNSUPPORTED_CUSTOM_COLUMN_TYPE_ERROR(key,
+							this._getDataTypeLabel(dict.internal_type)));
+					}
+					break;
+				}
+				var permissions = this.entitlementPermissions[dict.element];
+				if (permissions && !permissions.create && !this.IMPORT_FIELDS_LOOKUP[key]) {
+					this._addToList(reasons, this.ACL_CUSTOM_COLUMN_ERROR(key));
+				}
+			}
+		}
+		var that = this;
+		this._getMandatoryCustomColumns().forEach(function (dictColumn) {
+			key = dictColumn.column_label.toLowerCase();
+			elementName = dictColumn.element.toLowerCase();
+			if (!(key in cc || elementName in row)) {
+				that._addToList(mandFields, dictColumn.element);
+				that._addToList(reasons, that.MANDATORY_CUSTOM_COLUMN_NOT_PRESENT_ERROR(key));
+			} else if (gs.nil(cc[key]) && gs.nil(row[elementName])) {
+				that._addToList(mandFields,	dictColumn.element);
+				that._addToList(reasons, that.MANDATORY_CUSTOM_COLUMN_EMPTY_ERROR(key));
+			}
+		});
+	},
+	_getCustomReferenceTable: function(table, key) {
+		var gr = new GlideRecord('sys_dictionary');
+		gr.addQuery('name', table);
+		gr.addQuery('column_label', key);
+		gr.query();
+		if (gr.next()) {
+			return {
+				name: gr.getValue('reference'),
+				label: gr.getDisplayValue('reference'),
+			};
+		}
+		return {
+			name: '',
+			label: '',
+		};
+	},
+	_getCustomReferenceID: function(key, value, refTable) {
+		var colName = this._findCustomRefColumnName(refTable);
+		return this._findReferenceValue(refTable, value, colName);
+	},
+	_findCustomRefColumnName: function(table) {
+		var gr = new GlideRecord(table);
+		return gr.getDisplayName();
+	},
+	_getDataTypeLabel: function(dataType) {
+		var gr = new GlideRecord('sys_glide_object');
+		gr.addQuery('name', dataType);
+		gr.query();
+		gr.next();
+		return gr.getValue('label');
+	},
+	_columnDefinitions: function () {
+		return new GlideQuery('sys_dictionary')
+			.where('name', 'IN', ['alm_license', 'alm_asset']);
+	},
+	_getColumnDefinition: function(label) {
+		return this._columnDefinitions()
+			.where('column_label', label)
+			.selectOne('name', 'element', 'column_label', 'internal_type', 'mandatory')
+			.orElse({});
+	},
+	_getMandatoryCustomColumns: function () {
+		return this._columnDefinitions()
+			.where('element', 'NOT IN', this.MANDATORY_NON_CUSTOM_FIELDS)
+			.where('mandatory', true)
+			.select('element', 'column_label');
+	},
+	_getPermissionsByElementName: function (table) {
+		var gr = new GlideRecord(table);
+		gr.initialize();
+		var glideElements = {};
+		var fields = gr.getFields();
+		for (var i = 0; i < fields.size(); i++) {
+			var glideElement = fields.get(i);
+			glideElements[glideElement.getName()] = {
+				create: glideElement.canCreate(),
+				read: glideElement.canRead(),
+				write: glideElement.canWrite(),
+			};
+		}
+		return glideElements;
+	},
+	_getCustomColumns: function(entitlementImportSysId) {
+		var query = new GlideQuery('samp_import_custom_column')
+			.where('import_error', entitlementImportSysId)
+			.select('name', 'value')
+			.toArray(100);
+		var cc = {};
+		if (!gs.nil(query)) {
+			for (var i = 0; i < query.length; i++) {
+				cc[query[i].name] = query[i].value;
+			}
+		}
+		return cc;
+	},
+	updateCustomColumnsTable: function() {
+		// Check if there is custom columns records already, if yes, do nothing
+		var customColumnsGR = new GlideRecord('samp_import_custom_column');
+		customColumnsGR.setLimit(1);
+		customColumnsGR.query();
+		if (!customColumnsGR.hasNext()) {
+			var importErrorGR = new GlideRecord('samp_entitlement_import');
+			importErrorGR.addQuery('error_status', 'open');
+			importErrorGR.addNotNullQuery('custom_columns');
+			importErrorGR.query();
+			while (importErrorGR.next()) {
+				var cc = JSON.parse(importErrorGR.getValue('custom_columns'));
+				for (var key in cc) {
+					customColumnsGR.initialize();
+					customColumnsGR.setValue('name', key);
+					customColumnsGR.setValue('value', cc[key]);
+					customColumnsGR.setValue('import_error', importErrorGR.getValue('sys_id'));
+					customColumnsGR.insert();
+				}
+			}
+		}
+	},
+	isValidContractRow: function(row) {
+		var check = !gs.nil(row) && !gs.nil(row['Parent contract'])
+			&& !gs.nil(row['Start date']) && !gs.nil(row['End date']);
+		return check;
+	},
+	createContract: function(row, bulkImportSysId) {
+		var parentcontractSysId;
+		var childcontractSysId;
+		if (this.isValidContractRow(row)) {
+			// check if state active or expired
+			var status = 'active';
+			var today = new GlideDate();
+			var startDate = new GlideDate();
+			startDate.setDisplayValue(row['Start date']);
+			var endDate = new GlideDate();
+			endDate.setDisplayValue(row['End date']);
+			if (endDate.getYearNoTZ() === 1900) {
+				endDate = '';
+			} else if (today.compareTo(endDate) > 0) { // today is after enddate -> 1
+				status = 'expired';
+			}
+			// check if parent exist
+			var parentcontractGr = new GlideRecord('ast_contract');
+			parentcontractGr.addQuery('vendor_contract', row['Parent contract']);
+			parentcontractGr.addQuery('starts', startDate);
+			parentcontractGr.addQuery('ends', endDate);
+			parentcontractGr.orderByDesc('sys_updated_on');
+			parentcontractGr.setLimit(1);
+			parentcontractGr.query();
+			if (parentcontractGr.next()) {
+				parentcontractSysId = parentcontractGr.getUniqueValue();
+			} else { // create parent
+				var contractGr = new GlideRecord('ast_contract');
+				contractGr.initialize();
+				contractGr.setValue('description', row.Description);
+				contractGr.setValue('po_number', row['PO Number']);
+				contractGr.setValue('vendor', this.canonicalManfID);
+				contractGr.setValue('contract_model', this.CONTRACT_MODEL_SW_LICENSE);
+				contractGr.setValue('vendor_contract', row['Parent contract']);
+				contractGr.setValue('starts', startDate);
+				contractGr.setValue('ends', endDate);
+				contractGr.setValue('state', status);
+				parentcontractSysId = contractGr.insert();
+				if (!gs.nil(parentcontractSysId)) {
+					this.create_m2m_mapping(bulkImportSysId, parentcontractSysId);
+				}
+			}
+			if (!gs.nil(row['Contract number'])) { // child contract
+				// check if child exist
+				var childcontractGr = new GlideRecord('ast_contract');
+				childcontractGr.addQuery('vendor_contract', row['Contract number']);
+				childcontractGr.addQuery('parent_contract', parentcontractSysId);
+				childcontractGr.addQuery('starts', startDate);
+				childcontractGr.addQuery('ends', endDate);
+				childcontractGr.orderByDesc('sys_updated_on');
+				parentcontractGr.setLimit(1);
+				childcontractGr.query();
+				if (childcontractGr.next()) {
+					childcontractSysId = childcontractGr.getUniqueValue();
+				} else { // create child and tie to parent
+					var contrGr = new GlideRecord('ast_contract');
+					contrGr.initialize();
+					contrGr.setValue('description', row.Description);
+					contrGr.setValue('po_number', row['PO Number']);
+					contrGr.setValue('vendor', this.canonicalManfID);
+					contrGr.setValue('contract_model', this.CONTRACT_MODEL_SW_LICENSE);
+					contrGr.setValue('vendor_contract', row['Contract number']);
+					contrGr.setValue('parent_contract', parentcontractSysId);
+					contrGr.setValue('starts', startDate);
+					contrGr.setValue('ends', endDate);
+					contrGr.setValue('state', status);
+					childcontractSysId = contrGr.insert();
+					if (!gs.nil(childcontractSysId)) {
+						this.create_m2m_mapping(bulkImportSysId, childcontractSysId);
+					}
+				}
+				return childcontractSysId;
+			}
+			return parentcontractSysId;
+		}
+		return 0;
+	},
+	create_m2m_mapping: function(bulkImportSysId, contractSysId) {
+		var m2mGr = new GlideRecord('samp_m2m_ast_contract_import');
+		m2mGr.addQuery('import_record', bulkImportSysId);
+		m2mGr.addQuery('contract', contractSysId);
+		m2mGr.query();
+		if (!m2mGr.next()) {
+			var m2mInsertGr = new GlideRecord('samp_m2m_ast_contract_import');
+			m2mInsertGr.initialize();
+			m2mInsertGr.setValue('import_record', bulkImportSysId);
+			m2mInsertGr.setValue('contract', contractSysId);
+			m2mInsertGr.insert();
+		}
+	},
+	getNumberOfEntitlementsBuildState: function(bulkImportSysId) {
+		var count = 0;
+		var gr = new GlideAggregate('samp_m2m_alm_license_import');
+		gr.addQuery('import_record', bulkImportSysId);
+		gr.addNotNullQuery('alm_license');
+		gr.addQuery('alm_license.install_status', 11);
+		gr.addAggregate('COUNT');
+		gr.query();
+		if (gr.next()) {
+			count = gr.getAggregate('COUNT');
+		}
+		return count;
+	},
+	type: 'SAMPEntitlementUtil',
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:41:05</sys_created_on>
+        <sys_id>6fb221a047111110c859fee3846d43df</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SAMPEntitlementUtil</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_6fb221a047111110c859fee3846d43df</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:41:05</sys_updated_on>
+    </sys_script_include>
+    <sys_update_version action="INSERT_OR_UPDATE">
+        <action>DELETE</action>
+        <application display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</application>
+        <file_path/>
+        <instance_id>4e2646e7dbf513888264f70fbf96195b</instance_id>
+        <instance_name>dev58455</instance_name>
+        <name>sys_script_include_6fb221a047111110c859fee3846d43df</name>
+        <payload>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;record_update table="sys_script_include"&gt;&lt;sys_script_include action="INSERT_OR_UPDATE"&gt;&lt;access&gt;public&lt;/access&gt;&lt;active&gt;true&lt;/active&gt;&lt;api_name&gt;x_807586_sam_scrip.SAMPEntitlementUtil&lt;/api_name&gt;&lt;caller_access/&gt;&lt;client_callable&gt;false&lt;/client_callable&gt;&lt;description&gt;SAMP Entitlement Import Util&lt;/description&gt;&lt;name&gt;SAMPEntitlementUtil&lt;/name&gt;&lt;script&gt;&lt;![CDATA[var SAMPEntitlementUtil = Class.create();
+SAMPEntitlementUtil.prototype = {
+	PPN_NOT_FOUND: gs.getMessage('Publisher part number not found. Please specify an existing publisher part number or create a new one'),
+	PPN_AND_SM_NOT_FOUND: gs.getMessage('Publisher Part Number and software model not found. Please ensure that a DMAP exists in the Content Service library for this publisher/product/version/edition'),
+	MULTIPLE_SM: gs.getMessage('Multiple software models found for the Publisher Part number. Please choose a software model'),
+	GENERIC_ERROR: gs.getMessage('Import template customized resulting in one or many fields being invalid'),
+	MULTIPLE_ERRORS: gs.getMessage('Multiple reasons for error: '),
+	RIGHTS_PER_LICENSE_PACK: gs.getMessage('Rights per license pack should be greater than 0'),
+	NUMBER_OF_PACKS: gs.getMessage('Number of packs should be greater than 0'),
+	PURCHASED_RIGHTS: gs.getMessage('Number of purchased rights should be greater than 0'),
+	DUPLICATE_ENTRY: gs.getMessage('Duplicate entitlement. You can either import the record as is or fix the errors to avoid creating a duplicate record'),
+	DATABASE_ERROR: function (option) {
+		return gs.getMessage('Invalid Database option ({0}). Please select a valid Oracle database option', option);
+	},
+	CN_ERROR: function (contractNumber) {
+		return gs.getMessage('Contract number ({0}) not found. Please enter a valid contract number', contractNumber);
+	},
+	ORACLE_METRIC_GROUP_ERROR: gs.getMessage('Invalid metric group. Please specify a valid metric group for the Oracle database option.'),
+	ORACLE_PLUGIN_ERROR:
+		gs.getMessage(
+			"Database option requires 'Software Asset Management Professional for Oracle' plugin to be installed"
+		),
+	UNMAPPED_CUSTOM_COLUMN_ERROR: function (columnList) {
+		return gs.getMessage(
+			"These custom columns do not exist on the Entitlement table: [ '{0}' ]",
+			[columnList.join("', '").toString()]
+		);
+	},
+	CUSTOM_NUMERIC_COLUMN_ERROR: function (key) {
+		return gs.getMessage("The custom field '{0}' must have a numeric value", [key]);
+	},
+	UNSUPPORTED_CUSTOM_COLUMN_TYPE_ERROR: function (key, typeLabel) {
+		return gs.getMessage("The custom field '{0}' has a field type which is not supported: '{1}'. Please enter a valid field type", [key, typeLabel]);
+	},
+	CUSTOM_REFERENCE_COLUMN_ERROR: function (refField, refTable) {
+		return gs.getMessage(
+			"The custom column field '{0}' contains an invalid reference to the '{1}' table",
+			[refField, refTable]
+		);
+	},
+	MANDATORY_CUSTOM_COLUMN_EMPTY_ERROR: function (key) {
+		return gs.getMessage("The custom column field '{0}' is mandatory. Please enter a valid value", [key]);
+	},
+	MANDATORY_CUSTOM_COLUMN_NOT_PRESENT_ERROR: function (key) {
+		return gs.getMessage("The custom column field '{0}' is mandatory. Please enter a valid value", [key]);
+	},
+	INVALID_DATE_CUSTOM_COLUMN_ERROR: function (key) {
+		return gs.getMessage("The date entered in the custom column field '{0}' is not in a valid format", [key]);
+	},
+	CUSTOM_CURRENCY_COLUMN_ERROR: function (key) {
+		return gs.getMessage("The custom field '{0}' contains an invalid currency value. Currency values are expected to be formatted with the currency code followed by a semicolon  and the value. For example, USD;123.45", [key]);
+	},
+	ACL_CUSTOM_COLUMN_ERROR: function (key) {
+		return gs.getMessage("Security changes do not allow you to make changes to the custom column field '{0}'", [key]);
+	},
+	SAP_PLUGIN_ERROR: gs.getMessage(
+		"SAP license metric requires 'Software Asset Management Professional for SAP' plugin to be installed"
+	),
+	IMPORT_TABLE: 'samp_entitlement_import',
+	ENTITLEMENT_PARENT_TABLE: 'alm_asset',
+	ENTITLEMENT_TABLE: 'alm_license',
+	CONTRACT_NUMBER_TABLE: 'clm_m2m_contract_asset',
+	CUSTOM_PRODUCT_DEFINITION_TABLE: 'samp_custom_sw_product_definition',
+	PRODUCT_DEFINITION_TABLE: 'samp_sw_product_definition',
+	ENTITLEMENT_DEFINITION_TABLE: 'samp_sw_entitlement_definition',
+	CUSTOM_ENTITLEMENT_DEFINITION_TABLE: 'samp_custom_sw_entitlement_definition',
+	PRODUCT_NAMED_USERS: '5e73bc41dbab570024cd68461b9619f5',
+	PRODUCT_ORACLE_DB_SERVER: 'db5d5c770b1722000725c84463673a55',
+	PUBLISHER_SAP: '28dcccc20b3022002d6c650d37673ab8',
+	MICROSOFT_PUB_ID: '28dcccc20b3022002d6c650d37673ab2',
+	ORACLE_DB_SERVER_ID: 'db5d5c770b1722000725c84463673a55',
+	ORACLE_METRIC_GROUP_ID: '9e18c5517f222200fa0d328c4efa9186',
+	CONSUMPTION_METRIC_GROUP: '00f3ec4e1d471010fa9b04385273cc8f',
+	MICROSOFT_METRIC_GROUP: '85253c9593222200caef14f1b47ffb02',
+	PER_CORE_LICENSE_METRIC: 'ef64c370534323005d74ddeeff7b1238',
+	PER_CORE_WITH_CAL_LICENSE_METRIC: '22796ca493322200f2ef14f1b47ffb28',
+	PER_PROCESSOR_METRIC: '4c2701d693872200f2ef14f1b47ffb72',
+	SQL_SERVER_PRODUCT: '4b20dc060b3022002d6c650d37673a9e',
+	WINDOWS_SERVER_PRODUCT: 'ac3010460b3022002d6c650d37673a24',
+	MAXIMUM_PROCESSORS_PER_RIGHT_DEFAULT_METRIC_ATTRIBUTE: '0bb42c3f0b53220037af440ff6673a1c',
+	IMPORT_FIELDS_LOOKUP: {},
+	ENTITLEMENT_FIELDS_LOOKUP: {},
+	ENTITLEMENT_IMPORT_SYS_ID: null,
+	IS_ANYTHING_OPTION: 'is_anything',
+	SUPPORTED_CUSTOM_COLUMN_TYPES:
+		['string', 'string_full_utf8', 'integer', 'float', 'longint', 'decimal',
+			'reference', 'glide_date', 'date', 'glide_date_time', 'datetime', 'due_date',
+			'calendar_date_time', 'currency', 'price'],
+	MANDATORY_NON_CUSTOM_FIELDS:
+		['model', 'model_category', 'quantity', 'license_metric', 'purchased_rights',
+			'software_model', 'product_type'],
+	LICENSE_TYPES_FOR_IGNORING_DATE_FIELDS: ['full', 'upgrade'],
+	ERROR_FIELDS: [],
+	CONTENT_TABLES_REFERENCED: ['samp_sw_product', 'samp_sw_publisher', 'samp_named_user_type', 'samp_sw_product_definition', 'samp_language',	'samp_oracle_option_set'],
+	MICROSOFT_PUBLISHER_ID: '28dcccc20b3022002d6c650d37673ab2',
+	CONTRACT_MODEL_SW_LICENSE: 'd781e836c3102000b959fd251eba8f89',
+	MLS_TRANSACTION_DATA_TAB_NOT_FOUND: gs.getMessage("Transaction Data tab not found. Please upload a MLS document with 'Transaction Data' tab."),
+	MLS_CUSTOMER_NAME_HEADER_NOT_FOUND: gs.getMessage("Customer Name on Agreement header not found. Please upload a MLS document with 'Customer Name on Agreement' header."),
+	NO_DATA_FOUND: gs.getMessage('There was no data found in the selected file. Ensure the correct file was selected and the desired data is in the first sheet of the document.'),
+	initialize: function() {
+		/* Build entitlement import field label to column lookup
+			Have to use getDisplayValue instead of getValue since the translation
+			changes only the display text not the column label or column name
+		*/
+		this._createFieldLookups(this.IMPORT_FIELDS_LOOKUP, this.IMPORT_TABLE);
+		this._createFieldLookups(this.ENTITLEMENT_FIELDS_LOOKUP, this.ENTITLEMENT_PARENT_TABLE);
+		this._createFieldLookups(this.ENTITLEMENT_FIELDS_LOOKUP, this.ENTITLEMENT_TABLE);
+		this.entitlementPermissions = this._getPermissionsByElementName(this.ENTITLEMENT_TABLE);
+		this.isSapPluginActive = new GlidePluginManager().isActive('com.sn_samp_sap');
+		this.microsoftMetricGroup = '85253c9593222200caef14f1b47ffb02';
+		this.canonicalManfID = new SAMCoreCompanyUtil().resolveCoreCompanyForSoftwarePublisher(
+			this.MICROSOFT_PUBLISHER_ID
+		);
+		this.metricGroupCache = this._getMetricGroupCache();
+		this.licenseMetricCache = this._getLicenseMetricCache();
+		this.licenseTypeCache = this._getSysChoiceCache(this.IMPORT_TABLE, 'license_type');
+		this.subscriptionPeriodCache = this._getSysChoiceCache(this.ENTITLEMENT_TABLE, 'subscription_period');
+		this.agreementTypeCache = this._getAgreementTypeCache();
+	},
+	_createFieldLookups: function (obj, table) {
+		var tab = new GlideRecord('sys_dictionary');
+		tab.addQuery('name', table);
+		tab.addQuery('internal_type', '!=', 'collection');
+		tab.query();
+		while (tab.next()) {
+			var colLabel = (tab.getDisplayValue('column_label'));
+			var colName = tab.getValue('element');
+			if (!gs.nil(colLabel) &amp;&amp; !gs.nil(colName)) {
+				obj[colLabel.toLowerCase()] = {
+					colName: colName,
+					table: table,
+				};
+			}
+		}
+	},
+	processFile: function(entitlementImportGr) {
+		var errorCount = 0;
+		var entitlementCount = 0;
+		var entitlementBuildCount = 0;
+		var result = null;
+		var headerRowStart = 0;
+		var dataSource = entitlementImportGr.getValue('import_type');
+		var attachmentSysId = entitlementImportGr.getValue('file');
+		this.ENTITLEMENT_IMPORT_SYS_ID = entitlementImportGr.getUniqueValue();
+		var attachment = new GlideSysAttachment();
+		var parser = new sn_impex.GlideExcelParser();
+		var res = parser.parse(attachment.getContentStream(attachmentSysId));
+		if (!gs.nil(res)) {
+			var importSet = 'SET1000001';
+			var importGR = new GlideRecord('samp_entitlement_import');
+			var row;
+			importGR.addNotNullQuery('import_set');
+			importGR.orderByDesc('import_set');
+			importGR.setLimit(1);
+			importGR.query();
+			if (importGR.next()) {
+				var setNum = importGR.getValue('import_set');
+				var matchNum = setNum.match(/\d.+/g)[0];
+				var parseNum = parseInt(matchNum, 10);
+				parseNum += 1;
+				var parseString = parseNum.toString();
+				importSet = 'SET' + parseString;
+			}
+			if (dataSource === 'custom') {
+				var headers = parser.getColumnHeaders();
+				while (parser.next()) {
+					row = parser.getRow();
+					var rowData = {};
+					for (var i = 0; i &lt; headers.length; i++) {
+						var col = ((headers[i].toLowerCase()).trim());
+						rowData[col] = row[headers[i]];
+					}
+					var jsonRowData = JSON.stringify(rowData);
+					result = this.uploadExcel(jsonRowData, dataSource, importSet);
+					if (result.import_error_count &gt; 0) {
+						errorCount += 1;
+					} else if (!gs.nil(result.license_id)) {
+						entitlementCount += 1;
+					}
+				}
+			} else if (dataSource === 'mls') {
+				try {
+					var createContract = entitlementImportGr.getValue('create_contracts');
+					var samMLSExcelParserAPI = new global.SamMLSExcelParser();
+					headerRowStart = samMLSExcelParserAPI.findAndValidateExcelHeaderRow(attachmentSysId);
+					if (headerRowStart &gt;= 0) {
+						var mlsParser = samMLSExcelParserAPI.parseRowByRow(headerRowStart, attachmentSysId);
+						var mlsParserRow;
+						while (mlsParser.next()) {
+							row = mlsParser.getRow();
+							mlsParserRow = samMLSExcelParserAPI.parseRow(row, createContract);
+							// Create contract for mls
+							if (createContract === String(1)) {
+								this.createContract(mlsParserRow[1], this.ENTITLEMENT_IMPORT_SYS_ID);
+							}
+							// Create entitlement for mls
+							result = this.uploadExcel(mlsParserRow[0], dataSource, importSet);
+							if (result.import_error_count &gt; 0) {
+								errorCount += 1;
+							} else if (!gs.nil(result.license_id)) {
+								entitlementCount += 1;
+							}
+						} // end while
+					}
+				} catch (error) {
+					gs.error('SAMPEntitlementUtil processFile MLS: ' + error);
+					var allNull = true;
+					for (var column in row) {
+						if (gs.nil(row[column])) {
+							allNull = true;
+						} else {
+							allNull = false;
+							break;
+						}
+					}
+					if (!allNull) {
+						headerRowStart = -3;
+					}
+				}
+			}
+			entitlementBuildCount = this.getNumberOfEntitlementsBuildState(this.ENTITLEMENT_IMPORT_SYS_ID);
+		}
+		var status = 'completed';
+		var errorReason = '';
+		if (headerRowStart &lt; 0 || (errorCount === 0 &amp;&amp; entitlementCount === 0)) {
+			status = 'failed';
+			errorReason = this.NO_DATA_FOUND;
+			if (headerRowStart &lt; 0) {
+				switch (headerRowStart) {
+				case -1:
+					errorReason = this.MLS_CUSTOMER_NAME_HEADER_NOT_FOUND;
+					break;
+				case -2:
+					errorReason = this.MLS_TRANSACTION_DATA_TAB_NOT_FOUND;
+					break;
+				case -3:
+					errorReason = this.GENERIC_ERROR;
+					break;
+				default:
+					errorReason = '';
+					gs.log('SAMPEntitlementUtil.processFile: Default case likely to not happen.');
+				}
+			}
+		} else if (errorCount &gt; 0 || entitlementBuildCount &gt; 0) {
+			status = 'completed_errors';
+		}
+		this._updateEntitlementImportRecord(errorCount, entitlementCount, entitlementBuildCount, status, errorReason);
+	},
+	_updateEntitlementImportRecord: function (errorCount, entitlementCount, buildCount, status, errorReason) {
+		var record = new GlideQuery('samp_bulk_import')
+			.where('sys_id', this.ENTITLEMENT_IMPORT_SYS_ID);
+		if (status === 'failed') {
+			record.update({
+				rows_processed: '' + (errorCount + entitlementCount),
+				rows_successful: '' + entitlementCount,
+				total_errors: '' + errorCount,
+				number_build_entitlements: '' + buildCount,
+				status: status,
+				error_reason: errorReason,
+			});
+		} else {
+			record.update({
+				rows_processed: '' + (errorCount + entitlementCount),
+				rows_successful: '' + entitlementCount,
+				total_errors: '' + errorCount,
+				number_build_entitlements: '' + buildCount,
+				status: status,
+			});
+		}
+	},
+	_addToErrorField: function(field) {
+		if (this.ERROR_FIELDS.indexOf(field) === -1) { this.ERROR_FIELDS.push(field); }
+	},
+	/* Handle rows from excel file uploaded
+		params:
+			excel - Object from REST API which is the row content from excel
+					{col1: val, col2: val,...}
+			dataSource - Entitlement imported type, only option is Custom
+			import_set - import set number used to create import error records
+	*/
+	uploadExcel: function (excel, dataSource, importSet) {
+		var importCount = 0;
+		var entitlementCount = 0;
+		this.unmappedCustomColumnList = [];
+		var ppn = { value: null, error: null, product_type: null };
+		var licenseID;
+		var row;
+		if (dataSource === 'custom') {
+			row = this._constructRow(new JSON().decode(excel)); // eslint-disable-line no-new-wrappers
+		} else if (dataSource === 'mls') {
+			row = this._constructRow(excel);
+		}
+		if (!this._isRowEmpty(row)) {
+			row.data_source = dataSource;
+			row.import_set = importSet;
+			var reasons = [];
+			var mandFields = [];
+			var sm = { value: null, error: null, mandatory: null };
+			if (gs.nil(row.publisher_part_number)) {
+				if (dataSource === 'mls') {
+					this._addToList(reasons, ppn.error);
+					this._addToErrorField('publisher_part_number');
+				} else if (dataSource === 'custom') {
+					sm = this._findSM(row, false, false, false);
+					if (gs.nil(sm.value)) {
+						sm = { value: null, error: null, mandatory: null };
+						sm = this._findBestMatchSM(row, false);
+					}
+					if (gs.nil(sm.value)) {
+						this._addToList(reasons, this.PPN_AND_SM_NOT_FOUND);
+						this._addToList(mandFields, sm.mandatory);
+						this._addToErrorField('publisher_part_number');
+						this._addToErrorField('software_model');
+					} else { row.software_model = sm.value; }
+				}
+			} else {
+				ppn = this._findPPN(row.publisher_part_number);
+				if (!gs.nil(ppn.error)) {
+					this._addToList(reasons, ppn.error);
+					this._addToErrorField('publisher_part_number');
+				} else {
+					sm = this._getSoftwareModel(ppn.value);
+					this._addToList(reasons, sm.error);
+					this._addToList(mandFields, sm.mandatory);
+					if (!gs.nil(sm.error)) { this._addToErrorField('software_model'); }
+					row.software_model = sm.value;
+				}
+			}
+			// Retrieve license metric
+			var metricGroup = null;
+			var licenseMetric = { value: null, error: null, mandatory: null };
+			if (gs.nil(row.license_metric)) {
+				var userEnteredMetricGroup = null;
+				if (!gs.nil(row.metric_group)) {
+					userEnteredMetricGroup = this._setMetricGroup(row.metric_group);
+				}
+				var MGAndLMFromEntitlement = JSON.parse(
+					new SAMPremiumUtils().findLicenseMetricAndMetricGroupForEntitlement(
+						ppn.value, row.software_model, userEnteredMetricGroup
+					)
+				);
+				if (!gs.nil(MGAndLMFromEntitlement.metricGrpSysID)) {
+					metricGroup = MGAndLMFromEntitlement.metricGrpSysID;
+					licenseMetric.value = MGAndLMFromEntitlement.licenseMetricSysID;
+				}
+			}
+			if (gs.nil(licenseMetric.value)) {
+				metricGroup = this._setMetricGroup(row.metric_group);
+				licenseMetric = this._setLicenseMetric(row.license_metric, metricGroup);
+			}
+			row.metric_group = metricGroup;
+			row.license_metric = this._assignValue(licenseMetric.value);
+			this._addToList(reasons, licenseMetric.error);
+			if (!gs.nil(licenseMetric.error)) { this._addToErrorField('license_metric'); }
+			// if it is Microsoft per core/ pre core with CAL
+			if (this._isMicrosoftCorePackOrCorePackWithCAL(metricGroup, licenseMetric.value)) {
+				// check mls import
+				if (dataSource === 'mls' &amp;&amp; !gs.nil(row.software_model)) {
+					var smGr = new GlideRecord('cmdb_software_product_model');
+					smGr.get(row.software_model);
+					if (smGr.getValue('product') === this.SQL_SERVER_PRODUCT || smGr.getValue('product') === this.WINDOWS_SERVER_PRODUCT) {
+						if (row.product_description.includes('2Lic CoreLic')) {
+							row.rights_per_license_pack = '2';
+							row.number_of_packs = row.purchased_rights;
+							row.purchased_rights = null;
+						}
+					}
+				}
+				// check Rights per pack:
+				var rightsPerLicensePack = this._evaluateRights(row.rights_per_license_pack,
+					'rights_per_license_pack', this.RIGHTS_PER_LICENSE_PACK);
+				row.rights_per_license_pack = this._assignValue(rightsPerLicensePack.value);
+				this._addToList(reasons, rightsPerLicensePack.error);
+				if (!gs.nil(rightsPerLicensePack.error)) { this._addToErrorField('rights_per_license_pack'); }
+				// check Number of packs:
+				var numberOfPacks = this._evaluateRights(
+					row.number_of_packs, 'number_of_packs', this.NUMBER_OF_PACKS
+				);
+				row.number_of_packs = this._assignValue(numberOfPacks.value);
+				this._addToList(reasons, numberOfPacks.error);
+				if (!gs.nil(numberOfPacks.error)) { this._addToErrorField('number_of_packs'); }
+				/* NOTE: instead of ignoreing it, we need to assign the correct value of purchase
+							rights here for the following 2 reasons:
+                1. Total cost calculation to create entitlement is based on the value of purchase rights.
+                2. For duplicate check, the quey needs a parsed value of purchase rights */
+				if (!gs.nil(rightsPerLicensePack.value) &amp;&amp; !gs.nil(numberOfPacks.value)) {
+					row.purchased_rights = this._assignValue(rightsPerLicensePack.value * numberOfPacks.value);
+				} else {
+					row.purchased_rights = null;
+				}
+			} else {
+				// ignore rights per license pack &amp; number of packs:
+				row.rights_per_license_pack = null;
+				row.number_of_packs = null;
+				// validate purchased rights, which will be mandatory in this case:
+				var purchasedRights = this._evaluateRights(row.purchased_rights,
+					'purchased_rights', this.PURCHASED_RIGHTS);
+				row.purchased_rights = this._assignValue(purchasedRights.value);
+				this._addToList(reasons, purchasedRights.error);
+				if (!gs.nil(purchasedRights.error)) { this._addToErrorField('purchased_rights'); }
+			}
+			var agreementType = this._setAgreementType(row.agreement_type, metricGroup);
+			row.agreement_type = this._assignValue(agreementType.value);
+			if (gs.nil(row.agreement_type)) {
+				this._addToList(reasons, this.GENERIC_ERROR);
+				this._addToList(mandFields, 'agreement_type');
+				this._addToErrorField('agreement_type');
+			}
+			if (!gs.nil(row.license_type) || !gs.nil(row.publisher_part_number)) {
+				var licenseType = this._setLicenseType(row.license_type, row.publisher_part_number);
+				row.license_type = this._assignValue(licenseType.value);
+				this._addToList(reasons, licenseType.error);
+				if (!gs.nil(licenseType.error)) { this._addToErrorField('license_type'); }
+				// now that we have licenseType, validate for Microsoft
+				var msLicenseTypeError = this._validateMicrosoftLicenseType(row.software_model, licenseType.value);
+				if (!gs.nil(msLicenseTypeError)) {
+					row.license_type = '';
+					this._addToList(reasons, msLicenseTypeError);
+					this._addToList(mandFields, 'license_type');
+					this._addToErrorField('license_type');
+				}
+			} else {
+				this._addToList(reasons, this.GENERIC_ERROR);
+			}
+			row.subscription_period = this._setSubscriptionPeriod(row.subscription_period, row.license_type);
+			var glideDate = new GlideDate();
+			if (!gs.nil(row.start_date)) {
+				glideDate.setDisplayValue(row.start_date);
+				row.start_date = glideDate.getValue();
+			}
+			if (!gs.nil(row.end_date)) {
+				glideDate.setDisplayValue(row.end_date);
+				row.end_date = glideDate.getValue();
+			}
+			if (!gs.nil(row.license_type)) {
+				if (row.license_type === 'subscription') {
+					if (gs.nil(row.start_date)) {
+						this._addToList(reasons, this.GENERIC_ERROR);
+						this._addToList(mandFields, 'start_date');
+						this._addToErrorField('start_date');
+					}
+					if (gs.nil(row.subscription_period)) {
+						this._addToList(reasons, this.GENERIC_ERROR);
+						this._addToList(mandFields, 'subscription_period');
+						this._addToErrorField('subscription_period');
+					} else if (row.subscription_period === 'entire_subscription_period') {
+						if (!gs.nil(row.start_date) &amp;&amp; !gs.nil(row.end_date)
+						&amp;&amp; !this._validateDate(row.start_date, row.end_date)) {
+							// we dont care about end_date when subscription_period = 'entire_subscription_period'
+							row.end_date = '';
+						}
+					} else if (gs.nil(row.end_date)) { // end date is mandatory and validate end &gt; start
+						this._addToList(reasons, this.GENERIC_ERROR);
+						this._addToList(mandFields, 'end_date');
+						this._addToErrorField('end_date');
+					} else if (!this._validateDate(row.start_date, row.end_date)) {
+						row.end_date = '';
+						this._addToList(reasons, this.GENERIC_ERROR);
+						this._addToList(mandFields, 'end_date');
+						this._addToErrorField('end_date');
+					}
+				} else if ((row.license_type === 'software_assurance')
+					|| (row.license_type === 'perpetual_software_assurance')
+					|| (row.license_type === 'step_up')
+					|| (row.license_type === 'maintenance')
+					|| (row.license_type === 'perpetual_maintenance')) {
+					if (gs.nil(row.start_date)) {
+						this._addToList(reasons, this.GENERIC_ERROR);
+						this._addToList(mandFields, 'start_date');
+						this._addToErrorField('start_date');
+					}
+					// end date is mandatory and validate end &gt; start
+					if (gs.nil(row.end_date)) {
+						this._addToList(reasons, this.GENERIC_ERROR);
+						this._addToList(mandFields, 'end_date');
+						this._addToErrorField('end_date');
+					} else if (!this._validateDate(row.start_date, row.end_date)) {
+						row.end_date = '';
+						this._addToList(reasons, this.GENERIC_ERROR);
+						this._addToList(mandFields, 'end_date');
+						this._addToErrorField('end_date');
+					}
+				}
+			}
+			if (!gs.nil(row.sap_license_metric) &amp;&amp; !this.isSapPluginActive) {
+				this._addToList(reasons, this.SAP_PLUGIN_ERROR);
+			}
+			var originalContract;
+			if (!gs.nil(row.contract)) {
+				var cn = this._findReferenceValue('ast_contract', row.contract, 'vendor_contract');
+				originalContract = row.contract;
+				row.contract = this._assignValue(cn.value);
+			}
+			if (gs.nil(row.contract) &amp;&amp; row.contract != null) {
+				this._addToList(reasons, this.CN_ERROR(originalContract));
+				this._addToErrorField('contract');
+			}
+			if (!gs.nil(row.custom_columns)) {
+				var cc = row.custom_columns;
+				this._validateCustomColumns(row, cc, reasons, mandFields);
+				row.custom_columns = JSON.stringify(row.custom_columns);
+				if (this.unmappedCustomColumnList.length &gt; 0) {
+					this._addToList(reasons, this.UNMAPPED_CUSTOM_COLUMN_ERROR(this.unmappedCustomColumnList));
+				}
+			}
+			if (!gs.nil(row.owned_by)) {
+				var ownedBy = this._findReferenceValue('sys_user', row.owned_by, 'name');
+				if (!gs.nil(ownedBy.error)) {
+					ownedBy = this._findReferenceValue('sys_user', row.owned_by, 'user_name');
+				}
+				row.owned_by = this._assignValue(ownedBy.value);
+			}
+			if (!gs.nil(row.company)) {
+				var company = this._findReferenceValue('core_company', row.company, 'name');
+				row.company = this._assignValue(company.value);
+			}
+			if (!gs.nil(row.vendor)) {
+				var vendor = this._findReferenceValue('core_company', row.vendor, 'name');
+				row.vendor = this._assignValue(vendor.value);
+			}
+			if (!gs.nil(row.department)) {
+				var dept = this._findReferenceValue('cmn_department', row.department, 'name');
+				row.department = this._assignValue(dept.value);
+			}
+			if (!gs.nil(row.location)) {
+				var location = this._findReferenceValue('cmn_location', row.location, 'name');
+				row.location = this._assignValue(location.value);
+			}
+			if (!gs.nil(row.cost_center)) {
+				var costCenter = this._findReferenceValue('cmn_cost_center', row.cost_center, 'name');
+				row.cost_center = this._assignValue(costCenter.value);
+			}
+			// load list of error fields
+			row.error_fields = this.ERROR_FIELDS.join(',');
+			// Found errors in excel data, create entitlement import error record
+			var impID = null;
+			if (reasons.length &gt; 0 || mandFields.length &gt; 0) {
+				if (reasons.length &gt; 1) {
+					impID = this._createImportError(row,
+						this.MULTIPLE_ERRORS + reasons.join('; '), mandFields.join(','));
+				} else {
+					impID = this._createImportError(row, reasons.join('; '), mandFields.join(','));
+				}
+				if (!gs.nil(impID)) {
+					importCount += 1;
+				}
+			} else {
+				var alm = {
+					publisher_part_number: row.publisher_part_number,
+					metric_group: row.metric_group,
+					license_metric: row.license_metric,
+					purchased_rights: row.purchased_rights,
+					po_number: row.po_number,
+					software_model: sm.value,
+					publisher: row.publisher,
+					product: row.product,
+					version: row.version,
+					edition: row.edition,
+					platform: row.platform,
+					language: row.language,
+					named_user_type: row.named_user_type,
+					database_option: row.database_option,
+					rights_per_license_pack: row.rights_per_license_pack,
+					number_of_packs: row.number_of_packs,
+					contract: row.contract,
+					sap_license_metric: row.sap_license_metric,
+					start_date: row.start_date,
+					end_date: row.end_date,
+					license_type: row.license_type,
+					agreement_type: row.agreement_type,
+					unit_cost: row.unit_cost,
+					data_source: dataSource,
+				};
+				var existingSysId = this._findEntitlement(alm, false);
+				if (!gs.nil(existingSysId)) {
+					// Found an existing entitlement, create a duplicate entitlement import error record
+					row.alm_license = existingSysId;
+					impID = this._createImportError(row, this.DUPLICATE_ENTRY, '');
+					if (!gs.nil(impID)) {
+						importCount += 1;
+					}
+				} else if (!gs.nil(sm.value)) {
+					// This is a unique record, create software entitlement
+					var almID = this._createSoftwareEntitlement(row, sm.value, ppn.value, true, dataSource);
+					if (!gs.nil(almID)) {
+						licenseID = almID;
+						entitlementCount += 1;
+					}
+				}
+			}
+		}
+		var ret = { import_error_count: importCount, entitlement_count: entitlementCount, license_id: licenseID };
+		return ret;
+	},
+	/* When entitlement is deleted, delete the import error records associated */
+	removeImportErrorOnDelete: function(licenseID) {
+		var err = new GlideRecord(this.IMPORT_TABLE);
+		err.addQuery('alm_license', licenseID);
+		err.deleteMultiple();
+	},
+	/* Reference qualifier for Software Model on import error table */
+	softwareModelOnImportErrorFilter: function(importGR) {
+		var filter = '';
+		var smGR;
+		var reasons = (importGR.getValue('reason')).split('; ');
+		if (importGR.getValue('error_status') === 'open') {
+			/* Find all the software models associated with PPN */
+			if (reasons.indexOf(this.MULTIPLE_SM) !== -1) {
+				var ppn = this._findReferenceValue(this.PRODUCT_DEFINITION_TABLE,
+					importGR.getValue('publisher_part_number'), 'publisher_part_number');
+				filter = new global.SAMPremiumUtils().getFilterForSM(ppn.value);
+			} else if (!gs.nil(importGR.getValue('product'))) {
+				/* return filter on product first if not available then on publisher in reference software */
+				smGR = new GlideRecord('cmdb_software_product_model');
+				smGR.addQuery('product.prod_name', importGR.getValue('product'));
+				smGR.setLimit(1);
+				smGR.query();
+				if (smGR.hasNext()) { filter += 'product.prod_name=' + importGR.getValue('product'); }
+			}
+			if (gs.nil(filter) &amp;&amp; !gs.nil(importGR.getValue('publisher'))) {
+				smGR = new GlideRecord('cmdb_software_product_model');
+				smGR.addQuery('manufacturer.name', importGR.getValue('publisher'));
+				smGR.setLimit(1);
+				smGR.query();
+				if (smGR.hasNext()) { filter += 'manufacturer.name=' + importGR.getValue('publisher'); }
+			}
+		} else {
+			filter = '';
+		}
+		return filter;
+	},
+	/*
+		Find reference software details for Create Part Number UI action popup
+	*/
+	findReferenceSoftware: function (importID) {
+		var obj = {
+			has_product: false,
+			language: null,
+			version: null,
+			edition: null,
+			platform: null,
+			product: null,
+			named_user_type: null,
+			database_option: null,
+			sap_license_metric: null,
+		};
+		var importGR = new GlideRecord(this.IMPORT_TABLE);
+		if (importGR.get(importID)) {
+			if (!gs.nil(importGR.getValue('product'))) {
+				var prod = this._findProduct(importGR.getValue('product'), importGR.getValue('publisher'));
+				if (!gs.nil(prod.value)) {
+					obj.has_product = true;
+					obj.product = prod.value;
+				}
+			}
+			obj.language = this.findLanguage(importGR.getValue('language'));
+			obj.version = importGR.getValue('version');
+			obj.edition = importGR.getValue('edition');
+			obj.platform = this.findPlatform(importGR.getValue('platform'));
+			obj.named_user_type = this.findNamedUserType(importGR.getValue('named_user_type'));
+			obj.database_option = this.findDataBaseOption(importGR.getValue('database_option'));
+			obj.sap_license_metric = this.findSAPLicenseMetric(importGR.getValue('sap_license_metric'), obj.product);
+		}
+		return new JSON().encode(obj); // eslint-disable-line no-new-wrappers
+	},
+	findDataBaseOption: function(databaseOption) {
+		if (gs.nil(databaseOption)) { return null; }
+		var referenceValue = this._findReferenceValue('samp_oracle_option_set', databaseOption, 'oracle_option');
+		return referenceValue.value;
+	},
+	findNamedUserType: function(namedUserType) {
+		if (gs.nil(namedUserType)) { return null; }
+		var referenceValue = this._findReferenceValue('samp_named_user_type', namedUserType, 'name');
+		return referenceValue.value;
+	},
+	findSAPLicenseMetric: function(sapLicenseMetric, product) {
+		if (!this.isSapPluginActive) {
+			return null;
+		}
+		if (gs.nil(sapLicenseMetric) || gs.nil(product)) { return null; }
+		var referenceValue = this._findReference(
+			'samp_sap_license_metric', {
+				license_metric_name: sapLicenseMetric,
+				engine: product,
+			}
+		);
+		return referenceValue.value;
+	},
+	findLanguage: function(lang) {
+		if (gs.nil(lang)) { return '832bec5493212200caef14f1b47ffb56'; } // --Anything-- is the default one to use
+		var language = this._findReferenceValue('samp_language', lang, 'language');
+		// --Anything-- is the default one to use
+		if (gs.nil(language.value)) { language.value = '832bec5493212200caef14f1b47ffb56'; }
+		return language.value;
+	},
+	ignoreImportError: function (importID) {
+		var importGR = new GlideRecord(this.IMPORT_TABLE);
+		if (importGR.get(importID)) {
+			// Ignore the record only if its in Open status
+			if (importGR.getValue('error_status') === 'open') {
+				importGR.error_status = 'ignored';
+				importGR.reason_list = '';
+				importGR.update();
+				return true;
+			}
+			gs.addErrorMessage(gs.getMessage('Can not ignore a fixed import record'));
+		}
+		return false;
+	},
+	/* Used by Create Entitlement UI action */
+	showCreateEntitlement: function (importGR) {
+		if (importGR.getValue('reason') === this.DUPLICATE_ENTRY
+			&amp;&amp; importGR.getValue('error_status') === 'open') { return true; }
+		return false;
+	},
+	createEntitlementFromImport: function (importGR) {
+		this.ENTITLEMENT_IMPORT_SYS_ID = importGR.getValue('import_record');
+		var ppn = { value: null, error: null };
+		if (!gs.nil(importGR.getValue('publisher_part_number'))) {
+			ppn = this._findReferenceValue('samp_sw_product_definition',
+				importGR.publisher_part_number, 'publisher_part_number');
+		}
+		if (!gs.nil(ppn.value) || !gs.nil(importGR.getValue('software_model'))) {
+			var entID = this._createSoftwareEntitlement(
+				importGR, importGR.getValue('software_model'), ppn.value, false, importGR.getValue('data_source')
+			);
+			if (!gs.nil(entID)) {
+				gs.addInfoMessage(gs.getMessage('Successfully created Software Entitlement'));
+				importGR.error_status = 'fixed';
+				importGR.reason = '';
+				importGR.alm_license = entID;
+				importGR.update();
+			} else { gs.addErrorMessage(gs.getMessage('Unable to create Software Entitlement')); }
+		} else {
+			this.validateImportRecord(importGR, true);
+			gs.addErrorMessage(this.PPN_AND_SM_NOT_FOUND);
+		}
+	},
+	isDuplicateError: function (importGR) {
+		return (this.DUPLICATE_ENTRY === importGR.getValue('reason'));
+	},
+	notifyUserPPNExists: function(importGR) {
+		var ppn = this._findPPN(importGR.getValue('publisher_part_number'));
+		if (gs.nil(ppn.error) &amp;&amp; (this._doesReasonExist(this.PPN_NOT_FOUND, importGR.getValue('reason')) !== -1)) {
+			return true;
+		}
+		return false;
+	},
+	showCreatePPN: function (importGR) {
+		var ppn = this._findPPN(importGR.getValue('publisher_part_number'));
+		if (!gs.nil(importGR.getValue('publisher_part_number')) &amp;&amp; importGR.getValue('error_status') === 'open'
+			&amp;&amp; (this._doesReasonExist(this.PPN_NOT_FOUND, importGR.getValue('reason')) !== -1)
+			&amp;&amp; (ppn.value === importGR.getValue('publisher_part_number'))) {
+			return true;
+		}
+		return false;
+	},
+	createPPNWithDmap: function(dmapID, importID) {
+		var importRec = new GlideRecord(this.IMPORT_TABLE);
+		if (importRec.get(importID)) {
+			// Create a PPN and associate with dmapID
+			var ppn = new GlideRecord(this.PRODUCT_DEFINITION_TABLE);
+			ppn.addQuery('publisher_part_number', importRec.getValue('publisher_part_number'));
+			ppn.addQuery('entitlement_definition', dmapID);
+			ppn.query();
+			if (ppn.next()) {
+				gs.addErrorMessage(gs.getMessage('Publisher Part Number already exists'));
+				importRec.setAbortAction(true);
+			} else {
+				ppn = new GlideRecord(this.CUSTOM_PRODUCT_DEFINITION_TABLE);
+				ppn.setValue('publisher_part_number', importRec.getValue('publisher_part_number'));
+				ppn.setValue('entitlement_definition', dmapID);
+				ppn.setValue('product_type', importRec.getValue('license_type'));
+				ppn.setValue('license_metric', importRec.getValue('license_metric'));
+				if (ppn.insert()) {
+					gs.addInfoMessage(
+						gs.getMessage('Successfully added Publisher Part Number to Product Definition')
+					);
+				}
+			}
+			this.validateImportRecord(importRec, true);
+		}
+	},
+	entitlementDefinitionFilter: function(importGR) {
+		var filter = '';
+		var dmapList = this.findEntitlementDefinition(importGR);
+		if (dmapList.length &gt; 0) { filter = 'sys_idIN' + dmapList.join(','); }
+		return filter;
+	},
+	findEntitlementDefinition: function (importGR) {
+		var dmapList = [];
+		var product = this._findProduct(importGR.getValue('product'), importGR.getValue('publisher'));
+		if (!gs.nil(product.value)) {
+			var language = importGR.getValue('language');
+			var platform = importGR.getValue('platform');
+			var edition = importGR.getValue('edition');
+			var version = importGR.getValue('version');
+			var namedUserType = importGR.getValue('named_user_type');
+			var databaseOption = importGR.getValue('database_option');
+			var sapLicenseMetric = importGR.getValue('sap_license_metric');
+			var lang = this._findReferenceValue('samp_language', language, 'language');
+			var plat = this.findPlatform(platform);
+			var dmap = new GlideRecord('samp_sw_entitlement_definition');
+			this._addORSetQuery(dmap, 'sw_product', product.value, 'add');
+			if (!gs.nil(edition)) { this._addORSetQuery(dmap, 'edition', edition, 'add'); }
+			if (!gs.nil(version)) { this._addORSetQuery(dmap, 'version', version, 'add'); }
+			if (!gs.nil(namedUserType)) {
+				var nut = this._findReferenceValue('samp_named_user_type', namedUserType, 'name');
+				if (!gs.nil(nut.value)) { this._addORSetQuery(dmap, 'named_user_type', nut.value, 'add'); }
+			}
+			if (!gs.nil(databaseOption)) {
+				var dbOption = this._findReferenceValue('samp_oracle_option_set', databaseOption, 'oracle_option');
+				if (!gs.nil(dbOption.value)) { this._addORSetQuery(dmap, 'database_option', dbOption.value, 'add'); }
+			}
+			if (!gs.nil(sapLicenseMetric)) {
+				var slm = this.findSAPLicenseMetric(sapLicenseMetric, product.value);
+				if (!gs.nil(slm)) { this._addORSetQuery(dmap, 'sap_license_metric', slm, 'add'); }
+			}
+			this._addORSetQuery(dmap, 'platform', plat, 'add');
+			if (gs.nil(lang.value)) {
+				this._addORSetQuery(dmap, 'language', '832bec5493212200caef14f1b47ffb56', 'add'); // --Anything--
+			} else { this._addORSetQuery(dmap, 'language', lang.value, 'add'); }
+			dmap.query();
+			while (dmap.next()) {
+				dmapList.push(dmap.getUniqueValue());
+			}
+		}
+		return dmapList;
+	},
+	createPPN: function(importID) {
+		var ret = { status: false, ppn: null };
+		var interGR = new GlideRecord(this.IMPORT_TABLE);
+		if (interGR.get(importID)) {
+			ret.ppn = interGR.getValue('publisher_part_number');
+			var ppn = new GlideRecord(this.PRODUCT_DEFINITION_TABLE);
+			ppn.addQuery('publisher_part_number', interGR.getValue('publisher_part_number'));
+			ppn.query();
+			if (ppn.next()) {
+				gs.addErrorMessage(gs.getMessage('Publisher Part Number already exists'));
+				interGR.setAbortAction(true);
+				ret.status = null;
+			} else if (!gs.nil(interGR.getValue('entitlement_definition'))) { // If DMAP is pre-selected create PPN
+				this.createPPNWithDmap(interGR.getValue('entitlement_definition'), importID);
+				ret.status = true;
+			} else {
+				var dmapList = this.findEntitlementDefinition(interGR);
+				if (dmapList.length === 1) {
+					this.createPPNWithDmap(dmapList.toString(), importID);
+					ret.status = true;
+				} else if (dmapList.length &gt; 1) { ret.status = 'multiple'; }
+			}
+		}
+		return new JSON().encode(ret); // eslint-disable-line no-new-wrappers
+	},
+	/* params:
+		importGR: entitlement import record
+		: boolean value to determine if entitlement import record should be updated after validating
+	*/
+	validateImportRecord: function(importGR, shouldUpdate) {
+		var reasons = [];
+		var mandFields = [];
+		var key;
+		if (gs.nil(importGR.getValue('publisher_part_number'))) {
+			if (gs.nil(importGR.getValue('software_model'))) {
+				// Look for SM based on related software information
+				var sm = this._findSM(importGR, false, false, false);
+				importGR.setValue('software_model', this._assignValue(sm.value));
+				if (!gs.nil(sm.error)) {
+					this._addToList(reasons, this.PPN_AND_SM_NOT_FOUND);
+					this._addToList(mandFields, sm.mandatory);
+					this._addToErrorField('software_model');
+					this._addToErrorField('publisher_part_number');
+				}
+			}
+		} else {
+			var ppn = this._findPPN(importGR.publisher_part_number);
+			if (gs.nil(ppn.error)) {
+				if (gs.nil(importGR.getValue('software_model'))) {
+					// Find SM when PPN found
+					var model = this._getSoftwareModel(ppn.value);
+					importGR.setValue('software_model', this._assignValue(model.value));
+					this._addToList(reasons, model.error);
+					this._addToList(mandFields, model.mandatory);
+					if (!gs.nil(model.error)) { this._addToErrorField('software_model'); }
+				} else if (!shouldUpdate) { // Make sure PPN and SM match
+					var smForPPN = new global.SAMPremiumUtils().getSMFromProductDefinition(
+						ppn.value, importGR.getValue('software_model')
+					);
+					if (smForPPN !== importGR.getValue('software_model')) {
+						gs.addErrorMessage(
+							gs.getMessage('The Publisher part number ({0}) and Software model ({1}) conflict. Change either the part number or the software model reference.',
+								[importGR.publisher_part_number, importGR.getDisplayValue('software_model')])
+						);
+						importGR.publisher_part_number = '';
+						importGR.software_model = '';
+						importGR.setAbortAction(true);
+						return;
+					}
+				}
+			} else {
+				this._addToList(reasons, ppn.error);
+				if (!gs.nil(ppn.error)) { this._addToErrorField('publisher_part_number'); }
+			}
+		}
+		var msLicenseTypeError = this._validateMicrosoftLicenseType(
+			importGR.getValue('software_model'), importGR.getValue('license_type')
+		);
+		if (!gs.nil(msLicenseTypeError)) {
+			this._addToList(reasons, msLicenseTypeError);
+			this._addToErrorField('license_type');
+		}
+		// Metric group
+		if (gs.nil(importGR.getValue('metric_group'))) {
+			this._addToList(reasons, this.GENERIC_ERROR);
+			this._addToList(mandFields, 'metric_group');
+			this._addToErrorField('metric_group');
+		}
+		// Custom columns
+		var cc = this._getCustomColumns(importGR.sys_id);
+		if (!gs.nil(cc)) {
+			var unmappedCustomColumns = [];
+			for (key in cc) {
+				if (gs.nil(this.ENTITLEMENT_FIELDS_LOOKUP[key]) &amp;&amp; cc[key]) {
+					this._addToList(unmappedCustomColumns, key);
+				}
+			}
+			this._validateCustomColumns(importGR, cc, reasons, mandFields);
+			if (unmappedCustomColumns.length &gt; 0) {
+				this._addToList(reasons, this.UNMAPPED_CUSTOM_COLUMN_ERROR(unmappedCustomColumns));
+			}
+		}
+		// Start date is mandatory for subscription , P+SA, SA, step-up, P+M, M
+		if (importGR.getValue('license_type') === 'subscription') {
+			if (gs.nil(importGR.getValue('start_date'))) {
+				this._addToList(reasons, this.GENERIC_ERROR);
+				this._addToList(mandFields, 'start_date');
+				this._addToErrorField('start_date');
+			}
+			if (gs.nil(importGR.getValue('subscription_period'))) {
+				this._addToList(reasons, this.GENERIC_ERROR);
+				this._addToList(mandFields, 'subscription_period');
+				this._addToErrorField('subscription_period');
+			} else if (importGR.getValue('subscription_period') === 'monthly'
+				|| importGR.getValue('subscription_period') === 'quarterly'
+				|| importGR.getValue('subscription_period') === 'annually') {
+				// End date is mandatory for subscription period = monthly, quarterly and annually
+				if (gs.nil(importGR.end_date)) {
+					this._addToList(reasons, this.GENERIC_ERROR);
+					this._addToList(mandFields, 'end_date');
+					this._addToErrorField('end_date');
+				}
+			}
+		} else if (importGR.getValue('license_type') === 'software_assurance'
+			|| importGR.getValue('license_type') === 'perpetual_software_assurance'
+			|| importGR.getValue('license_type') === 'step_up'
+			|| importGR.getValue('license_type') === 'maintenance'
+			|| importGR.getValue('license_type') === 'perpetual_maintenance') {
+			if (gs.nil(importGR.getValue('start_date'))) {
+				this._addToList(reasons, this.GENERIC_ERROR);
+				this._addToList(mandFields, 'start_date');
+				this._addToErrorField('start_date');
+			}
+			// End date is mandatory for P+SA, SA, step-up
+			if (gs.nil(importGR.getValue('end_date'))) {
+				this._addToList(reasons, this.GENERIC_ERROR);
+				this._addToList(mandFields, 'end_date');
+				this._addToErrorField('end_date');
+			}
+		}
+		// if it is Microsoft per core/ pre core with CAL
+		if (this._isMicrosoftCorePackOrCorePackWithCAL(
+			importGR.getValue('metric_group'), importGR.getValue('license_metric')
+		)) {
+			// Rights per pack:
+			var rightsPerLicensePack = 				this._evaluateRights(importGR.rights_per_license_pack,
+				'rights_per_license_pack', this.RIGHTS_PER_LICENSE_PACK);
+			importGR.setValue('rights_per_license_pack', this._assignValue(rightsPerLicensePack.value));
+			this._addToList(mandFields, rightsPerLicensePack.mandatory);
+			this._addToList(reasons, rightsPerLicensePack.error);
+			if (!gs.nil(rightsPerLicensePack.error)) { this._addToErrorField('rights_per_license_pack'); }
+			// Number of packs:
+			var numberOfPacks = this._evaluateRights(
+				importGR.number_of_packs, 'number_of_packs', this.NUMBER_OF_PACKS
+			);
+			importGR.setValue('number_of_packs', this._assignValue(numberOfPacks.value));
+			this._addToList(mandFields, numberOfPacks.mandatory);
+			this._addToList(reasons, numberOfPacks.error);
+			if (!gs.nil(numberOfPacks.error)) { this._addToErrorField('number_of_packs'); }
+		}
+		// Purchased rights
+		var rights = this._evaluateRights(importGR.purchased_rights, 'purchased_rights', this.PURCHASED_RIGHTS);
+		importGR.setValue('purchased_rights', this._assignValue(rights.value));
+		this._addToList(mandFields, rights.mandatory);
+		this._addToList(reasons, rights.error);
+		if (!gs.nil(rights.error)) { this._addToErrorField('purchased_rights'); }
+		// make sure all mandatory fields are populated
+		if (gs.nil(importGR.getValue('license_type')) || gs.nil(importGR.getValue('license_metric'))
+			|| gs.nil(importGR.getValue('metric_group')) || gs.nil(importGR.getValue('purchased_rights'))) {
+			this._addToList(reasons, this.GENERIC_ERROR);
+		}
+		// Check for duplicate
+		if (gs.nil(reasons.join(', ')) &amp;&amp; gs.nil(mandFields.join(','))) {
+			var existingSysId = this._findEntitlement(importGR, false);
+			if (!gs.nil(existingSysId)) {
+				importGR.setValue('alm_license', existingSysId);
+				this._addToList(reasons, this.DUPLICATE_ENTRY);
+			}
+		}
+		// load list of error fields
+		importGR.error_fields = this.ERROR_FIELDS.join(',');
+		if (reasons.length &gt; 1) {
+			importGR.setValue('reason',
+				this._assignValue(this.MULTIPLE_ERRORS) + this._assignValue(reasons.join('; ')));
+		} else {
+			importGR.setValue('reason', this._assignValue(reasons.join('; ')));
+		}
+		importGR.setValue('reason_list', this._assignValue(mandFields.join(',')));
+		if (shouldUpdate) { importGR.update(); }
+	},
+	findPlatform: function(platform) {
+		var ret = 'anything';
+		if (!gs.nil(platform) &amp;&amp; !gs.nil(platform.toString())) {
+			var choice = new GlideRecord('sys_choice');
+			choice.addQuery('name', this.ENTITLEMENT_DEFINITION_TABLE);
+			choice.addQuery('element', 'platform');
+			choice.addQuery('label', platform.toLowerCase());
+			choice.query();
+			if (choice.next()) { ret = choice.getValue('value'); }
+		}
+		return ret;
+	},
+	/* Validate start date is before end date
+		params: start_date: string
+				end_date: string
+	*/
+	_validateDate: function (startDateVal, endDateVal) {
+		var startDate = new GlideDate();
+		startDate.setDisplayValue(startDateVal);
+		var endDate = new GlideDate();
+		endDate.setDisplayValue(endDateVal);
+		if (startDate &lt; endDate) { return true; }
+		return false;
+	},
+	/* Construct row object with dictionary column names
+		params: row: row object that comes from REST API with column_label: val key value pair
+	*/
+	_constructRow: function(restRow) {
+		var row = {};
+		var customRow = {};
+		for (var key in restRow) {
+			if (key === 'product description') {
+				row.product_description = restRow[key];
+			} else if (gs.nil(this.IMPORT_FIELDS_LOOKUP[key]) &amp;&amp; !gs.nil(this.ENTITLEMENT_FIELDS_LOOKUP[key])) {
+				customRow[key] = gs.nil(restRow[key]) ? '' : restRow[key];
+			} else if (!gs.nil(this.IMPORT_FIELDS_LOOKUP[key])) {
+				row[this.IMPORT_FIELDS_LOOKUP[key].colName] = restRow[key];
+			} else if (gs.nil(this.IMPORT_FIELDS_LOOKUP[key])
+				&amp;&amp; gs.nil(this.ENTITLEMENT_FIELDS_LOOKUP[key]) &amp;&amp; restRow[key]) {
+				customRow[key] = restRow[key];
+				this._addToList(this.unmappedCustomColumnList, key);
+			}
+		}
+		if (!gs.nil(customRow)) {
+			row.custom_columns = customRow;
+		}
+		return row;
+	},
+	/*
+		Look up if there is an existing alm_license during excel import and import error evaluation
+		Params:
+			sourceGR: GlideRecord of staging or import error record
+			shouldValidate: Boolean value to determine if import record should run a form validation
+	*/
+	_findEntitlement: function(sourceGR, shouldValidate) {
+		var sm = { value: null, error: null, mandatory: null };
+		if (gs.nil(sourceGR.software_model)) { sm = this._findSM(sourceGR, true, false, false); }
+		var ppn;
+		var canQuery = false; // run the query to search entitlment if there is PPN / SM
+		// Look for an existing software entitlement with license metric + purchased rights + PO number + PPN / SM
+		var alm = new GlideRecord(this.ENTITLEMENT_TABLE);
+		alm.addQuery('license_metric', sourceGR.license_metric);
+		if (this.LICENSE_TYPES_FOR_IGNORING_DATE_FIELDS.indexOf(sourceGR.license_type) === -1) {
+			alm.addQuery('start_date', sourceGR.start_date);
+			alm.addQuery('end_date', sourceGR.end_date);
+		}
+		alm.addQuery('product_type', sourceGR.license_type);
+		if (sourceGR.data_source === 'custom') {
+			if (gs.nil(sourceGR.unit_cost)) {
+				alm.addQuery('unit_cost', 0);
+			} else {
+				alm.addQuery('unit_cost', sourceGR.unit_cost);
+			}
+		}
+		if (gs.nil(sourceGR.agreement_type)) {
+			alm.addQuery('agreement_type', 'generic');
+		} else {
+			alm.addQuery('agreement_type', sourceGR.agreement_type);
+		}
+		// If it is Microsoft per core or per core with CAL
+		if (this._isMicrosoftPerCoreOrPerCoreWithCAL(sourceGR.metric_group, sourceGR.license_metric)) {
+			alm.addQuery('rights_per_license_pack', sourceGR.rights_per_license_pack);
+			alm.addQuery('number_of_packs', sourceGR.number_of_packs);
+		} else {
+			alm.addQuery('purchased_rights', sourceGR.purchased_rights);
+		}
+		if (!gs.nil(sourceGR.po_number)) { alm.addQuery('po_number', sourceGR.po_number); }
+		// If PPN is empty
+		if (gs.nil(sourceGR.publisher_part_number)) {
+			if (!gs.nil(sourceGR.software_model)) {
+				alm.addQuery('software_model', sourceGR.software_model);
+				canQuery = true;
+			} else if (gs.nil(sm.error)) {
+				alm.addQuery('software_model', 'IN', sm.value);
+				canQuery = true;
+			}
+		} else {
+			ppn = this._findReferenceValue(
+				'samp_sw_product_definition', sourceGR.publisher_part_number, 'publisher_part_number'
+			);
+			if (gs.nil(ppn.error)) {
+				if (gs.nil(sourceGR.software_model) &amp;&amp; !gs.nil(sm.value)) {
+					alm.addEncodedQuery('publisher_part_number=' + ppn.value + '^ORsoftware_modelIN' + sm.value);
+					canQuery = true;
+				} else {
+					alm.addEncodedQuery(
+						'publisher_part_number=' + ppn.value + '^ORsoftware_model=' + sourceGR.software_model
+					);
+					canQuery = true;
+				}
+			}
+		}
+		if (canQuery) {
+			alm.query();
+			if (alm.next()) { return alm.getValue('sys_id'); }
+		} else if (shouldValidate) { this.validateImportRecord(sourceGR, true); }
+		return null;
+	},
+	/* Create an entitlement during excel importing or when Create Entitlement UI action is clicked
+		Params:
+			row: row in the excel or entitlement import gliderecord
+			dataSource: What type of excel or import is trying to create the entitlement. Option is custom
+			sm: Software model sys_id
+			ppn: PPN sys_id
+			shouldUpdate: Boolean value to determine if the request came from Create Entitlement UI action
+			which requires software model to be set after the creation of entitlement
+	*/
+	_createSoftwareEntitlement: function(row, sm, ppn, createdByExcelUpload, dataSource) {
+		var fields = ['po_number', 'agreement_type', 'vendor', 'company', 'department', 'asset_tag', 'owned_by',
+			'gl_account', 'cost_center', 'location', 'metric_group', 'license_metric', 'purchased_rights',
+			'data_source', 'rights_per_license_pack', 'number_of_packs', 'subscription_period'];
+		var alm = new GlideRecord(this.ENTITLEMENT_TABLE);
+		alm.setValue('publisher_part_number', ppn);
+		// License type
+		var licenseType = this._setLicenseType(row.license_type, row.publisher_part_number);
+		if (!gs.nil(licenseType.value)) {
+			alm.setValue('product_type', licenseType.value);
+		} else {
+			alm.setValue('product_type', row.license_type);
+		}
+		if (alm.getValue('product_type') === 'software_assurance' || alm.getValue('product_type') === 'step_up') {
+			alm.setValue('install_status', 11);
+		}
+		var prodType = alm.getValue('product_type');
+		alm.setValue('software_model', sm);
+		// set date fields
+		if (this.LICENSE_TYPES_FOR_IGNORING_DATE_FIELDS.indexOf(prodType) === -1) {
+			this._setDateField(alm, 'end_date', row.end_date);
+			this._setDateField(alm, 'start_date', row.start_date);
+		}
+		var timeSpan = 1;
+		if (prodType === 'subscription') {
+			timeSpan = this._calculateTimeSpanFromSubscriptionPeriod(alm.getValue('start_date'), alm.getValue('end_date'), row.subscription_period.toString());
+		}
+		var currencyCode;
+		if (!gs.nil(row.unit_cost)) {
+			if (row.isValidRecord()) { // handle cost if row is GlideRecord
+				currencyCode = row.unit_cost.getCurrencyCode();
+				var currencyValue = row.unit_cost.getCurrencyValue();
+				alm.setValue('unit_cost', currencyCode + ';' + currencyValue);
+			} else { // handle cost if row is a row from Excel
+				alm.setValue('unit_cost', row.unit_cost);
+				currencyCode = alm.unit_cost.getCurrencyCode();
+			}
+			var total = (alm.unit_cost.getCurrencyValue()) * parseInt(row.purchased_rights, 10) * timeSpan;
+			alm.setValue('cost', currencyCode + ';' + total);
+		}
+		// handle Total units for Consumption metric group
+		if (row.metric_group.toString() === this.CONSUMPTION_METRIC_GROUP) {
+			var totalUnits = timeSpan * parseInt(row.purchased_rights, 10);
+			alm.setValue('total_units', totalUnits);
+		}
+		// handle Custom Columns
+		var customCols;
+		if (createdByExcelUpload) {
+			customCols = JSON.parse(row.custom_columns);
+		} else {
+			customCols = this._getCustomColumns(row.sys_id);
+		}
+		if (!gs.nil(customCols)) {
+			this._setCustomCols(this.ENTITLEMENT_TABLE, customCols, alm);
+			this._setCustomCols(this.ENTITLEMENT_PARENT_TABLE, customCols, alm);
+		}
+		for (var i = 0; i &lt; fields.length; i++) {
+			alm.setValue(fields[i], row[fields[i]]);
+		}
+		// set purchase date
+		if (!(gs.nil(row.purchase_date))) {
+			this._setDateField(alm, 'purchase_date', row.purchase_date);
+		}
+		var almID = alm.insert();
+		// if it is MLS import, license metric is per processor and product description contains 1 pro
+		if (dataSource === 'mls' &amp;&amp; row.license_metric.toString() === this.PER_PROCESSOR_METRIC) {
+			if ((!createdByExcelUpload &amp;&amp; row.excel_row.product_description.includes('MVL 1Pro'))
+				|| (createdByExcelUpload &amp;&amp; row.product_description.includes('MVL 1Pro'))) {
+				var metricAttributeGr = new GlideRecord('samp_sw_metric_attribute');
+				metricAttributeGr.addQuery('software_model', row.software_model);
+				metricAttributeGr.addQuery('attribute', 'max_processor_per_right');
+				metricAttributeGr.addQuery('license_metric', this.PER_PROCESSOR_METRIC);
+				metricAttributeGr.query();
+				if (metricAttributeGr.next()) {
+					var defaultMetricAttribute = new GlideRecord('samp_sw_default_metric_attribute');
+					defaultMetricAttribute.get(this.MAXIMUM_PROCESSORS_PER_RIGHT_DEFAULT_METRIC_ATTRIBUTE);
+					if ((defaultMetricAttribute.getValue('attribute_value_is_unlimited') === metricAttributeGr.getValue('attribute_value_is_unlimited')
+						&amp;&amp; (defaultMetricAttribute.getValue('attribute_value') === metricAttributeGr.getValue('attribute_value')))) {
+						metricAttributeGr.setValue('attribute_value', 1);
+						metricAttributeGr.update();
+					}
+				}
+			}
+		}
+		if (!gs.nil(row.contract)) {
+			// Create M2M row for contract to asset using almID &lt;-&gt; contract reference
+			var contractRecord = new GlideRecord(this.CONTRACT_NUMBER_TABLE);
+			var gd = new GlideDate();
+			contractRecord.initialize();
+			contractRecord.setValue('contract', row.contract);
+			contractRecord.setValue('asset', almID);
+			contractRecord.setValue('added', gd.getDisplayValue());
+			contractRecord.insert();
+		}
+		// Connect alm_license and samp_bulk_import
+		new global.GlideQuery('samp_m2m_alm_license_import')
+			.insert({ import_record: this.ENTITLEMENT_IMPORT_SYS_ID, alm_license: almID })
+			.get();
+		return almID;
+	},
+	_calculateTimeSpanFromSubscriptionPeriod: function(inputStartDate, inputEndDate, subscriptionPeriod) {
+		if (!inputStartDate || !inputEndDate || !subscriptionPeriod) {
+			return 1;
+		}
+		var startDate = new GlideDateTime(inputStartDate);
+		var endDate = new GlideDateTime(inputEndDate);
+		endDate.addDays(1);
+		var timeSpan;
+		var leftDays;
+		var yearDiff = endDate.getYearUTC() - startDate.getYearUTC();
+		var monthDiff = endDate.getMonthUTC() - startDate.getMonthUTC();
+		var dayDiff = endDate.getDayOfMonthUTC() - startDate.getDayOfMonthUTC();
+		if (dayDiff &lt; 0) {
+			monthDiff -= 1;
+		}
+		if (monthDiff &lt; 0) {
+			yearDiff -= 1;
+			monthDiff += 12;
+		}
+		if (yearDiff &lt; 0) {
+			return 1;
+		}
+		var leftQuarter = Math.floor(monthDiff / 3);
+		var totalQuarter = yearDiff * 4 + leftQuarter;
+		if (subscriptionPeriod === 'annually') {
+			startDate.addYearsUTC(yearDiff);
+			leftDays = GlideDateTime.subtract(startDate, endDate).getRoundedDayPart();
+			timeSpan = yearDiff + leftDays / 365;
+		} else if (subscriptionPeriod === 'quarterly') {
+			startDate.addYearsUTC(yearDiff);
+			startDate.addMonthsUTC(leftQuarter * 3);
+			leftDays = GlideDateTime.subtract(startDate, endDate).getRoundedDayPart();
+			timeSpan = totalQuarter + leftDays / 91;
+		} else if (subscriptionPeriod === 'monthly') {
+			var daysInStartMonth = startDate.getDaysInMonthUTC();
+			startDate.addYearsUTC(yearDiff);
+			startDate.addMonthsUTC(monthDiff);
+			leftDays = GlideDateTime.subtract(startDate, endDate).getRoundedDayPart();
+			timeSpan = yearDiff * 12 + monthDiff + leftDays / daysInStartMonth;
+		} else { // Entire subscription period
+			timeSpan = 1;
+		}
+		return timeSpan;
+	},
+	_setCustomCols: function(table, cc, alm) {
+		for (var key in cc) {
+			var entitlementInfo = new GlideRecord('sys_dictionary');
+			entitlementInfo.addQuery('name', table);
+			entitlementInfo.addQuery('column_label', key);
+			entitlementInfo.query();
+			if (entitlementInfo.next()) {
+				var element = entitlementInfo.getValue('element');
+				var type = entitlementInfo.getValue('internal_type');
+				if (this.SUPPORTED_CUSTOM_COLUMN_TYPES.indexOf(type) !== -1) {
+					var value = cc[key];
+					if (type === 'reference') {
+						var refTable = this._getCustomReferenceTable(
+							this.ENTITLEMENT_FIELDS_LOOKUP[key].table, key
+						);
+						value = this._getCustomReferenceID(key, value, refTable.name).value;
+					} else if (type === 'glide_date' || type === 'date') {
+						value = this._validateCustomDate(value);
+					} else if (type === 'glide_date_time' || type === 'datetime' || type === 'due_date'
+								|| type === 'calendar_date_time') {
+						value = this._validateCustomDateTime(value);
+					}
+					alm.setValue(element, value);
+				}
+			}
+		}
+	},
+	_setDateField: function(glideRec, dateField, dateVal) {
+		// get instance date format
+		var format = gs.getDateFormat();
+		var dateValue = new GlideDate();
+		dateValue.setDisplayValue(dateVal);
+		glideRec[dateField] = dateValue.getByFormat(format);
+	},
+	_createImportError: function(row, reasons, mandFields) {
+		var fields = ['edition', 'language', 'platform', 'po_number', 'agreement_type', 'vendor', 'company',
+			'department', 'asset_tag', 'product', 'license_type', 'owned_by', 'version', 'gl_account',
+			'cost_center', 'unit_cost', 'publisher', 'location', 'publisher_part_number',
+			'license_metric', 'purchased_rights', 'metric_group', 'software_model', 'import_set',
+			'data_source', 'alm_license', 'named_user_type', 'database_option', 'unit_of_consumption', 'contract',
+			'rights_per_license_pack', 'number_of_packs', 'sap_license_metric', 'purchase_date', 'subscription_period', 'error_fields'];
+		var staging = new GlideRecord(this.IMPORT_TABLE);
+		for (var i = 0; i &lt; fields.length; i++) {
+			var val = (gs.nil(row[fields[i]])) ? '' : row[fields[i]];
+			staging.setValue(fields[i], val);
+		}
+		// Dates need special handling
+		this._setDateField(staging, 'end_date', row.end_date);
+		this._setDateField(staging, 'start_date', row.start_date);
+		staging.setValue('error_status', 'open');
+		staging.setValue('reason', reasons);
+		staging.setValue('reason_list', mandFields);
+		staging.setValue('import_record', this.ENTITLEMENT_IMPORT_SYS_ID);
+		if (row.hasOwnProperty('product_description')) {
+			staging.excel_row.product_description = row.product_description;
+		}
+		var stagingSysID = staging.insert();
+		var customColumns = row.custom_columns;
+		if (!gs.nil(customColumns)) {
+			customColumns = JSON.parse(customColumns);
+			for (var key in customColumns) {
+				new GlideQuery('samp_import_custom_column')
+					.insert({ name: key, value: customColumns[key], import_error: stagingSysID })
+					.get();
+			}
+		}
+		return stagingSysID;
+	},
+	_setAgreementType: function(agreementType, metricGroup) {
+		var ret = { value: null, error: null, mandatory: null };
+		if (this.agreementTypeCache.hasOwnProperty(metricGroup)) {
+			var element = this.agreementTypeCache[metricGroup];
+			if (element.hasOwnProperty(agreementType)) {
+				ret.value = element[agreementType];
+			}
+		}
+		if (gs.nil(ret.value)) {
+			ret.error = this.GENERIC_ERROR;
+			ret.mandatory = 'agreement_type';
+		}
+		return ret;
+	},
+	_getAgreementTypeCache: function() {
+		var agreementMap = {};
+		var choiceGr = new GlideRecord('sys_choice');
+		choiceGr.addQuery('name', this.ENTITLEMENT_TABLE);
+		choiceGr.addQuery('element', 'agreement_type');
+		choiceGr.query();
+		while (choiceGr.next()) {
+			if (agreementMap.hasOwnProperty(choiceGr.getValue('dependent_value'))) {
+				var element = agreementMap[choiceGr.getValue('dependent_value')];
+				element[choiceGr.getValue('label')] = choiceGr.getValue('value');
+			} else {
+				var agreement = {};
+				agreement[choiceGr.getValue('label')] = choiceGr.getValue('value');
+				agreementMap[choiceGr.getValue('dependent_value')] = agreement;
+			}
+		}
+		return agreementMap;
+	},
+	_setMetricGroup: function(metricGroup) {
+		if (!gs.nil(metricGroup)) {
+			if (this.metricGroupCache.hasOwnProperty(metricGroup)) {
+				return this.metricGroupCache[metricGroup];
+			}
+		}
+		return '6e2a21987f222200fa0d328c4efa915c';// Common
+	},
+	_getMetricGroupCache: function() {
+		var metricMap = {};
+		var metricGr = new GlideRecord('samp_sw_metric_group');
+		metricGr.query();
+		while (metricGr.next()) {
+			metricMap[metricGr.getValue('name')] = metricGr.getValue('sys_id');
+		}
+		return metricMap;
+	},
+	_setLicenseMetric: function(licenseMetric, grp) {
+		var license = { value: null, error: null, mandatory: null };
+		if (!gs.nil(licenseMetric)) {
+			for (var idx in this.licenseMetricCache) {
+				if (!gs.nil(this.licenseMetricCache[idx].metric_group)
+				&amp;&amp; this.licenseMetricCache[idx].name === licenseMetric
+				&amp;&amp; this.licenseMetricCache[idx].metric_group.indexOf(grp, 0) !== -1) {
+					license.value = this.licenseMetricCache[idx].sys_id;
+					break;
+				}
+			}
+			if (gs.nil(license.value)) { // try translations if we can't match in English
+				var translatedLicenseMetric = new GlideRecord('sys_translated_text');
+				translatedLicenseMetric.addQuery('tablename', 'samp_sw_license_metric');
+				translatedLicenseMetric.addQuery('fieldname', 'name');
+				translatedLicenseMetric.addQuery('value', licenseMetric);
+				translatedLicenseMetric.query();
+				// since the same license metric name can be used in multiple metric groups ...
+				// get all the license metric sys ids and then query against the metric group
+				// entered by the user to get a single license metric
+				var licenseMetricSysIds = [];
+				while (translatedLicenseMetric.next()) {
+					licenseMetricSysIds.push(translatedLicenseMetric.getValue('documentkey'));
+				}
+				var lic = new GlideRecord('samp_sw_license_metric');
+				lic.addQuery('metric_group', grp);
+				lic.addQuery('sys_id', licenseMetricSysIds);
+				lic.query();
+				if (lic.next()) { license.value = lic.getUniqueValue(); }
+			}
+		}
+		if (gs.nil(license.value)) {
+			license.error = this.GENERIC_ERROR;
+			license.mandatory = 'license_metric';
+		}
+		return license;
+	},
+	_getLicenseMetricCache: function() {
+		var licenseMetricMap = [];
+		var metricGr = new GlideRecord('samp_sw_license_metric');
+		metricGr.query();
+		while (metricGr.next()) {
+			var license = {
+				metric_group: metricGr.getValue('metric_group'),
+				name: metricGr.getValue('name'),
+				sys_id: metricGr.getValue('sys_id'),
+			};
+			licenseMetricMap.push(license);
+		}
+		return licenseMetricMap;
+	},
+	_findPPN: function(ppnName) {
+		var p = { value: null, error: null, product_type: null };
+		var ppn = new GlideRecord('samp_sw_product_definition');
+		ppn.addQuery('publisher_part_number', ppnName);
+		ppn.addQuery('active', true);
+		ppn.query();
+		if (ppn.next()) {
+			p.value = ppn.getUniqueValue();
+			p.product_type = ppn.getValue('product_type');
+		} else {
+			p.value = ppnName;
+			p.error = this.PPN_NOT_FOUND;
+		}
+		return p;
+	},
+	// validation for Microsoft per core and per core with CAL
+	_isMicrosoftCorePackOrCorePackWithCAL: function(metricGroup, licenseMetric) {
+		if (metricGroup === this.MICROSOFT_METRIC_GROUP &amp;&amp; (licenseMetric === this.PER_CORE_LICENSE_METRIC
+			|| licenseMetric === this.PER_CORE_WITH_CAL_LICENSE_METRIC)) {
+			return true;
+		}
+		return false;
+	},
+	// refactored from _evaluatePurchaseRights
+	_evaluateRights: function(purchaseRights, columnName, errorMessage) {
+		var right = { value: null, error: null, mandatory: null };
+		var purchaseRightsInt;
+		if (!gs.nil(purchaseRights)) { purchaseRightsInt = parseInt(purchaseRights.replace(/,/g, ''), 10); }
+		if (!gs.nil(purchaseRights) &amp;&amp; (purchaseRightsInt &gt;= 0)) {
+			right.value = purchaseRightsInt;
+		} else {
+			right.error = errorMessage;
+			right.mandatory = columnName;
+		}
+		return right;
+	},
+	_getSoftwareModel: function (ppnID) {
+		var model = { value: null, error: null, mandatory: null };
+		var mdl = new SAMPremiumUtils().getSMFromProductDefinition(ppnID, null);
+		if (mdl === 'multiple') {
+			model.error = this.MULTIPLE_SM;
+			model.mandatory = 'software_model';
+		} else { model.value = mdl; }
+		return model;
+	},
+	_doesReasonExist: function(reason, reasonList) {
+		if (gs.nil(reasonList)) { return -1; }
+		return reasonList.indexOf(reason);
+	},
+	_setLicenseType: function(productType, ppnName) {
+		var type = { value: null, error: null, mandatory: null };
+		var licenseType = null;
+		// License type priority is user's choice. If not, get license type from PPN
+		if (!gs.nil(productType)) {
+			if (this.licenseTypeCache.hasOwnProperty(productType)) {
+				licenseType = this.licenseTypeCache[productType];
+			}
+		} else if (!gs.nil(ppnName)) {
+			var ppn = new GlideRecord('samp_sw_product_definition');
+			ppn.addQuery('publisher_part_number', ppnName);
+			ppn.addQuery('active', true);
+			ppn.query();
+			if (ppn.next()) { licenseType = ppn.getValue('product_type'); }
+		}
+		// If user entered an invalid license type and ppn is not present, throw an error
+		if (gs.nil(licenseType)) {
+			type.error = this.GENERIC_ERROR;
+			type.mandatory = 'license_type';
+		} else { type.value = licenseType; }
+		return type;
+	},
+	_setSubscriptionPeriod: function(subscriptionPeriod, licenseType) {
+		var value = '';
+		if (licenseType !== 'subscription') {
+			return value;
+		}
+		if (this.subscriptionPeriodCache.hasOwnProperty(subscriptionPeriod)) {
+			value = this.subscriptionPeriodCache[subscriptionPeriod];
+		}
+		return value;
+	},
+	_getSysChoiceCache: function(name, element) {
+		var map = {};
+		var choiceGr = new GlideRecord('sys_choice');
+		choiceGr.addQuery('name', name);
+		choiceGr.addQuery('element', element);
+		choiceGr.query();
+		while (choiceGr.next()) {
+			map[choiceGr.getValue('label')] = choiceGr.getValue('value');
+		}
+		return map;
+	},
+	_validateMicrosoftLicenseType: function(softwareModel, licenseType) {
+		if (gs.nil(softwareModel) || gs.nil(licenseType)) { return null; }
+		var publisher = new global.SAMPLicenseTypeUtils().getPublisherFromSm(softwareModel);
+		if (licenseType === 'upgrade'
+			|| licenseType === 'maintenance'
+			|| licenseType === 'perpetual_maintenance') {
+			if (publisher === this.MICROSOFT_PUB_ID) { return this.GENERIC_ERROR; }
+		} else if (licenseType === 'step_up'
+            || licenseType === 'software_assurance'
+            || licenseType === 'perpetual_software_assurance') {
+			if (publisher !== this.MICROSOFT_PUB_ID) { return this.GENERIC_ERROR; }
+		}
+		return null;
+	},
+	_addORSetQuery: function(dmapGR, name, value, kind) {
+		if (!gs.nil(value)) {
+			if (kind === 'add') {
+				dmapGR.addQuery(name, value);
+			} else {
+				dmapGR.setValue(name, value);
+			}
+		}
+	},
+	_addToList: function(list, val) {
+		if (!gs.nil(val)) {
+			if (list.indexOf(val) === -1) { list.push(val); }
+		}
+	},
+	_findBestMatchSM: function(sourceGr, returnSMList) {
+		var model = { value: null, error: null, mandatory: null };
+		var platform = this.findPlatform(sourceGr.platform);
+		var language = this.findLanguage(sourceGr.language);
+		// check for platform and language 'Anything'
+		if (platform === 'anything' &amp;&amp; language === '832bec5493212200caef14f1b47ffb56') {
+			model.error = 'Invalid';
+			model.mandatory = 'software_model';
+			return model;
+		}
+		model = this._findSM(sourceGr, true, true, true);
+		if (!gs.nil(model.value)) {
+			if (returnSMList) {
+				return model;
+			}
+			var sm = new global.GlideQuery('cmdb_software_product_model')
+				.where('sys_id', 'IN', model.value.split(','));
+			if (platform !== 'anything' &amp;&amp; sm.where('platform', platform).selectOne().isPresent()) {
+				model.value = sm.where('platform', platform).selectOne().orElse({ sys_id: null }).sys_id;
+			} else if (language !== '832bec5493212200caef14f1b47ffb56' &amp;&amp; sm.where('language', language).selectOne().isPresent()) {
+				model.value = sm.where('language', language).selectOne().orElse({ sys_id: null }).sys_id;
+			} else {
+				model.value = sm.where('platform', 'anything')
+					.where('language', '832bec5493212200caef14f1b47ffb56').selectOne().orElse({ sys_id: null }).sys_id;
+			}
+		}
+		if (gs.nil(model.value)) {
+			model.error = 'Invalid';
+			model.mandatory = 'software_model';
+		}
+		return model;
+	},
+	_findSM: function(sourceGr, returnSMList, anyLanguage, anyPlatform) {
+		var product = sourceGr.product;
+		var publisher = sourceGr.publisher;
+		var version = sourceGr.version;
+		var edition = sourceGr.edition;
+		var platform = sourceGr.platform;
+		var language = sourceGr.language;
+		var namedUserType = sourceGr.named_user_type;
+		var databaseOption = sourceGr.database_option;
+		var sapLicenseMetric = sourceGr.sap_license_metric;
+		var unitOfConsumption = sourceGr.unit_of_consumption;
+		var model = { value: null, error: null, mandatory: null };
+		var setError = false;
+		if (!gs.nil(product)) {
+			var prod = this._findProduct(product, publisher);
+			var sm;
+			if (!gs.nil(prod.value)) {
+				sm = new GlideRecord('cmdb_software_product_model');
+				sm.addQuery('product', prod.value);
+			} else {
+				// Cannot find a valid product
+				setError = true;
+			}
+			var prodGr = new GlideRecord('samp_sw_product');
+			prodGr.get(prod.value);
+			if (!setError &amp;&amp; prodGr.subscription_software &amp;&amp; prodGr.ignore_installs) {
+				if (!gs.nil(unitOfConsumption)) {
+					sm.addQuery('unit_of_consumption', unitOfConsumption);
+				} else {
+					sm.addNullQuery('unit_of_consumption');
+				}
+			}
+			if (!setError &amp;&amp; prod.value === this.PRODUCT_ORACLE_DB_SERVER) {
+				if (!gs.nil(databaseOption)) {
+					var dBOption = this._findReferenceValue('samp_oracle_option_set', databaseOption, 'oracle_option');
+					if (!gs.nil(dBOption.value)) {
+						sm.addQuery('database_option', dBOption.value);
+					} else {
+						setError = true;
+					}
+				} else {
+					sm.addNullQuery('database_option');
+				}
+			}
+			if (prod.value === this.PRODUCT_NAMED_USERS) {
+				if (!gs.nil(namedUserType)) {
+					var nut = this._findReferenceValue('samp_named_user_type', namedUserType, 'name');
+					if (!gs.nil(nut.value)) {
+						sm.addQuery('named_user_type', nut.value);
+					} else {
+						// Cannot find a valid NUT
+						setError = true;
+					}
+				} else {
+					setError = true;
+				}
+			} else if (
+				(prod.value &amp;&amp; prod.record.publisher === this.PUBLISHER_SAP)
+				&amp;&amp; this.isSapPluginActive
+				&amp;&amp; new global.SAMPAjaxProcessor().checkSAPProductExistAsEngine(prod.value)) {
+				if (!gs.nil(sapLicenseMetric)) {
+					var slm = this._findReference(
+						'samp_sap_license_metric', {
+							license_metric_name: sapLicenseMetric,
+							engine: prod.value,
+						}
+					);
+					if (!gs.nil(slm.value)) {
+						sm.addQuery('sap_license_metric', slm.value);
+					} else {
+						setError = true;
+					}
+				} else {
+					setError = true;
+				}
+			} else if (!setError) {
+				if (anyLanguage) {
+					var sm1 = sm.addQuery('language', this.findLanguage(language));
+					sm1.addOrCondition('language', this.findLanguage(''));
+				} else {
+					sm.addQuery('language', this.findLanguage(language));
+				}
+				if (anyPlatform) {
+					var sm2 = sm.addQuery('platform', this.findPlatform(platform));
+					sm2.addOrCondition('platform', this.findPlatform(''));
+				} else {
+					sm.addQuery('platform', this.findPlatform(platform));
+				}
+				if (gs.nil(version)) {
+					sm.addQuery('version_operator', this.IS_ANYTHING_OPTION);
+				} else {
+					sm.addQuery('version', version);
+				}
+				if (gs.nil(edition)) {
+					sm.addQuery('edition_operator', this.IS_ANYTHING_OPTION);
+				} else {
+					sm.addQuery('edition', edition);
+				}
+			}
+			if (!setError) {
+				if (!returnSMList) {
+					sm.setLimit(1);
+					sm.query();
+					if (sm.next()) { model.value = sm.getUniqueValue(); }
+				} else {
+					sm.query();
+					var smList = [];
+					while (sm.next()) { smList.push(sm.getUniqueValue()); }
+					if (smList.length &gt; 0) { model.value = smList.join(','); }
+				}
+			}
+			if (gs.nil(model.value)) { setError = true; }
+		} else { setError = true; }
+		if (setError) {
+			model.error = 'Invalid';
+			model.mandatory = 'software_model';
+		}
+		return model;
+	},
+	_assignValue: function(val) {
+		return ((gs.nil(val)) ? '' : val);
+	},
+	_findReferenceValue: function(table, value, colName) {
+		var ret = { value: null, error: null };
+		var reference = new GlideRecord(table);
+		reference.addQuery(colName, value);
+		if (this.CONTENT_TABLES_REFERENCED.indexOf(table) !== -1 &amp;&amp; reference.isValidField('active')) {
+			reference.addQuery('active', true);
+		}
+		reference.query();
+		if (reference.next()) { ret.value = reference.getUniqueValue(); } else { ret.error = 'Invalid'; }
+		return ret;
+	},
+	_findReference: function(table, keyValues, columns) {
+		var ret = { value: null, error: 'Invalid', record: null };
+		new GlideQuery(table)
+			.getBy(keyValues, columns)
+			.ifPresent(function(row) {
+				ret.value = row.sys_id;
+				ret.error = null;
+				ret.record = row;
+			});
+		return ret;
+	},
+	_findProduct: function(productName, publisherName) {
+		var publisherSysId;
+		var product;
+		if (!gs.nil(publisherName)) {
+			publisherSysId = this._findReferenceValue('samp_sw_publisher', publisherName, 'name').value;
+		}
+		if (!gs.nil(publisherSysId)) {
+			product = this._findReference(
+				'samp_sw_product', { prod_name: productName, publisher: publisherSysId }, ['sys_id']
+			);
+		} else {
+			product = this._findReferenceValue('samp_sw_product', productName, 'prod_name');
+		}
+		return product;
+	},
+	_isRowEmpty: function(row) {
+		for (var prop in row) {
+			if (prop === 'custom_columns' || row[prop] === null) {
+				continue;
+			} else {
+				return false;
+			}
+		}
+		// Go through the custom columns
+		var customColumns = row.custom_columns;
+		for (var _ in customColumns) {
+			return false;
+		}
+		return true;
+	},
+	_isOraclePluginInstalled: function() {
+		var gr = new GlideRecord('samp_sw_metric_group');
+		return gr.get(this.ORACLE_METRIC_GROUP_ID);
+	},
+	_validateCustomDate: function(value) {
+		var glideDate = new GlideDate();
+		glideDate.setDisplayValue('0001-01-01');
+		glideDate.setDisplayValue(value);
+		var displayValue = glideDate.getDisplayValue() + '';
+		if (displayValue !== '0001-01-01') {
+			return '' + glideDate.getValue();
+		}
+		return null;
+	},
+	_validateCustomDateTime: function(value) {
+		var glideDateTime = new GlideDateTime('');
+		glideDateTime.setDisplayValue(value);
+		return '' + glideDateTime.getValue();
+	},
+	_validateCurrencyColumn: function(table, column, value) {
+		var sentinel = '-' + '271828'.repeat(17);
+		var gr = new GlideRecord(table);
+		gr.setValue(column, sentinel);
+		gr.setValue(column, value);
+		var parsed = gr.getValue(column);
+		return parsed !== sentinel ? parsed : null;
+	},
+	_validateCustomColumns: function(row, cc, reasons, mandFields) {
+		var key;
+		var elementName;
+		for (key in cc) {
+			var dict = this._getColumnDefinition(key);
+			if (cc[key]) {
+				switch (dict.internal_type) {
+				case 'currency':
+				case 'price':
+					if (!this._validateCurrencyColumn(dict.name, dict.element, cc[key])) {
+						this._addToList(reasons, this.CUSTOM_CURRENCY_COLUMN_ERROR(key));
+					}
+					break;
+				case 'integer':
+				case 'float':
+				case 'longint':
+				case 'decimal':
+					if (isNaN(cc[key])) {
+						this._addToList(reasons, this.CUSTOM_NUMERIC_COLUMN_ERROR(key));
+					}
+					break;
+				case 'glide_date':
+				case 'date':
+					var validatedDate = this._validateCustomDate(cc[key]);
+					if (!validatedDate) {
+						this._addToList(reasons, this.INVALID_DATE_CUSTOM_COLUMN_ERROR(key));
+					}
+					break;
+				case 'glide_date_time':
+				case 'datetime':
+				case 'due_date':
+				case 'calendar_date_time':
+					var validatedDateTime = this._validateCustomDateTime(cc[key]);
+					if (!validatedDateTime) {
+						this._addToList(reasons, this.INVALID_DATE_CUSTOM_COLUMN_ERROR(key));
+					}
+					break;
+				case 'reference':
+					var refTable = this._getCustomReferenceTable(this.ENTITLEMENT_FIELDS_LOOKUP[key].table, key);
+					var refID = this._getCustomReferenceID(key, cc[key], refTable.name);
+					if (!refID.value) {
+						this._addToList(reasons, this.CUSTOM_REFERENCE_COLUMN_ERROR(key, refTable.label));
+					}
+					break;
+				default:
+					if (this.SUPPORTED_CUSTOM_COLUMN_TYPES.indexOf(dict.internal_type) === -1
+						&amp;&amp; !gs.nil(dict.internal_type)) {
+						this._addToList(reasons, this.UNSUPPORTED_CUSTOM_COLUMN_TYPE_ERROR(key,
+							this._getDataTypeLabel(dict.internal_type)));
+					}
+					break;
+				}
+				var permissions = this.entitlementPermissions[dict.element];
+				if (permissions &amp;&amp; !permissions.create &amp;&amp; !this.IMPORT_FIELDS_LOOKUP[key]) {
+					this._addToList(reasons, this.ACL_CUSTOM_COLUMN_ERROR(key));
+				}
+			}
+		}
+		var that = this;
+		this._getMandatoryCustomColumns().forEach(function (dictColumn) {
+			key = dictColumn.column_label.toLowerCase();
+			elementName = dictColumn.element.toLowerCase();
+			if (!(key in cc || elementName in row)) {
+				that._addToList(mandFields, dictColumn.element);
+				that._addToList(reasons, that.MANDATORY_CUSTOM_COLUMN_NOT_PRESENT_ERROR(key));
+			} else if (gs.nil(cc[key]) &amp;&amp; gs.nil(row[elementName])) {
+				that._addToList(mandFields,	dictColumn.element);
+				that._addToList(reasons, that.MANDATORY_CUSTOM_COLUMN_EMPTY_ERROR(key));
+			}
+		});
+	},
+	_getCustomReferenceTable: function(table, key) {
+		var gr = new GlideRecord('sys_dictionary');
+		gr.addQuery('name', table);
+		gr.addQuery('column_label', key);
+		gr.query();
+		if (gr.next()) {
+			return {
+				name: gr.getValue('reference'),
+				label: gr.getDisplayValue('reference'),
+			};
+		}
+		return {
+			name: '',
+			label: '',
+		};
+	},
+	_getCustomReferenceID: function(key, value, refTable) {
+		var colName = this._findCustomRefColumnName(refTable);
+		return this._findReferenceValue(refTable, value, colName);
+	},
+	_findCustomRefColumnName: function(table) {
+		var gr = new GlideRecord(table);
+		return gr.getDisplayName();
+	},
+	_getDataTypeLabel: function(dataType) {
+		var gr = new GlideRecord('sys_glide_object');
+		gr.addQuery('name', dataType);
+		gr.query();
+		gr.next();
+		return gr.getValue('label');
+	},
+	_columnDefinitions: function () {
+		return new GlideQuery('sys_dictionary')
+			.where('name', 'IN', ['alm_license', 'alm_asset']);
+	},
+	_getColumnDefinition: function(label) {
+		return this._columnDefinitions()
+			.where('column_label', label)
+			.selectOne('name', 'element', 'column_label', 'internal_type', 'mandatory')
+			.orElse({});
+	},
+	_getMandatoryCustomColumns: function () {
+		return this._columnDefinitions()
+			.where('element', 'NOT IN', this.MANDATORY_NON_CUSTOM_FIELDS)
+			.where('mandatory', true)
+			.select('element', 'column_label');
+	},
+	_getPermissionsByElementName: function (table) {
+		var gr = new GlideRecord(table);
+		gr.initialize();
+		var glideElements = {};
+		var fields = gr.getFields();
+		for (var i = 0; i &lt; fields.size(); i++) {
+			var glideElement = fields.get(i);
+			glideElements[glideElement.getName()] = {
+				create: glideElement.canCreate(),
+				read: glideElement.canRead(),
+				write: glideElement.canWrite(),
+			};
+		}
+		return glideElements;
+	},
+	_getCustomColumns: function(entitlementImportSysId) {
+		var query = new GlideQuery('samp_import_custom_column')
+			.where('import_error', entitlementImportSysId)
+			.select('name', 'value')
+			.toArray(100);
+		var cc = {};
+		if (!gs.nil(query)) {
+			for (var i = 0; i &lt; query.length; i++) {
+				cc[query[i].name] = query[i].value;
+			}
+		}
+		return cc;
+	},
+	updateCustomColumnsTable: function() {
+		// Check if there is custom columns records already, if yes, do nothing
+		var customColumnsGR = new GlideRecord('samp_import_custom_column');
+		customColumnsGR.setLimit(1);
+		customColumnsGR.query();
+		if (!customColumnsGR.hasNext()) {
+			var importErrorGR = new GlideRecord('samp_entitlement_import');
+			importErrorGR.addQuery('error_status', 'open');
+			importErrorGR.addNotNullQuery('custom_columns');
+			importErrorGR.query();
+			while (importErrorGR.next()) {
+				var cc = JSON.parse(importErrorGR.getValue('custom_columns'));
+				for (var key in cc) {
+					customColumnsGR.initialize();
+					customColumnsGR.setValue('name', key);
+					customColumnsGR.setValue('value', cc[key]);
+					customColumnsGR.setValue('import_error', importErrorGR.getValue('sys_id'));
+					customColumnsGR.insert();
+				}
+			}
+		}
+	},
+	isValidContractRow: function(row) {
+		var check = !gs.nil(row) &amp;&amp; !gs.nil(row['Parent contract'])
+			&amp;&amp; !gs.nil(row['Start date']) &amp;&amp; !gs.nil(row['End date']);
+		return check;
+	},
+	createContract: function(row, bulkImportSysId) {
+		var parentcontractSysId;
+		var childcontractSysId;
+		if (this.isValidContractRow(row)) {
+			// check if state active or expired
+			var status = 'active';
+			var today = new GlideDate();
+			var startDate = new GlideDate();
+			startDate.setDisplayValue(row['Start date']);
+			var endDate = new GlideDate();
+			endDate.setDisplayValue(row['End date']);
+			if (endDate.getYearNoTZ() === 1900) {
+				endDate = '';
+			} else if (today.compareTo(endDate) &gt; 0) { // today is after enddate -&gt; 1
+				status = 'expired';
+			}
+			// check if parent exist
+			var parentcontractGr = new GlideRecord('ast_contract');
+			parentcontractGr.addQuery('vendor_contract', row['Parent contract']);
+			parentcontractGr.addQuery('starts', startDate);
+			parentcontractGr.addQuery('ends', endDate);
+			parentcontractGr.orderByDesc('sys_updated_on');
+			parentcontractGr.setLimit(1);
+			parentcontractGr.query();
+			if (parentcontractGr.next()) {
+				parentcontractSysId = parentcontractGr.getUniqueValue();
+			} else { // create parent
+				var contractGr = new GlideRecord('ast_contract');
+				contractGr.initialize();
+				contractGr.setValue('description', row.Description);
+				contractGr.setValue('po_number', row['PO Number']);
+				contractGr.setValue('vendor', this.canonicalManfID);
+				contractGr.setValue('contract_model', this.CONTRACT_MODEL_SW_LICENSE);
+				contractGr.setValue('vendor_contract', row['Parent contract']);
+				contractGr.setValue('starts', startDate);
+				contractGr.setValue('ends', endDate);
+				contractGr.setValue('state', status);
+				parentcontractSysId = contractGr.insert();
+				if (!gs.nil(parentcontractSysId)) {
+					this.create_m2m_mapping(bulkImportSysId, parentcontractSysId);
+				}
+			}
+			if (!gs.nil(row['Contract number'])) { // child contract
+				// check if child exist
+				var childcontractGr = new GlideRecord('ast_contract');
+				childcontractGr.addQuery('vendor_contract', row['Contract number']);
+				childcontractGr.addQuery('parent_contract', parentcontractSysId);
+				childcontractGr.addQuery('starts', startDate);
+				childcontractGr.addQuery('ends', endDate);
+				childcontractGr.orderByDesc('sys_updated_on');
+				parentcontractGr.setLimit(1);
+				childcontractGr.query();
+				if (childcontractGr.next()) {
+					childcontractSysId = childcontractGr.getUniqueValue();
+				} else { // create child and tie to parent
+					var contrGr = new GlideRecord('ast_contract');
+					contrGr.initialize();
+					contrGr.setValue('description', row.Description);
+					contrGr.setValue('po_number', row['PO Number']);
+					contrGr.setValue('vendor', this.canonicalManfID);
+					contrGr.setValue('contract_model', this.CONTRACT_MODEL_SW_LICENSE);
+					contrGr.setValue('vendor_contract', row['Contract number']);
+					contrGr.setValue('parent_contract', parentcontractSysId);
+					contrGr.setValue('starts', startDate);
+					contrGr.setValue('ends', endDate);
+					contrGr.setValue('state', status);
+					childcontractSysId = contrGr.insert();
+					if (!gs.nil(childcontractSysId)) {
+						this.create_m2m_mapping(bulkImportSysId, childcontractSysId);
+					}
+				}
+				return childcontractSysId;
+			}
+			return parentcontractSysId;
+		}
+		return 0;
+	},
+	create_m2m_mapping: function(bulkImportSysId, contractSysId) {
+		var m2mGr = new GlideRecord('samp_m2m_ast_contract_import');
+		m2mGr.addQuery('import_record', bulkImportSysId);
+		m2mGr.addQuery('contract', contractSysId);
+		m2mGr.query();
+		if (!m2mGr.next()) {
+			var m2mInsertGr = new GlideRecord('samp_m2m_ast_contract_import');
+			m2mInsertGr.initialize();
+			m2mInsertGr.setValue('import_record', bulkImportSysId);
+			m2mInsertGr.setValue('contract', contractSysId);
+			m2mInsertGr.insert();
+		}
+	},
+	getNumberOfEntitlementsBuildState: function(bulkImportSysId) {
+		var count = 0;
+		var gr = new GlideAggregate('samp_m2m_alm_license_import');
+		gr.addQuery('import_record', bulkImportSysId);
+		gr.addNotNullQuery('alm_license');
+		gr.addQuery('alm_license.install_status', 11);
+		gr.addAggregate('COUNT');
+		gr.query();
+		if (gr.next()) {
+			count = gr.getAggregate('COUNT');
+		}
+		return count;
+	},
+	type: 'SAMPEntitlementUtil',
+};]]&gt;&lt;/script&gt;&lt;sys_class_name&gt;sys_script_include&lt;/sys_class_name&gt;&lt;sys_created_by&gt;admin&lt;/sys_created_by&gt;&lt;sys_created_on&gt;2022-08-10 15:41:05&lt;/sys_created_on&gt;&lt;sys_id&gt;6fb221a047111110c859fee3846d43df&lt;/sys_id&gt;&lt;sys_mod_count&gt;0&lt;/sys_mod_count&gt;&lt;sys_name&gt;SAMPEntitlementUtil&lt;/sys_name&gt;&lt;sys_package display_value="SAM Scripts" source="x_807586_sam_scrip"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_package&gt;&lt;sys_policy&gt;protected&lt;/sys_policy&gt;&lt;sys_scope display_value="SAM Scripts"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_scope&gt;&lt;sys_update_name&gt;sys_script_include_6fb221a047111110c859fee3846d43df&lt;/sys_update_name&gt;&lt;sys_updated_by&gt;admin&lt;/sys_updated_by&gt;&lt;sys_updated_on&gt;2022-08-10 15:41:05&lt;/sys_updated_on&gt;&lt;/sys_script_include&gt;&lt;/record_update&gt;</payload>
+        <payload_hash>603578230</payload_hash>
+        <record_name>SAMPEntitlementUtil</record_name>
+        <reverted_from/>
+        <source>f3a2696847111110c859fee3846d43de</source>
+        <source_table>sys_update_set</source_table>
+        <state>previous</state>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:41:05</sys_created_on>
+        <sys_id>e7b221a047111110c859fee3846d43e2</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_recorded_at>182886a9f9d0000001</sys_recorded_at>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:41:05</sys_updated_on>
+        <type>Script Include</type>
+        <update_guid>23b221a093111110163dfd2a5670dbe2</update_guid>
+        <update_guid_history>23b221a093111110163dfd2a5670dbe2:603578230</update_guid_history>
+    </sys_update_version>
+    <sys_metadata_delete action="INSERT_OR_UPDATE">
+        <sys_audit_delete/>
+        <sys_class_name>sys_metadata_delete</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:52:32</sys_created_on>
+        <sys_db_object display_value="" name="sys_script_include">sys_script_include</sys_db_object>
+        <sys_id>05975418d98943878046c01d2a7ec2a1</sys_id>
+        <sys_metadata>6fb221a047111110c859fee3846d43df</sys_metadata>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SAMPEntitlementUtil</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_parent/>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_scope_delete display_value="">0011b6f5266e481c80012473557b6490</sys_scope_delete>
+        <sys_update_name>sys_script_include_6fb221a047111110c859fee3846d43df</sys_update_name>
+        <sys_update_version display_value="sys_script_include_6fb221a047111110c859fee3846d43df">e7b221a047111110c859fee3846d43e2</sys_update_version>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:52:32</sys_updated_on>
+    </sys_metadata_delete>
+</record_update>

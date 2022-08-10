@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampLogger</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>SampLogger</description>
+        <name>SampLogger</name>
+        <script><![CDATA[var SampLogger = Class.create();
+SampLogger.prototype = {
+	initialize: function() {
+		this.fDebugFlag = GlideProperties.getBoolean('com.snc.samp.debug', false);
+	},
+
+	// This method should be replaced by debug
+	info: function(source, message) {
+		if (this.fDebugFlag) {
+			gs.log(message, this.prefix + ':' + source);
+		}
+	},
+
+	error: function(source, message) {
+		gs.logError(message, this.prefix + ':' + source);
+	},
+
+	debugLogWith: function(source) {
+		if (!this.fDebugFlag) {
+			return function () {};
+		}
+		var _source = this.prefix + ':' + source;
+		var common = Array.prototype.slice.call(arguments, 1);
+		return function () {
+			var message = common.concat(Array.prototype.slice.call(arguments));
+			gs.log(message.join(', '), _source);
+		};
+	},
+
+	prefix: 'SAM',
+
+	type: 'SampLogger',
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:33</sys_created_on>
+        <sys_id>49d5a96c47111110c859fee3846d43bb</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampLogger</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_49d5a96c47111110c859fee3846d43bb</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:33</sys_updated_on>
+    </sys_script_include>
+</record_update>

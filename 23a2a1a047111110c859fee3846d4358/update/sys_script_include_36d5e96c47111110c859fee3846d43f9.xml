@@ -1,0 +1,654 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamNamedUserForSAPLicenseCalculator</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamNamedUserForSAPLicenseCalculator</name>
+        <script><![CDATA[var SamNamedUserForSAPLicenseCalculator = Class.create();
+SamNamedUserForSAPLicenseCalculator.prototype = Object.extendsObject(SamLicenseCalculator, {
+	initialize: function (coreCompany, product, reconResult) {
+		this.userTypes = {};
+		var userTypes = this.userTypes;
+		var entitlementMapConfig = {
+			parent: 'userType',
+			children: 'downgradeUserTypes',
+			mode: ReconciliationConstants.ENTITLEMENT_MAP_MODE.NO_GROUPING,
+			cmpFunc: function(entitlementSets) {
+				return function(a, b) {
+					return (entitlementSets[b].userTypeRank - entitlementSets[a].userTypeRank);
+				};
+			},
+			filter: function(userType, entitlementSets) {
+				return function(entSet) {
+					return (entitlementSets[entSet].userTypeRank <= userTypes[userType]);
+				};
+			},
+		};
+		SamLicenseCalculator.prototype.initialize.call(this, LicenseMetric.NAMED_USER_FOR_SAP,
+			ReconciliationConstants.SAP_METRIC_GROUP, coreCompany, product, reconResult, entitlementMapConfig, true,
+			true);
+		this.getAllUserTypes();
+		this.defaultUserTypeByConnection = {};
+		this.allocationCol = 'assigned_to';
+	},
+
+	allocatedPass: function() {
+		SamLicenseCalculator.prototype.allocatedPass.call(this);
+		this.flushUnlicensedEntities();
+	},
+
+	prepare: function() {
+		this.getDefaultUserTypeByConnection();
+		this.markSAPUsersWithUserType();
+		this.getAllEntitlementSet();
+		this.entitlementMap = this.generateEntitlementMap(this.entitlementSets);
+		this.debug('General information, Initial entitlement map: ' + JSON.stringify(this.entitlementMap.map));
+	},
+
+	getAllEntitlementSet: function() {
+		SamLicenseCalculator.prototype.getAllEntitlementSet.call(this);
+		var entitlementSetGr = new SampRecord(ReconciliationConstants.LICENSE_METRIC_RESULT_TABLE);
+		entitlementSetGr.addQuery('sys_id', Object.keys(this.entitlementSets));
+		entitlementSetGr.query();
+		var entitlementSet;
+		var filterChildren = function (userType) {
+			if (entitlementSet.userTypeRank <= this.userTypes[userType]) {
+				entitlementSet.downgradeUserTypesObj[userType] = true;
+			}
+		};
+
+		while (entitlementSetGr.next()) {
+			entitlementSet = this.entitlementSets[entitlementSetGr.getUniqueValue()];
+			entitlementSet.userType = entitlementSetGr.gr.software_model.named_user_type.toString();
+			entitlementSet.userTypeRank = this.userTypes[entitlementSet.userType];
+			entitlementSet.downgradeUserTypes = entitlementSetGr.gr.software_model.named_user_type.grants_access_to
+				.toString();
+			entitlementSet.downgradeUserTypesObj = {};
+			entitlementSet.downgradeUserTypes.split(',').filter(Boolean).forEach(filterChildren, this);
+		}
+	},
+
+	getAllocatedEntitlementSet: function(sysUser) {
+		var entitlementSets = SamLicenseCalculator.prototype.getAllocatedEntitlementSet.call(this, sysUser);
+		for (var entitlementSetAlloc in entitlementSets) {
+			var entitlementSet = this.entitlementSets[entitlementSetAlloc];
+			entitlementSets[entitlementSetAlloc].userType = entitlementSet.userType;
+			entitlementSets[entitlementSetAlloc].userTypeRank = entitlementSet.userTypeRank;
+			entitlementSets[entitlementSetAlloc].downgradeUserTypes = entitlementSet.downgradeUserTypes;
+			entitlementSets[entitlementSetAlloc].downgradeUserTypesObj = entitlementSet.downgradeUserTypesObj;
+		}
+		return entitlementSets;
+	},
+
+	runAllocatedPass: function() {
+		var sysUsersInBatch = {};
+		var sapUsersInBatch = {};
+		var sysUser;
+		var discoveredUser;
+		var addUserMapping = function(sapUsersGr) {
+			sysUsersInBatch[sapUsersGr.gr.discovered_user.user] = sapUsersGr.getValue('discovered_user');
+		};
+
+		var allocatedUserGr = this.getConsumersWithAllocation();
+		while (allocatedUserGr.next()) {
+			sysUsersInBatch[allocatedUserGr.getValue(this.allocationCol)] = true;
+			if (Object.keys(sysUsersInBatch).length >= ReconciliationConstants.BATCHSIZE) {
+				// Start to consume rights
+				sapUsersInBatch = this.getSAPUsers('discovered_user.user', Object.keys(sysUsersInBatch),
+					addUserMapping);
+				for (sysUser in sysUsersInBatch) {
+					discoveredUser = sysUsersInBatch[sysUser];
+					this.sapUsers = sapUsersInBatch[discoveredUser] || [];
+					this.runPassForUser(true, discoveredUser, sysUser);
+				}
+
+				// Clean up batch
+				sysUsersInBatch = {};
+				sapUsersInBatch = {};
+			}
+		}
+
+		// flush the batch
+		sapUsersInBatch = this.getSAPUsers('discovered_user.user', Object.keys(sysUsersInBatch), addUserMapping);
+		for (sysUser in sysUsersInBatch) {
+			discoveredUser = sysUsersInBatch[sysUser];
+			this.sapUsers = sapUsersInBatch[discoveredUser] || [];
+			this.runPassForUser(true, discoveredUser, sysUser);
+		}
+	},
+
+	runUnallocatedPass: function() {
+		var discoveredUsersInBatch = [];
+		var sapUsersInBatch = {};
+		var start = 0;
+		var end = ReconciliationConstants.BATCHSIZE;
+		var discoveredUser;
+
+		var unlicensedDiscoveredUsers = this.getUnlicensedDiscoveredUsers();
+		while (start < unlicensedDiscoveredUsers.length) {
+			discoveredUsersInBatch = unlicensedDiscoveredUsers.slice(start, end);
+			sapUsersInBatch = this.getSAPUsers('discovered_user', discoveredUsersInBatch);
+			for (var i = 0; i < discoveredUsersInBatch.length; i++) {
+				discoveredUser = discoveredUsersInBatch[i];
+				this.sapUsers = sapUsersInBatch[discoveredUser] || [];
+				this.runPassForUser(false, discoveredUser);
+			}
+
+			start = end;
+			end += ReconciliationConstants.BATCHSIZE;
+			end = end >= unlicensedDiscoveredUsers.length ? unlicensedDiscoveredUsers.length : end;
+			sapUsersInBatch = {};
+		}
+	},
+
+	getUnlicensedDiscoveredUsers: function() {
+		var unlicensedDiscoveredUsers = [];
+		var sapUsers = new SampAggregate(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+		sapUsers.setNoLimit(true);
+		sapUsers.addNotNullQuery('potential_license_required');
+		sapUsers.addQuery('is_reconciled', false);
+		sapUsers.setGroup(true);
+		sapUsers.groupBy('discovered_user');
+		sapUsers.addAggregate('MIN', 'named_user_type.rank');
+		sapUsers.orderByAggregate('MIN', 'named_user_type.rank'); // desc by default
+		sapUsers.orderBy('discovered_user');
+		sapUsers.query();
+		while (sapUsers.next()) {
+			unlicensedDiscoveredUsers.push(sapUsers.getValue('discovered_user'));
+		}
+		return unlicensedDiscoveredUsers.reverse();
+	},
+
+	getAllUserTypes: function () {
+		var userType;
+		var downgradeUserTypes;
+		var downgradeUserTypeIds = [];
+		var that = this;
+		var lmrGr = new SampRecord(ReconciliationConstants.LICENSE_METRIC_RESULT_TABLE);
+		lmrGr.addQuery('product', this.fSoftwareProduct);
+		lmrGr.addQuery('license_metric', this.fMetric);
+		lmrGr.addQuery('reconciliation_result', this.fReconResultId);
+		lmrGr.query();
+		while (lmrGr.next()) {
+			userType = lmrGr.gr.software_model.named_user_type;
+			this.userTypes[userType] = true;
+			downgradeUserTypes = lmrGr.gr.software_model.named_user_type.grants_access_to;
+			if (downgradeUserTypes) {
+				downgradeUserTypeIds = downgradeUserTypes.split(',');
+				for (var i = 0; i < downgradeUserTypeIds.length; i++) {
+					this.userTypes[downgradeUserTypeIds[i]] = true;
+				}
+			}
+		}
+
+		// Query rank for all the named user types
+		new GlideQuery('samp_named_user_type')
+			.where('sys_id', 'IN', Object.keys(this.userTypes))
+			.select('sys_id', 'rank')
+			.forEach(function (ut) {
+				that.userTypes[ut.sys_id] = parseInt(ut.rank, 10);
+			});
+	},
+
+	getDefaultUserTypeByConnection: function () {
+		var that = this;
+		new GlideQuery('samp_sap_connection')
+			.select('sys_id', 'price_list.default_named_user_type')
+			.forEach(function (c) {
+				if (that.userTypes.hasOwnProperty(c.price_list.default_named_user_type)) {
+					that.defaultUserTypeByConnection[c.sys_id] = c.price_list.default_named_user_type;
+				}
+			});
+	},
+
+	markSAPUsersWithUserType: function () {
+		// Clean up stamping for all the SAP users
+		var sapUsers = SAMPremiumUtils.getGlideMultipleUpdate(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+		sapUsers.addQuery('is_reconciled', false);
+		sapUsers.setValue('potential_license_required', '');
+		sapUsers.execute();
+
+		for (var userType in this.userTypes) {
+			var users = new SampRecord(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+			users.addNullQuery('potential_license_required');
+			users.addQuery('named_user_type', userType);
+			users.addQuery('is_reconciled', false);
+			users.setValue('potential_license_required', userType);
+			users.setWorkflow(false);
+			users.updateMultiple();
+		}
+
+		// Stamping users with empty named user type
+		for (var connection in this.defaultUserTypeByConnection) {
+			var defaultUserType = this.defaultUserTypeByConnection[connection];
+			var nullUsers = new SampRecord(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+			nullUsers.addNullQuery('potential_license_required');
+			nullUsers.addNullQuery('named_user_type');
+			nullUsers.addQuery('is_reconciled', false);
+			nullUsers.addQuery('sap_client.sap_connection', connection);
+			nullUsers.setValue('potential_license_required', defaultUserType);
+			nullUsers.setWorkflow(false);
+			nullUsers.updateMultiple();
+		}
+	},
+
+	getSAPUsers: function(queryBy, users, addUserMapping) {
+		var sapUsers = {};
+		var sapUsersGr = new SampRecord(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+		sapUsersGr.addQuery(queryBy, users);
+		sapUsersGr.addNotNullQuery('potential_license_required');
+		sapUsersGr.addQuery('is_reconciled', false);
+		sapUsersGr.query();
+
+		while (sapUsersGr.next()) {
+			var discoveredUser = sapUsersGr.getValue('discovered_user');
+			if (addUserMapping) {
+				addUserMapping(sapUsersGr);
+			}
+			var sapUser = sapUsersGr.getUniqueValue();
+			var userType = sapUsersGr.getValue('potential_license_required');
+			(sapUsers[discoveredUser] = sapUsers[discoveredUser] || {})[sapUser] = userType;
+		}
+		return sapUsers;
+	},
+
+	runPassForUser: function(allocatedPass, user, sysUser) {
+		var entitlementMapAlloc = null;
+		var entitlementSetsAlloc = null;
+		var rightsUsage = {};
+		var rightsNeeded = {};
+		var userInfo = {
+			sysId: user === true ? sysUser : user,
+			userForAlloc: sysUser,
+			virtual: null,
+			table: user === true ? 'sys_user' : 'samp_discovered_user',
+		};
+		var logStr = allocatedPass ? 'Allocated pass' : 'Unallocated pass';
+		this.debug(logStr, 'Consumer: ' + user, 'SAP system users: ' + JSON.stringify(this.sapUsers));
+
+		if (allocatedPass) {
+			entitlementSetsAlloc = this.getAllocatedEntitlementSet(sysUser);
+			entitlementMapAlloc = this.generateEntitlementMap(entitlementSetsAlloc);
+		}
+
+		this.debug(logStr, 'Consumer: ' + user,
+			'Allocated entitlement sets: ' + JSON.stringify(entitlementSetsAlloc));
+		this.debug(logStr, 'Consumer: ' + user,
+			'Unallocated entitlement sets: ' + JSON.stringify(this.entitlementSets));
+		this.consumeRights(rightsUsage, rightsNeeded, entitlementSetsAlloc, entitlementMapAlloc);
+		this.debug(logStr, 'Consumer: ' + user, 'Rights usage: ' + JSON.stringify(rightsUsage));
+		this.debug(logStr, 'Consumer: ' + user, 'Rights needed: ' + JSON.stringify(rightsNeeded));
+
+		if (Object.keys(rightsUsage).length !== 0) {
+			this.generateRightsUsedByForConsumer(rightsUsage, userInfo);
+			this.markSAPUsersAfterAssignment(rightsUsage);
+		}
+
+		if (Object.keys(rightsNeeded).length !== 0) {
+			this.generateRightsNeededByForConsumer(rightsNeeded, userInfo);
+			this.markUnlicensedSAPUsersAfterAssignment(rightsNeeded);
+		}
+	},
+
+	consumeRights: function(rightsUsage, rightsNeeded, entitlementSetsAlloc, entitlementMapAlloc) {
+		var sapUser;
+		var ent;
+		var toBeRemoved;
+
+		// draft consumption
+		for (sapUser in this.sapUsers) {
+			if (entitlementSetsAlloc) {
+				if (this.consumeSAPUserFromAlloc(sapUser, rightsUsage, entitlementSetsAlloc, entitlementMapAlloc)) {
+					continue;
+				}
+			}
+			this.consumeSAPUser(sapUser, rightsUsage);
+		}
+
+		// consume
+		toBeRemoved = [];
+		for (ent in rightsUsage) {
+			if (rightsUsage[ent].notAllocatedInUse > this.entitlementSets[ent].rights) {
+				rightsNeeded[ent] = {
+					rights: 1,
+					unlicensedSAPUsers: rightsUsage[ent].licensedSAPUsersUnalloc,
+				};
+				toBeRemoved.push(ent);
+			} else {
+				this.entitlementSets[ent].allocatedInUse += rightsUsage[ent].allocatedInUse;
+				this.entitlementSets[ent].allocatedNotInUse -= rightsUsage[ent].allocatedInUse;
+				this.entitlementSets[ent].notAllocatedInUse += rightsUsage[ent].notAllocatedInUse;
+				this.entitlementSets[ent].rights -= rightsUsage[ent].notAllocatedInUse;
+			}
+		}
+		toBeRemoved.forEach(function(elem) { delete rightsUsage[elem]; });
+
+		// populate allocatedNotInUse
+		if (entitlementSetsAlloc) {
+			for (ent in entitlementSetsAlloc) {
+				if (!rightsUsage.hasOwnProperty(ent)) {
+					this.initEntUsage(rightsUsage, ent);
+				}
+				rightsUsage[ent].allocatedNotInUse = entitlementSetsAlloc[ent].rights - rightsUsage[ent].allocatedInUse;
+			}
+		}
+	},
+
+	initEntUsage: function(rightsUsage, entitlement) {
+		rightsUsage[entitlement] = {
+			allocatedInUse: 0,
+			allocatedNotInUse: 0,
+			notAllocatedInUse: 0,
+			licensedSAPUsersAlloc: [],
+			licensedSAPUsersUnalloc: [],
+		};
+	},
+
+	wipeCovered: function(rightsUsage, ent) {
+		var sapUserIdx;
+		var sapUser;
+		var userType;
+		var prevEnt;
+		var covered;
+		var uncoveredAlloc;
+		var uncoveredUnalloc;
+		var entUsage;
+
+		covered = [];
+		for (prevEnt in rightsUsage) {
+			if (prevEnt === ent) {
+				continue;
+			}
+			entUsage = rightsUsage[prevEnt];
+			uncoveredAlloc = [];
+			uncoveredUnalloc = [];
+			for (sapUserIdx in entUsage.licensedSAPUsersAlloc) {
+				sapUser = entUsage.licensedSAPUsersAlloc[sapUserIdx];
+				userType = this.sapUsers[sapUser];
+				if (this.entitlementSets[ent].downgradeUserTypesObj.hasOwnProperty(userType)) {
+					covered.push(sapUser);
+				} else {
+					uncoveredAlloc.push(sapUser);
+				}
+			}
+			entUsage.licensedSAPUsersAlloc = uncoveredAlloc;
+
+			for (sapUserIdx in entUsage.licensedSAPUsersUnalloc) {
+				sapUser = entUsage.licensedSAPUsersUnalloc[sapUserIdx];
+				userType = this.sapUsers[sapUser];
+				if (this.entitlementSets[ent].downgradeUserTypesObj.hasOwnProperty(userType)) {
+					covered.push(sapUser);
+				} else {
+					uncoveredUnalloc.push(sapUser);
+				}
+			}
+			entUsage.licensedSAPUsersUnalloc = uncoveredUnalloc;
+
+			if (uncoveredAlloc.length === 0 && uncoveredUnalloc.length === 0) {
+				delete rightsUsage[prevEnt];
+			}
+		}
+		return covered;
+	},
+
+	checkCovered: function(entCandidates, rightsUsage) {
+		var entIdx;
+		var ent;
+
+		for (entIdx in entCandidates) {
+			ent = entCandidates[entIdx];
+			if (rightsUsage[ent]) {
+				return rightsUsage[ent];
+			}
+		}
+		return null;
+	},
+
+	consumeEntitlement: function(rightsUsage, ent, sapUser, inUseProp, userProp) {
+		var entUsage;
+
+		this.initEntUsage(rightsUsage, ent);
+		entUsage = rightsUsage[ent];
+		entUsage[inUseProp] = 1;
+		entUsage[userProp].push(sapUser);
+
+		var covered = this.wipeCovered(rightsUsage, ent);
+		entUsage[userProp].push.apply(entUsage[userProp], covered);
+	},
+
+	consumeSAPUserFromAlloc: function(sapUser, rightsUsage, entAlloc, entMapAlloc) {
+		var entCandidates = entMapAlloc.get(this.sapUsers[sapUser]) || [];
+		var entIdx;
+		var ent;
+		var entUsage;
+
+		// some entitlement set already covered?
+		entUsage = this.checkCovered(entCandidates, rightsUsage);
+		if (entUsage !== null) {
+			entUsage.licensedSAPUsersAlloc.push(sapUser);
+			return true;
+		}
+
+		for (entIdx in entCandidates) {
+			ent = entCandidates[entIdx];
+			if (entAlloc[ent].rights > 0) {
+				this.consumeEntitlement(rightsUsage, ent, sapUser, 'allocatedInUse', 'licensedSAPUsersAlloc');
+				return true;
+			}
+		}
+		return false;
+	},
+
+	consumeSAPUser: function(sapUser, rightsUsage) {
+		var ent;
+		var entIdx;
+		var entCandidates;
+		var entUsage;
+
+		// entitlements whose are able to cover sapUser
+		entCandidates = this.entitlementMap.get(this.sapUsers[sapUser]);
+		if (!entCandidates) {
+			return;
+		}
+		// some entitlement set already covered?
+		entUsage = this.checkCovered(entCandidates, rightsUsage);
+		if (entUsage !== null) {
+			entUsage.licensedSAPUsersUnalloc.push(sapUser);
+			return;
+		}
+
+		// fallback: use first candidate
+		ent = entCandidates[0];
+		// try to find an entitlement which has enough rights
+		for (entIdx in entCandidates) {
+			if (this.entitlementSets[entCandidates[entIdx]].rights > 0) {
+				ent = entCandidates[entIdx];
+				break;
+			}
+		}
+
+		this.consumeEntitlement(rightsUsage, ent, sapUser, 'notAllocatedInUse', 'licensedSAPUsersUnalloc');
+	},
+
+	markSAPUsersAfterAssignment: function(rightsUsage) {
+		for (var entSet in rightsUsage) {
+			this.markSAPUsersforEntSet(entSet, rightsUsage[entSet].licensedSAPUsersAlloc, true);
+			this.markSAPUsersforEntSet(entSet, rightsUsage[entSet].licensedSAPUsersUnalloc, false);
+		}
+	},
+
+	markSAPUsersforEntSet: function(entSet, licensedSAPUsers, isAllocated) {
+		var entitlementSet = isAllocated ? '1' + entSet : '0' + entSet;
+		this.licensedEntities[entitlementSet] = this.licensedEntities[entitlementSet] || [];
+		this.licensedEntities[entitlementSet].push.apply(this.licensedEntities[entitlementSet], licensedSAPUsers);
+		if (this.licensedEntities[entitlementSet].length >= ReconciliationConstants.BATCHSIZE) {
+			this.markLicensedEntities(entitlementSet);
+			this.licensedEntities[entitlementSet] = [];
+		}
+	},
+
+	markLicensedEntities: function(entitlementSet) {
+		// if entitlementSet[0] === '1', useAllocationOnly
+		var lmr = entitlementSet.substring(1);
+		var sapUser = new GlideRecord(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+		sapUser.addQuery('sys_id', this.licensedEntities[entitlementSet]);
+		sapUser.setValue('unlicensed_user', false);
+		sapUser.setValue('is_reconciled', true);
+		sapUser.setValue('is_allocated', entitlementSet[0] === '1');
+		sapUser.setValue('allocation_needed', false);
+		sapUser.setValue('license_metric_result', lmr);
+		sapUser.setValue('software_model_result', this.entitlementSets[lmr].smr);
+		sapUser.setWorkflow(false);
+		sapUser.updateMultiple();
+		SampReconProgressUtil.updateProgress(this.fReconResultId, sapUser.getRowCount());
+	},
+
+	markUnlicensedSAPUsersAfterAssignment: function(rightsNeeded) {
+		var sapUsers;
+		for (var entitlementSet in rightsNeeded) {
+			sapUsers = rightsNeeded[entitlementSet].unlicensedSAPUsers;
+			this.purchaseRights[entitlementSet].unlicensedSAPUserCnt += sapUsers.length;
+			this.unlicensedEntities[entitlementSet] = this.unlicensedEntities[entitlementSet] || [];
+			this.unlicensedEntities[entitlementSet].push.apply(this.unlicensedEntities[entitlementSet], sapUsers);
+
+			if (this.unlicensedEntities[entitlementSet].length >= ReconciliationConstants.BATCHSIZE) {
+				this.markUnlicensedEntities(entitlementSet);
+				this.unlicensedEntities[entitlementSet] = [];
+			}
+		}
+	},
+
+	markUnlicensedEntities: function(lmr) {
+		// Insert records in overflow table
+		this.insertRecordsInOverflowTable(lmr, this.unlicensedEntities[lmr],
+			ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+
+		var smr = this.entitlementSets[lmr].smr;
+		var sapUser = new GlideRecord(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+		sapUser.addQuery('sys_id', this.unlicensedEntities[lmr]);
+		sapUser.setValue('unlicensed_user', true);
+		sapUser.setValue('is_reconciled', true);
+		sapUser.setValue('software_model_result', smr);
+		sapUser.setValue('license_metric_result', lmr);
+		sapUser.setWorkflow(false);
+		sapUser.updateMultiple();
+		SampReconProgressUtil.updateProgress(this.fReconResultId, sapUser.getRowCount());
+	},
+
+	getPotentialSavingsForLMR: function(licenseMetricResultSysId) {
+		var sapUsers = new GlideRecord(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+		sapUsers.addQuery('license_metric_result', licenseMetricResultSysId);
+		sapUsers.addQuery('unlicensed_user', false);
+		sapUsers.orderBy('discovered_user.sys_id');
+		sapUsers.query();
+
+		var currDiscUser;
+		var prevDiscUser;
+		var currLMR;
+		var prevLMR;
+		var isReclaimable = false;
+		var isDialog = false;
+		var potentialSavings = 0;
+		var prevSavings = 0;
+		var minAvgPrice = 0;
+		minAvgPrice = parseFloat(this.getMinAvgPricePerRight(sapUsers.software_model_result));
+
+		var currLMRAvgPrice = 0;
+
+		while (sapUsers.next()) {
+			currDiscUser = sapUsers.getValue('discovered_user');
+			currLMR = sapUsers.getValue('license_metric_result');
+
+			var queryResult = new GlideQuery('samp_override_license_cost')
+				.getBy({
+					software_model: sapUsers.license_metric_result.software_model,
+					license_metric: sapUsers.license_metric_result.license_metric,
+				},
+				['license_cost', 'license_maintenance_cost'])
+				.orElse({
+					license_cost: 0,
+					license_maintenance_cost: 0,
+				});
+			var overrideCost = 0;
+			if (sapUsers.license_metric_result.maintenance) {
+				overrideCost = queryResult.license_maintenance_cost;
+			} else {
+				overrideCost = queryResult.license_cost;
+			}
+
+			if (currDiscUser !== prevDiscUser) {
+				// Process previous discovered user and reset flags
+				if (isReclaimable || !isDialog) {
+					potentialSavings += prevSavings;
+					isReclaimable = false;
+					isDialog = false;
+				}
+
+				var userLastActivity = sapUsers.discovered_user.last_activity;
+				if (sapUsers.discovered_user.is_locked
+					|| (!gs.nil(userLastActivity) && userLastActivity < gs.daysAgo(90))) {
+					isReclaimable = true;
+				}
+			}
+
+			if (!isReclaimable && !isDialog && sapUsers.getValue('user_type') === 'A') {
+				isDialog = true;
+			}
+
+			if (isReclaimable || !isDialog) {
+				if (gs.nil(currLMR)) {
+					prevSavings = minAvgPrice;
+				} else {
+					if (currLMR !== prevLMR) {
+						currLMRAvgPrice = overrideCost > 0.0 ? overrideCost
+							: parseFloat(sapUsers.license_metric_result.avg_price);
+					}
+					prevSavings = currLMRAvgPrice;
+				}
+			} else {
+				prevSavings = 0;
+			}
+
+			prevDiscUser = currDiscUser;
+			prevLMR = currLMR;
+		}
+
+		if (isReclaimable || !isDialog) {
+			potentialSavings += prevSavings;
+		}
+
+		return potentialSavings;
+	},
+
+	getMinAvgPricePerRight: function (modelResultId) {
+		var grLMR = new GlideRecord(ReconciliationConstants.LICENSE_METRIC_RESULT_TABLE);
+		grLMR.addQuery('software_model_result', modelResultId);
+		grLMR.orderBy('avg_price');
+		grLMR.query();
+		if (grLMR.next()) { return grLMR.getValue('avg_price'); }
+		return 0;
+	},
+
+	insertRemoveUnlicensedInstalls: function() {},
+
+	insertRemoveUnallocatedInstalls: function() {},
+
+	type: 'SamNamedUserForSAPLicenseCalculator',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:41</sys_created_on>
+        <sys_id>36d5e96c47111110c859fee3846d43f9</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamNamedUserForSAPLicenseCalculator</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_36d5e96c47111110c859fee3846d43f9</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:41</sys_updated_on>
+    </sys_script_include>
+</record_update>

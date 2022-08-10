@@ -1,0 +1,305 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampO365RestClient</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SampO365RestClient</name>
+        <script><![CDATA[var SampO365RestClient = Class.create();
+SampO365RestClient.prototype = {
+	initialize: function(restMessageName) {
+		this.req = new sn_ws.RESTMessageV2(restMessageName, 'Default GET');
+		this.powerBIreq = new sn_ws.RESTMessageV2(restMessageName, 'GET PowerBI Usage');
+		this.usersBaseHttpMethod = SampO365RestClient.getHttpMethod(restMessageName, 'GET Users');
+		this.reportsBaseHttpMethod = SampO365RestClient.getHttpMethod(restMessageName, 'GET Reports');
+		this.usersBaseEndPoint = SampO365RestClient.getEndPoint(restMessageName, 'GET Users');
+		this.reportsBaseEndPoint = SampO365RestClient.getEndPoint(restMessageName, 'GET Reports');
+		this.powerBIReportBaseHttpMethod = SampO365RestClient.getHttpMethod(restMessageName, 'GET PowerBI Usage');
+		this.powerBIreportsBaseEndPoint = SampO365RestClient.getEndPoint(restMessageName, 'GET PowerBI Usage');
+		this.usersBatchBaseEndPoint = SampO365RestClient.getEndPoint(restMessageName, 'POST Users By Batch');
+		this.usersBatchBaseHttpMethod = SampO365RestClient.getHttpMethod(restMessageName, 'POST Users By Batch');
+		this.nextLinkUsersPrincipalName = null;
+		this.fSampLogger = new SampLogger();
+	},
+
+	_httpReqExecuteRetry: function(request) {
+		var currAttempt = 0;
+		var maxAttempt = 3;
+		var retryAfter = 60000;
+		var res;
+		var status;
+		while (currAttempt < maxAttempt) {
+			res = request.execute();
+			status = res.getStatusCode();
+			if (status === 429) {
+				gs.sleep(retryAfter);
+			} else {
+				break;
+			}
+			currAttempt += 1;
+			retryAfter *= 2;
+		}
+		if (status !== 200) {
+			throw new Error(res.getBody());
+		}
+		return res;
+	},
+
+	_httpReq: function (request, name, method, endpoint, headers, body, tablename, recordID, filename) {
+		var res;
+		if (gs.nil(method) || gs.nil(endpoint)) { throw TypeError('Method and Endpoint must be defined'); }
+
+		request.setHttpMethod(method.toLowerCase());
+		request.setEndpoint(endpoint);
+		this.fSampLogger.info(this.type, name + ' endpoint : ' + endpoint);
+
+		if (!gs.nil(body)) { request.setRequestBody(JSON.stringify(body)); }
+
+		if (headers) {
+			for (var key in headers) {
+				if (headers.hasOwnProperty(key)) {
+					request.setRequestHeader(key, headers[key]);
+				}
+			}
+		}
+
+		var saveAsAttachment = !gs.nil(filename) && !gs.nil(tablename) && !gs.nil(recordID);
+		if (saveAsAttachment) {
+			request.saveResponseBodyAsAttachment(tablename, recordID, filename);
+		}
+
+		res = this._httpReqExecuteRetry(request);
+
+		if (saveAsAttachment) {
+			return res.getResponseAttachmentSysid();
+		}
+
+		return res.getBody();
+	},
+
+	getUsersPrincipalNameByPages: function() {
+		var usersEnd;
+		if (this.nextLinkUsersPrincipalName) { usersEnd = this.nextLinkUsersPrincipalName; } else {
+			usersEnd = this.usersBaseEndPoint
+					+ '/?$top='
+					+ SampO365RestClient.PAGE_SIZE_USERS_PRINCIPAL_NAME
+					+ '&$select=userPrincipalName,id';
+		}
+		var users;
+		users = this._httpReq(this.req, 'UsersPrincipalName', this.usersBaseHttpMethod, usersEnd, null, null, null, null, null);
+		this.nextLinkUsersPrincipalName = JSON.parse(users)['@odata.nextLink'];
+		return JSON.parse(users).value;
+	},
+
+	getUsersLicenses: function(usersPrincipalNames) {
+		var requests = this._getUserLicenseRequests(usersPrincipalNames);
+
+		var batchResponse = this._executeUserLicensesBatchRequest(requests);
+
+		var userLicenses = null;
+
+		if (batchResponse) { userLicenses = this._processUsersLicensesBatchRequest(batchResponse); }
+
+		return userLicenses;
+	},
+
+	_getUserLicenseRequests: function(usersPrincipalNames) {
+		var requests = [];
+
+		for (var i = 0; i < usersPrincipalNames.length; i++) {
+			requests.push(this._buildUserLicenseRequest(i, usersPrincipalNames[i]));
+		}
+
+		return requests;
+	},
+
+	_buildUserLicenseRequest: function(index, usersPrincipalName) {
+		var requestId = index;
+		var httpMethod = 'GET';
+		var licenseDetailsEndpoint = '/users/' + encodeURIComponent(usersPrincipalName) + '/licenseDetails?$select=skuPartNumber';
+
+		var userLicenseRequest = {
+			id: requestId,
+			method: httpMethod,
+			url: licenseDetailsEndpoint,
+		};
+
+		return userLicenseRequest;
+	},
+
+	_executeUserLicensesBatchRequest: function(requests) {
+		try {
+			var name = 'User Licenses';
+			var headers = { 'Content-Type': 'application/json' };
+			var body = { requests: requests };
+			var tablename = null;
+			var recordID = null;
+			var filename = null;
+
+			var batchResponse = this._httpReq(this.req, name, this.usersBatchBaseHttpMethod,
+				this.usersBatchBaseEndPoint, headers, body, tablename, recordID, filename);
+
+			return JSON.parse(batchResponse);
+		} catch (ex) {
+			this.fSampLogger.info(this.type, 'Unhandled exception while fetching license details: ' + ex);
+			return null;
+		}
+	},
+
+	_processUsersLicensesBatchRequest: function(batchResponse) {
+		var userLicenseResponses = batchResponse.responses;
+
+		var userLicenses = new Array(userLicenseResponses.length);
+
+		for (var i = 0; i < userLicenseResponses.length; i++) {
+			var userLicenseResponse = userLicenseResponses[i];
+
+			var requestId = userLicenseResponse.id;
+			var status = userLicenseResponse.status;
+
+			var skus = null;
+
+			// Microsoft returns resource not found error for users that do not have any licenses
+			if (status === 200) {
+				skus = userLicenseResponse.body.value;
+			}
+
+			userLicenses[requestId] = skus;
+		}
+
+		return userLicenses;
+	},
+
+	getUserActivity: function(profileGR) {
+		var ATTACHMENT_FILENAME = 'user_activity.csv';
+		var userActivityEnd = this.reportsBaseEndPoint + "/getOffice365ActiveUserDetail(period='D90')";
+		try {
+			// Attach CSV to integration profile
+			return this._httpReq(this.req, 'Users Activity', this.reportsBaseHttpMethod, userActivityEnd, null, null, profileGR.getTableName(), profileGR.getUniqueValue(), ATTACHMENT_FILENAME);
+		} catch (err) {
+			return SampO365RestClient.handleReportErr(err);
+		}
+	},
+
+	getPowerBIUserActivity: function(o365ProfileGr) {
+		var userActivityMap = {};
+		// Collect last day usage
+		var currentdate = new GlideDate();
+		currentdate.addDays(-1);
+		var userActivityEnd = this.powerBIreportsBaseEndPoint + "?startDateTime='" + currentdate + "T00:00:00'&endDateTime='" + currentdate + "T23:59:59'";
+		try {
+			var continuationToken = this.callPowerBIAPI(userActivityEnd, userActivityMap);
+			while (continuationToken != null) {
+				userActivityEnd = this.powerBIreportsBaseEndPoint + "?continuationToken='" + continuationToken + "'";
+				continuationToken = this.callPowerBIAPI(userActivityEnd, userActivityMap);
+			}
+		} catch (err) {
+			if (!o365ProfileGr.custom_properties || o365ProfileGr.custom_properties.powerBIAPIStatus === 'success') {
+				o365ProfileGr.custom_properties.powerBIAPIStatus = 'failed';
+				o365ProfileGr.update();
+			}
+			var errMsg = null;
+			try {
+				errMsg = JSON.parse(err.message);
+			} catch (jsonParseErr) {
+				new SampLogger().info('SampO365RestClient',
+					'Error occured while collecting PowerBI usage. Check if api access is authorized correctly');
+				return {};
+			}
+			if (errMsg.hasOwnProperty('error') && (errMsg.error).code === 'PowerBINotAuthorizedException') {
+				new SampLogger().info('SampO365RestClient', 'PowerBI api access is not authorized: ' + err);
+				return {};
+			}
+			new SampLogger().info('SampO365RestClient', 'Unhandled exception while collecting PowerBI usage: ' + err);
+			return SampO365RestClient.handleReportErr(err);
+		}
+
+		if (o365ProfileGr.custom_properties && o365ProfileGr.custom_properties.powerBIAPIStatus === 'failed') {
+			o365ProfileGr.custom_properties.powerBIAPIStatus = 'success';
+			o365ProfileGr.update();
+		}
+
+		return userActivityMap;
+	},
+
+	callPowerBIAPI: function(userActivityEnd, userActivityMap) {
+		var response = this._httpReq(this.powerBIreq, 'PowerBI Activity', this.powerBIReportBaseHttpMethod, userActivityEnd, null, null, null, null, null);
+		var parsedRes = JSON.parse(response);
+		if (parsedRes !== null && parsedRes.activityEventEntities !== null
+			&& parsedRes.activityEventEntities.length > 0) {
+			var activities = parsedRes.activityEventEntities;
+			for (var index = 0; index < activities.length; index++) {
+				if (activities[index].UserType === 0 && (!userActivityMap[activities[index].UserId]
+														|| userActivityMap[activities[index].UserId]
+														< new GlideDateTime(activities[index].CreationTime))) {
+					userActivityMap[activities[index].UserId] = new GlideDateTime(activities[index].CreationTime);
+				}
+			}
+		}
+		return parsedRes.continuationToken;
+	},
+
+	getActivations: function(profileGR) {
+		var ATTACHMENT_FILENAME = 'user_activation.csv';
+		var activationInfoEnd = this.reportsBaseEndPoint + '/getOffice365ActivationsUserDetail';
+		try {
+			return this._httpReq(this.req, 'Activation Info', this.reportsBaseHttpMethod, activationInfoEnd, null, null, profileGR.getTableName(), profileGR.getUniqueValue(), ATTACHMENT_FILENAME);
+		} catch (err) {
+			return SampO365RestClient.handleReportErr(err);
+		}
+	},
+
+	type: 'SampO365RestClient',
+};
+
+SampO365RestClient.getEndPoint = function(restMessageName, functionName) {
+	var httpMethodGr = new GlideRecord('sys_rest_message_fn');
+	httpMethodGr.addQuery('rest_message.name', restMessageName);
+	httpMethodGr.addQuery('function_name', functionName);
+	httpMethodGr.query();
+	if (httpMethodGr.next()) { return httpMethodGr.rest_endpoint; }
+	return null;
+};
+
+SampO365RestClient.getHttpMethod = function(restMessageName, functionName) {
+	var httpMethodGr = new GlideRecord('sys_rest_message_fn');
+	httpMethodGr.addQuery('rest_message.name', restMessageName);
+	httpMethodGr.addQuery('function_name', functionName);
+	httpMethodGr.query();
+	if (httpMethodGr.next()) { return httpMethodGr.getValue('http_method'); }
+	return null;
+};
+
+SampO365RestClient.handleReportErr = function(err) {
+	var errMsg;
+	try {
+		errMsg = JSON.parse(err.message);
+	} catch (jsonParseErr) {
+		new SampLogger().info('SampO365RestClient', 'Error occured while parsing JSON response.');
+		return null;
+	}
+
+	if (errMsg.hasOwnProperty('error') && (errMsg.error).code === 'NotFound') {
+		new SampLogger().info('SampO365RestClient', 'This error is a false error : ' + err);
+		return {};
+	}
+	return null;
+};
+
+SampO365RestClient.PAGE_SIZE_USERS_PRINCIPAL_NAME = 500;]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:34</sys_created_on>
+        <sys_id>0dd5a96c47111110c859fee3846d43c0</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampO365RestClient</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_0dd5a96c47111110c859fee3846d43c0</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:34</sys_updated_on>
+    </sys_script_include>
+</record_update>

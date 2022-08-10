@@ -1,0 +1,232 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamSoftwareModelTree</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamSoftwareModelTree</name>
+        <script><![CDATA[var SamSoftwareModelTree = Class.create();
+
+var EQUAL = 0;
+var SUBSET = 1;
+var INTERSECT = 2;
+var SUPERSET = 3;
+var DISJOINT = 4;
+
+SamSoftwareModelTree.prototype = {
+	initialize: function(softwareModels) {
+		this.softwareModels = softwareModels;
+		this.trees = [];
+		this.nodes = {};
+		this.treeIndex = {};
+		this.buildTree();
+		this.buildTreeIndex();
+	},
+
+	buildTree: function() {
+		for (var i = 0; i < this.softwareModels.length; i++) {
+			this.insertSoftwareModel(this.softwareModels[i]);
+		}
+	},
+
+	buildTreeIndex: function() {
+		var that = this;
+		for (var i = 0; i < this.trees.length; i++) {
+			this.postorder(this.trees[i], function(node) {
+				that.treeIndex[node.model.sysId] = node;
+			});
+		}
+	},
+
+	insertSoftwareModel: function(model) {
+		var node = {
+			model: model,
+			children: [],
+		};
+		var treeNodes = this.trees;
+		var located;
+		do {
+			located = true;
+			for (var j = treeNodes.length - 1; j >= 0; j--) {
+				var relationship = SamSoftwareModelTree.relationshipBetween(model, treeNodes[j].model);
+				if (relationship === SUBSET) {
+					treeNodes = treeNodes[j].children;
+					located = false;
+					break;
+				}
+
+				if (relationship === SUPERSET) {
+					node.children.push(treeNodes[j]);
+					treeNodes.splice(j, 1);
+				}
+			}
+		} while (!located);
+		treeNodes.push(node);
+		this.nodes[model.sysId] = node;
+	},
+
+	toArray: function() {
+		var arr = [];
+		for (var i = 0; i < this.trees.length; i++) {
+			this.postorder(this.trees[i], function(node) {
+				arr.push(node.model.sysId);
+			});
+		}
+		return arr;
+	},
+
+	postorder: function(_node, callback) {
+		var traverse = function(node) {
+			for (var child in node.children) {
+				traverse(node.children[child]);
+			}
+			callback(node);
+		};
+		traverse(_node);
+	},
+
+	type: 'SamSoftwareModelTree',
+};
+
+// check the relationship between two software models
+SamSoftwareModelTree.relationshipBetween = function(lhs, rhs) {
+	var relationship = EQUAL;
+	var columnRelationship;
+	for (var field in lhs) {
+		if (field === 'sysId') {
+			continue;
+		}
+
+		if (field === 'installCondition' || field === 'databaseOptionCondition' || field === 'subscriptionCondition') {
+			columnRelationship = SamSoftwareModelTree.compareCondition(lhs[field], rhs[field]);
+		} else if (field === 'dbOption') {
+			columnRelationship = SamSoftwareModelTree.compareDbOption(lhs[field], rhs[field]);
+		} else {
+			columnRelationship = SamSoftwareModelTree.CompareColumn(lhs[field], rhs[field]);
+		}
+
+		if (columnRelationship === DISJOINT) {
+			return DISJOINT;
+		}
+		relationship = SamSoftwareModelTree.relationshipAccumulate(relationship, columnRelationship);
+	}
+	return relationship;
+};
+
+SamSoftwareModelTree.compareCondition = function(conditionL, conditionR) {
+	if (conditionL && conditionR) {
+		return conditionL === conditionR ? EQUAL : DISJOINT;
+	}
+
+	if (conditionL) {
+		return SUBSET;
+	}
+
+	if (conditionR) {
+		return SUPERSET;
+	}
+
+	return EQUAL;
+};
+
+SamSoftwareModelTree.compareDbOption = function(optionL, optionR) {
+	return optionL === optionR ? EQUAL : DISJOINT;
+};
+
+SamSoftwareModelTree.CompareColumn = function(lhsField, rhsField) {
+	var predicateL = lhsField[0];
+	var valueL = lhsField[1];
+	var predicateR = rhsField[0];
+	var valueR = rhsField[1];
+
+	var columnRelationship = EQUAL;
+	switch (predicateL) {
+	case 'is_anything':
+		columnRelationship = predicateR === 'is_anything' ? EQUAL : SUPERSET;
+		break;
+	case 'is':
+		if (predicateR === 'is_anything') {
+			columnRelationship = SUBSET;
+		} else if (predicateR === 'is') {
+			columnRelationship = valueL === valueR ? EQUAL : DISJOINT;
+		} else { // starts_with
+			columnRelationship = valueL.startsWith(valueR, 0) ? SUBSET : DISJOINT;
+		}
+		break;
+	case 'starts_with':
+		if (predicateR === 'is_anything') {
+			columnRelationship = SUBSET;
+		} else if (predicateR === 'is') {
+			columnRelationship = valueR.startsWith(valueL, 0) ? SUPERSET : DISJOINT;
+		} else if (valueR === valueL) {
+			columnRelationship = EQUAL;
+		} else if (valueR.startsWith(valueL, 0)) {
+			columnRelationship = SUPERSET;
+		} else if (valueL.startsWith(valueR, 0)) {
+			columnRelationship = SUBSET;
+		} else {
+			columnRelationship = DISJOINT;
+		}
+		break;
+	default:
+		return undefined;
+	}
+	return columnRelationship;
+};
+
+SamSoftwareModelTree.relationshipAccumulate = function(accumulator, currentValue) {
+	switch (accumulator) {
+	case EQUAL:
+		return currentValue;
+	case SUBSET:
+		if (currentValue === SUBSET || currentValue === EQUAL) {
+			return SUBSET;
+		}
+
+		if (currentValue === DISJOINT) {
+			return DISJOINT;
+		}
+
+		return INTERSECT;
+
+	case SUPERSET:
+		if (currentValue === SUPERSET || currentValue === EQUAL) {
+			return SUPERSET;
+		}
+
+		if (currentValue === DISJOINT) {
+			return DISJOINT;
+		}
+
+		return INTERSECT;
+
+	case DISJOINT:
+		return DISJOINT;
+
+	case INTERSECT:
+		if (currentValue === DISJOINT) {
+			return DISJOINT;
+		}
+
+		return INTERSECT;
+
+	default:
+		return undefined;
+	}
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:34</sys_created_on>
+        <sys_id>d5d5a96c47111110c859fee3846d43ee</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamSoftwareModelTree</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_d5d5a96c47111110c859fee3846d43ee</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:34</sys_updated_on>
+    </sys_script_include>
+</record_update>

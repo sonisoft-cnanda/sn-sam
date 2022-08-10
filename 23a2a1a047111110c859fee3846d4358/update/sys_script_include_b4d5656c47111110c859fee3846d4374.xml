@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamOracleNamedUserPlusLicenseCalculator</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamOracleNamedUserPlusLicenseCalculator</name>
+        <script><![CDATA[var SamOracleNamedUserPlusLicenseCalculator = Class.create();
+SamOracleNamedUserPlusLicenseCalculator.prototype = Object.extendsObject(SamOracleLicenseCalculator, {
+	initialize: function(coreCompany, product, reconResult, singleLicenseMetric, calculateRightsNeeded) {
+		SamOracleLicenseCalculator.prototype.initialize.call(this, coreCompany, product, reconResult,
+			LicenseMetric.NAMED_USER_PLUS_FOR_ORACLE, singleLicenseMetric, calculateRightsNeeded);
+	},
+
+	_getCoreRights: function(swModelComboDeviceConfiguration) {
+		var userPlusRightsNeededForDevice = this.getUserPlusRightsUsedForDevice(
+			swModelComboDeviceConfiguration, swModelComboDeviceConfiguration.deviceInfo.config.instances
+		);
+
+		return userPlusRightsNeededForDevice;
+	},
+	getRightsforEdition: function(cpuCount) {
+		if (this.standardEditionType === 2) {
+			return 1;
+		}
+		return cpuCount;
+	},
+
+	_getMetricAttribute: function(cloudDevice, editionType, modelId) {
+		if (!gs.nil(editionType)) { // will be populated for Standard
+			if (cloudDevice) {
+				return this.metricAttributes[modelId][ReconciliationConstants.MIN_NUPS_ON_CLOUD];
+			}
+			if (editionType === 0 || editionType === 1) {
+				return this.metricAttributes[modelId][ReconciliationConstants.MIN_NUPS];
+			} if (editionType === 2) {
+				return this.metricAttributes[modelId][ReconciliationConstants.MIN_NUPS_PER_SERVER];
+			}
+		}
+		return this.metricAttributes[modelId][ReconciliationConstants.MIN_USER_PER_PROCESSOR];
+	},
+
+	getUserPlusRightsUsedForDevice: function(swModelComboDeviceConfiguration, instances) {
+		var i;
+		var userCount = 0;
+		var modelId = swModelComboDeviceConfiguration.model.replace('$', '');
+		var minUserCount;
+		var calSysIds = [];
+		var dbInstanceSysIds = [];
+
+		var paasDevice = this._isPaaSDevice(swModelComboDeviceConfiguration.deviceInfo.sysId);
+
+		for (i = 0; i < swModelComboDeviceConfiguration.swModelCombo.length; i++) {
+			var dbInstances = instances[swModelComboDeviceConfiguration.swModelCombo[i]];
+
+			for (var instance in dbInstances) {
+				userCount += parseInt(dbInstances[instance], 10);
+				dbInstanceSysIds.push(instance);
+			}
+		}
+
+		// find the duplicated user breakdown count
+		var calGr = new GlideRecord('samp_sw_client_access');
+		if (paasDevice) {
+			calGr.addQuery('cloud_database_inst', 'IN', dbInstanceSysIds);
+		} else {
+			calGr.addQuery('database_instance', 'IN', dbInstanceSysIds);
+		}
+		calGr.query();
+		while (calGr.next()) {
+			calSysIds.push(calGr.getUniqueValue());
+		}
+
+		var duplicateUserCount = 0;
+		var breakdownGr = new GlideAggregate('samp_sw_client_access_breakdown');
+		breakdownGr.addQuery('client_access', 'IN', calSysIds);
+		breakdownGr.addQuery('active', true);
+		breakdownGr.groupBy('user');
+		breakdownGr.groupBy('device');
+		breakdownGr.addAggregate('COUNT');
+		breakdownGr.query();
+		while (breakdownGr.next()) {
+			if (gs.nil(breakdownGr.getValue('user')) && gs.nil(breakdownGr.getValue('device'))) {
+				continue;
+			}
+			duplicateUserCount += (breakdownGr.getAggregate('COUNT') - 1);
+		}
+
+		// dedup for Oracle database user
+		if (GlidePluginManager.isActive('sn_itom_oracleglas')) {
+			breakdownGr = new GlideAggregate('samp_sw_client_access_breakdown');
+			breakdownGr.addQuery('client_access', 'IN', calSysIds);
+			breakdownGr.addQuery('active', true);
+			breakdownGr.addNullQuery('user');
+			breakdownGr.addNullQuery('device');
+			breakdownGr.addNotNullQuery('database_user.username');
+			breakdownGr.groupBy('database_user.username');
+			breakdownGr.addAggregate('COUNT');
+			breakdownGr.addHaving('COUNT', 'database_user.username', '>', '1');
+			breakdownGr.query();
+			while (breakdownGr.next()) {
+				duplicateUserCount += (breakdownGr.getAggregate('COUNT') - 1);
+			}
+		}
+
+		userCount -= duplicateUserCount;
+
+		var standardEdition = this._getStandardEditionType(modelId);
+		var attributeValue = this._getMetricAttribute(
+			this._getHostedOnCloud(swModelComboDeviceConfiguration.deviceInfo.sysId),
+			standardEdition, modelId
+		);
+
+		minUserCount = swModelComboDeviceConfiguration.rights * attributeValue;
+		if (!gs.nil(standardEdition) && standardEdition !== 2) {
+			minUserCount = attributeValue;
+		} else if (standardEdition === 2 && this._isPaaSDevice(swModelComboDeviceConfiguration.deviceInfo.sysId)) {
+		// TO:DO: update 8 with Max attribute
+			minUserCount = (Math.ceil(swModelComboDeviceConfiguration.rights / 8)) * attributeValue;
+		}
+		return userCount > minUserCount ? userCount : minUserCount;
+	},
+
+	markLicensedEntities: function(entitlementSet) {
+		SamOracleLicenseCalculator.prototype.markLicensedEntities.call(this, entitlementSet);
+
+		var lmr = entitlementSet.substring(1);
+
+		var calSysIds = this._getCalByInstall(this.licensedEntities[entitlementSet]);
+		// Insert records in overflow table
+		this.insertRecordsInOverflowTable(lmr, calSysIds, ReconciliationConstants.CLIENT_ACCESS_TABLE);
+
+		var calGr = new GlideRecord(ReconciliationConstants.CLIENT_ACCESS_TABLE);
+		calGr.addQuery('sys_id', calSysIds);
+		calGr.addNullQuery('license_metric_result');
+		calGr.setValue('unlicensed_client_access', false);
+		calGr.setValue('is_reconciled', true);
+		calGr.setValue('license_metric_result', lmr);
+		calGr.setValue('software_model_result', this.entitlementSets[lmr].smr);
+		calGr.setWorkflow(false);
+		calGr.updateMultiple();
+	},
+
+	markUnlicensedEntities: function(lmr) {
+		SamOracleLicenseCalculator.prototype.markUnlicensedEntities.call(this, lmr);
+
+		var calSysIds = this._getCalByInstall(this.unlicensedEntities[lmr]);
+
+		// Insert records in overflow table
+		this.insertRecordsInOverflowTable(lmr, calSysIds, ReconciliationConstants.CLIENT_ACCESS_TABLE);
+
+		var smr = this.entitlementSets[lmr].smr;
+		var calGr = new GlideRecord(ReconciliationConstants.CLIENT_ACCESS_TABLE);
+		calGr.addQuery('sys_id', calSysIds);
+		calGr.addNullQuery('license_metric_result');
+		calGr.setValue('unlicensed_client_access', true);
+		calGr.setValue('is_reconciled', true);
+		calGr.setValue('software_model_result', smr);
+		calGr.setValue('license_metric_result', lmr);
+		calGr.setWorkflow(false);
+		calGr.updateMultiple();
+	},
+
+	_getCalByInstall: function(swInstalls) {
+		var calSysIds = [];
+		var dbInstanceSysIds = [];
+		var dbInstanceGr = new GlideRecord(ReconciliationConstants.DB_INSTANCE_TABLE);
+		dbInstanceGr.addQuery('software_install', 'IN', swInstalls);
+		dbInstanceGr.query();
+		while (dbInstanceGr.next()) {
+			dbInstanceSysIds.push(dbInstanceGr.getUniqueValue());
+		}
+
+		var dbColumns = ['database_instance', 'cloud_database_inst'];
+		for (var index = 0; index < dbColumns.length; index += 1) {
+			var calGr = new GlideRecord(ReconciliationConstants.CLIENT_ACCESS_TABLE);
+			calGr.addQuery(dbColumns[index], 'IN', dbInstanceSysIds);
+			calGr.query();
+			while (calGr.next()) {
+				calSysIds.push(calGr.getUniqueValue());
+			}
+		}
+		return calSysIds;
+	},
+
+	type: 'SamOracleNamedUserPlusLicenseCalculator',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:33</sys_created_on>
+        <sys_id>b4d5656c47111110c859fee3846d4374</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamOracleNamedUserPlusLicenseCalculator</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_b4d5656c47111110c859fee3846d4374</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:33</sys_updated_on>
+    </sys_script_include>
+</record_update>

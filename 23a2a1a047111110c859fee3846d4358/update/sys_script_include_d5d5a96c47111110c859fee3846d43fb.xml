@@ -1,0 +1,460 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamEntitlementMap</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamEntitlementMap</name>
+        <script><![CDATA[var SamEntitlementMap = Class.create();
+SamEntitlementMap.prototype = {
+	initialize: function(softwareModelTree, entitlementSets, config) {
+		this.entitlementSets = entitlementSets;
+		this._cmpChildrenCnt = this._cmpChildrenCnt.bind(this);
+		this.softwareModelTree = softwareModelTree;
+		// key: string combination of software model ids
+		// value: list of entitlement set
+		this.rawMap = {};
+		// entitlement -> smModel
+		this.relationMap = {};
+		// key: string combination of software model ids
+		// value: cheapest entitlement set
+		this.cheapest = {};
+
+		this.parentProp = config.parent;
+		this.childrenProp = config.children;
+		var that = this;
+		this.cmpFunc = config.cmpFunc ? config.cmpFunc(this.entitlementSets) : function(a, b) {
+			return that._cmpChildrenCnt(a, b)
+				|| (that.entitlementSets[a].hasSa - that.entitlementSets[b].hasSa);
+		};
+		this.filter = config.filter;
+		this.onNewEntry = config.onNewEntry;
+
+		var entitlementSet;
+		for (var entitlementSetId in entitlementSets) {
+			entitlementSet = entitlementSets[entitlementSetId];
+			this.addEntitlement(entitlementSetId, entitlementSet[this.parentProp], entitlementSet[this.childrenProp],
+				entitlementSet.hasSa);
+		}
+		this.groupBySoftwareModel();
+		this.sort();
+		this._initPreserveOriginal();
+		this._initInvokeOnNewEntry();
+	},
+
+	addEntitlement: function(entitlementSetId, parentId, childrenIdsStr, sa) {
+		this.relationMap[entitlementSetId] = sa ? parentId + '$' : parentId;
+
+		var childrenIds = (childrenIdsStr || '').split(',').filter(Boolean);
+		childrenIds.push(parentId);
+
+		var targetChildren = {};
+		for (var i = 0; i < childrenIds.length; i++) {
+			var childId = childrenIds[i];
+			if (targetChildren[childId]) {
+				continue; // Already added? No further processing needed
+			}
+			if (this.softwareModelTree) {
+				var softwareModelNode = this.softwareModelTree.nodes[childId];
+				this.softwareModelTree.postorder(softwareModelNode, function(node) {
+					targetChildren[node.model.sysId] = true;
+				});
+			} else {
+				targetChildren[childId] = true;
+			}
+		}
+
+		for (var key in targetChildren) {
+			(this.rawMap[key] = this.rawMap[key] || []).push(entitlementSetId);
+		}
+	},
+
+	groupBySoftwareModel: function() {
+		this.map = {};
+		for (var swModels in this.rawMap) {
+			this.groupEntry(swModels);
+		}
+	},
+
+	/**
+	 * Sort each entry
+	 */
+	sort: function() {
+		for (var swModelComboStr in this.rawMap) {
+			this.sortEntry(swModelComboStr);
+		}
+	},
+
+	_initPreserveOriginal: function() {
+		this.originalMap = {};
+		for (var swModelComboStr in this.rawMap) {
+			this.preserveOriginal(swModelComboStr);
+		}
+	},
+
+	_initInvokeOnNewEntry: function() {
+		for (var swModelComboStr in this.rawMap) {
+			this.onNewEntry(this, swModelComboStr);
+		}
+	},
+
+	get: function(swModelComboStr) {
+		// call _getRaw to ensure the cache is ready
+		this._getRaw(swModelComboStr);
+
+		return this.map[swModelComboStr];
+	},
+
+	getOriginal: function(swModelComboStr) {
+		// call _getRaw to ensure the cache is ready
+		this._getRaw(swModelComboStr);
+
+		return this.originalMap[swModelComboStr];
+	},
+
+	_getRaw: function(swModelComboStr) {
+		if (!this.rawMap.hasOwnProperty(swModelComboStr)) { // cache miss, get back to work!
+			var delIndex = swModelComboStr.lastIndexOf(',');
+
+			if (delIndex < 0) {
+				// All support softwareModels are prepared in the cache initially,
+				// missed single software model must be unsupported
+				this.rawMap[swModelComboStr] = null;
+			} else {
+				var last = swModelComboStr.substr(delIndex + 1);
+				var prefix = swModelComboStr.substr(0, delIndex);
+
+				this.rawMap[swModelComboStr] = this._intersection(this._getRaw(prefix), this._getRaw(last));
+			}
+
+			this.groupEntry(swModelComboStr);
+			this.sortEntry(swModelComboStr);
+			this.preserveOriginal(swModelComboStr);
+			this.onNewEntry(this, swModelComboStr);
+		}
+
+		return this.rawMap[swModelComboStr];
+	},
+
+	_cmpChildrenCnt: function(entitlementIdL, entitlementIdR) {
+		return this.entitlementSets[entitlementIdL].childrenCnts - this.entitlementSets[entitlementIdR].childrenCnts;
+	},
+
+	_intersection: function(a, b) {
+		if (a === null || b === null) {
+			return null;
+		}
+
+		var result = [];
+		for (var idx in a) {
+			if (b.indexOf(a[idx]) >= 0) {
+				result.push(a[idx]);
+			}
+		}
+		return result.length ? result : null;
+	},
+
+	type: 'SamEntitlementMap',
+};
+
+SamEntitlementMap.NO_GROUPING = 0;
+SamEntitlementMap.GROUP_BY_MODEL = 1;
+SamEntitlementMap.GROUP_BY_MODEL_FOR_CLOUD = 2;
+
+SamEntitlementMap.NoGroupingMap = Class.create();
+SamEntitlementMap.NoGroupingMap.prototype = Object.extendsObject(SamEntitlementMap, {
+	groupEntry: function(swModels) {
+		this.map[swModels] = this.rawMap[swModels]; // Not really grouped
+	},
+
+	sortEntry: function(key) {
+		if (!this.rawMap[key]) {
+			return;
+		}
+
+		var entitlementOptions;
+		entitlementOptions = this.map[key];
+		if (this.filter) {
+			entitlementOptions = entitlementOptions.filter(this.filter(key, this.entitlementSets));
+		}
+		if (!entitlementOptions || !entitlementOptions.length) {
+			this.map[key] = null;
+			return;
+		}
+		entitlementOptions.sort(this.cmpFunc);
+		this.map[key] = entitlementOptions;
+	},
+
+	preserveOriginal: function(key) {
+		this.originalMap[key] = this.map[key] ? this.map[key].slice() : null;
+	},
+
+	cleanUpEntry: function(key) {
+		var entitlementOptions = this.get(key);
+		if (!entitlementOptions) {
+			return;
+		}
+		this.map[key] = entitlementOptions.filter(function(entitlementSet) {
+			return this.entitlementSets[entitlementSet].rights > 0;
+		}, this);
+	},
+
+	sortEntryByModel: function() {
+		return [];
+	},
+
+	getTotalRights: function(key) {
+		var entitlementOptions = this.get(key);
+		if (!entitlementOptions) {
+			return 0;
+		}
+		return entitlementOptions.map(function(entSet) {
+			return this.entitlementSets[entSet].rights;
+		}, this).reduce(function(totalRights, right) {
+			return totalRights + right;
+		}, 0);
+	},
+
+	type: 'SamEntitlementMap.NoGroupingMap',
+});
+
+SamEntitlementMap.NoGroupingMap.defaultOnNewEntry = function(entitlementMap, key) {
+	if (!entitlementMap.map[key]) {
+		return;
+	}
+	entitlementMap.cheapest[key] = entitlementMap.map[key][0];
+};
+
+SamEntitlementMap.SwModelGroupingMap = Class.create();
+SamEntitlementMap.SwModelGroupingMap.prototype = Object.extendsObject(SamEntitlementMap, {
+	groupEntry: function(swModels) {
+		var swModelLicense;
+		var group;
+		var entitlement;
+		if (this.rawMap[swModels] === null) {
+			this.map[swModels] = null;
+			return;
+		}
+
+		this.map[swModels] = {};
+		group = this.map[swModels];
+		for (var entitlementIdx in this.rawMap[swModels]) {
+			entitlement = this.rawMap[swModels][entitlementIdx];
+			swModelLicense = this.relationMap[entitlement];
+			group[swModelLicense] = group[swModelLicense] || [];
+			group[swModelLicense].push(entitlement);
+		}
+	},
+
+	sortEntry: function(swModelComboStr) {
+		if (!this.rawMap[swModelComboStr]) {
+			return;
+		}
+
+		var entitlementOptions = this.map[swModelComboStr];
+		for (var swModel in entitlementOptions) {
+			entitlementOptions[swModel].sort(this._cmpChildrenCnt);
+		}
+	},
+
+	preserveOriginal: function(key) {
+		var entitlementOptions = this.map[key];
+		if (!entitlementOptions) {
+			this.originalMap[key] = null;
+			return;
+		}
+
+		var originalOptions = {};
+		this.originalMap[key] = originalOptions;
+		for (var swModel in entitlementOptions) {
+			originalOptions[swModel] = entitlementOptions[swModel] ? entitlementOptions[swModel].slice() : null;
+		}
+	},
+
+	cleanUpEntry: function(swModelComboStr) {
+		var entitlementOptions = this.get(swModelComboStr);
+		if (!entitlementOptions) {
+			return;
+		}
+		for (var model in entitlementOptions) {
+			entitlementOptions[model] = entitlementOptions[model].filter(function(entitlementSet) {
+				return this.entitlementSets[entitlementSet].rights > 0;
+			}, this);
+			if (entitlementOptions[model].length === 0) {
+				delete entitlementOptions[model];
+			}
+		}
+	},
+
+	sortEntryByModel: function(swModelComboStr) {
+		var entitlementOptions = this.get(swModelComboStr);
+		if (!entitlementOptions) {
+			return [];
+		}
+		var that = this;
+		return Object.keys(entitlementOptions).sort(
+			function (a, b) {
+				return (that.entitlementSets[entitlementOptions[a][0]].childrenCnts
+					- that.entitlementSets[entitlementOptions[b][0]].childrenCnts)
+					|| a.localeCompare(b);
+			}
+		);
+	},
+
+	getTotalRights: function(swModelComboStr, model) {
+		var entitlementOptions = (this.get(swModelComboStr) || [])[model];
+		if (!entitlementOptions) {
+			return 0;
+		}
+		var totalRights = 0;
+		for (var i = 0; i < entitlementOptions.length; i++) {
+			totalRights += this.entitlementSets[entitlementOptions[i]].rights;
+		}
+		return totalRights;
+	},
+
+	type: 'SamEntitlementMap.SwModelGroupingMap',
+});
+
+SamEntitlementMap.SwModelGroupingMap.defaultOnNewEntry = function(entitlementMap, key) {
+	var entitlementOptions = entitlementMap.map[key];
+	if (!entitlementOptions) {
+		return;
+	}
+	var smCheapest;
+	smCheapest = Object.keys(entitlementOptions).reduce(function(prev, curr) {
+		var cmp = entitlementMap._cmpChildrenCnt(entitlementOptions[prev][0], entitlementOptions[curr][0])
+			|| prev.localeCompare(curr);
+		return cmp <= 0 ? prev : curr;
+	});
+	entitlementMap.cheapest[key] = {
+		softwareModel: smCheapest,
+		entitlementSet: entitlementOptions[smCheapest][0],
+	};
+};
+
+SamEntitlementMap.CloudGroupingMap = Class.create();
+SamEntitlementMap.CloudGroupingMap.prototype = Object.extendsObject(SamEntitlementMap.SwModelGroupingMap, {
+	initialize: function(softwareModelTree, entitlementSets, config) {
+		this.cloudConfig = config.cloudConfig || {};
+		this.editionlessSMTree = new global.SamCloudSoftwareModelTree(softwareModelTree.softwareModels, ['edition']);
+		SamEntitlementMap.SwModelGroupingMap.prototype.initialize.call(this, softwareModelTree,
+			entitlementSets, config);
+	},
+
+	addEntitlement: function(entitlementSetId, parentId, childrenIdsStr, sa) {
+		// get the config that applies, based on the maintenance flag
+		var cloudConfigKey = sa ? 'sa' : 'non-sa';
+		var applicableConfig = this.cloudConfig[cloudConfigKey] || {};
+
+		// return if the entitlement is not allowed based on its purchased date
+		var allowedLegacyLicenseTypes = applicableConfig.allowedLegacyLicenseTypes;
+		var entLegacyLicenseType = this.entitlementSets[entitlementSetId].legacyLicense.toString();
+		if (allowedLegacyLicenseTypes === 'none' || (allowedLegacyLicenseTypes === 'legacyOnly'
+			&& entLegacyLicenseType !== ReconciliationConstants.LEGACY_LICENSE_TYPE_YES)) {
+			return;
+		}
+
+		var softwareModelTree = this.softwareModelTree;
+		if (applicableConfig.ignoreEdition) {
+			softwareModelTree = this.editionlessSMTree;
+		}
+
+		// when only legacy licenses are allowed, versions released after Oct 2019 cannot be licensed
+		var allowedLegacyVersions = applicableConfig.allowedLegacyVersions || [];
+		var entRelationValue = parentId;
+		if (sa && applicableConfig.breakMapByLegacyType
+			&& entLegacyLicenseType === ReconciliationConstants.LEGACY_LICENSE_TYPE_YES) {
+			entRelationValue = parentId + '$#';
+		} else if (sa) {
+			entRelationValue = parentId + '$';
+		}
+		this.relationMap[entitlementSetId] = entRelationValue;
+
+		var childrenIds = (childrenIdsStr || '').split(',').filter(Boolean);
+		childrenIds.push(parentId);
+
+		var targetChildren = {};
+		for (var i = 0; i < childrenIds.length; i++) {
+			var childId = childrenIds[i];
+			if (targetChildren[childId]) {
+				continue; // Already added? No further processing needed
+			}
+			var softwareModelNode = softwareModelTree.nodes[childId];
+			softwareModelTree.postorder(softwareModelNode, function(node) {
+				// when only legacy licenses are allowed, versions released after Oct 2019 cannot be licensed
+				if (allowedLegacyLicenseTypes !== 'legacyOnly'
+					|| allowedLegacyVersions.indexOf(node.model.version[1]) !== -1) {
+					targetChildren[node.model.sysId] = true;
+					(node.duplicateModels || []).forEach(function(smSysId) {
+						targetChildren[smSysId] = true;
+					});
+				}
+			});
+		}
+
+		for (var key in targetChildren) {
+			(this.rawMap[key] = this.rawMap[key] || []).push(entitlementSetId);
+		}
+	},
+
+	type: 'SamEntitlementMap.CloudGroupingMap',
+});
+
+/**
+ * Create an entitlement map.
+ * @param {*} softwareModelTree
+ * @param {*} entitlementSets
+ * @param {Object} config options for creating the entitlement map. It could include the following options,
+ *
+ * - mode: `SamEntitlementMap.NO_GROUPING`, `SamEntitlementMap.GROUP_BY_MODEL`
+ *  or `SamEntitlementMap.GROUP_BY_MODEL_FOR_CLOUD`
+ * - cmpFunc: For `SamEntitlementMap.NO_GROUPING` only.
+ * - filter: For `SamEntitlementMap.NO_GROUPING` only.
+ * - onNewEntry: A callback function, which will be called when a new entry is populated.
+ * If it is omitted, default behavior will be executed: calculating the cheapest and storing in the entitlement map.
+ *
+ */
+SamEntitlementMap.create = function(softwareModelTree, entitlementSets, config) {
+	switch (config.mode) {
+	case SamEntitlementMap.NO_GROUPING:
+		return new SamEntitlementMap.NoGroupingMap(softwareModelTree, entitlementSets, {
+			parent: config.parent,
+			children: config.children,
+			cmpFunc: config.cmpFunc,
+			filter: config.filter,
+			onNewEntry: config.onNewEntry || SamEntitlementMap.NoGroupingMap.defaultOnNewEntry,
+		});
+	case SamEntitlementMap.GROUP_BY_MODEL:
+		return new SamEntitlementMap.SwModelGroupingMap(softwareModelTree, entitlementSets, {
+			parent: 'swModel',
+			children: 'downgradeModels',
+			onNewEntry: config.onNewEntry || SamEntitlementMap.SwModelGroupingMap.defaultOnNewEntry,
+		});
+	case SamEntitlementMap.GROUP_BY_MODEL_FOR_CLOUD:
+		return new SamEntitlementMap.CloudGroupingMap(softwareModelTree, entitlementSets, {
+			parent: 'swModel',
+			children: 'downgradeModels',
+			cloudConfig: config.cloudConfig,
+			onNewEntry: config.onNewEntry || SamEntitlementMap.SwModelGroupingMap.defaultOnNewEntry,
+		});
+	default:
+		return null;
+	}
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:35</sys_created_on>
+        <sys_id>d5d5a96c47111110c859fee3846d43fb</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamEntitlementMap</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_d5d5a96c47111110c859fee3846d43fb</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:35</sys_updated_on>
+    </sys_script_include>
+</record_update>

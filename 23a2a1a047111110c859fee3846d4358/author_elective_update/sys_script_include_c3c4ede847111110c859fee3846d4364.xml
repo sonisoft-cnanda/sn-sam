@@ -1,0 +1,205 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="DELETE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamCloudSoftwareModelTree</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamCloudSoftwareModelTree</name>
+        <script><![CDATA[var SamCloudSoftwareModelTree = Class.create();
+
+var EQUAL = 0;
+var SUBSET = 1;
+var SUPERSET = 3;
+
+SamCloudSoftwareModelTree.prototype = Object.extendsObject(global.SamSoftwareModelTree, {
+	initialize: function(softwareModels, ignoreProperties) {
+		this.ignoreProperties = ignoreProperties || [];
+		global.SamSoftwareModelTree.prototype.initialize.call(this, softwareModels);
+	},
+
+	insertSoftwareModel: function(model) {
+		var node = {
+			model: model,
+			children: [],
+			duplicateModels: [],
+		};
+		var treeNodes = this.trees;
+		var located;
+		var duplicate = false;
+		do {
+			located = true;
+			for (var j = treeNodes.length - 1; j >= 0; j--) {
+				var relationship = SamCloudSoftwareModelTree.relationshipBetween(model,
+					treeNodes[j].model, this.ignoreProperties);
+				if (relationship === SUBSET) {
+					treeNodes = treeNodes[j].children;
+					located = false;
+					break;
+				}
+
+				if (relationship === EQUAL) {
+					treeNodes[j].duplicateModels.push(model.sysId);
+					this.nodes[model.sysId] = treeNodes[j];
+					duplicate = true;
+					break;
+				}
+
+				if (relationship === SUPERSET) {
+					node.children.push(treeNodes[j]);
+					treeNodes.splice(j, 1);
+				}
+			}
+		} while (!located);
+
+		if (!duplicate) {
+			treeNodes.push(node);
+			this.nodes[model.sysId] = node;
+		}
+	},
+
+	type: 'SamCloudSoftwareModelTree',
+});
+
+// check the relationship between two software models
+SamCloudSoftwareModelTree.relationshipBetween = function(lhs, rhs, ignoreProperties) {
+	var newLHS = {};
+	var newRHS = {};
+
+	for (var field in lhs) {
+		if ((ignoreProperties || []).indexOf(field) !== -1) {
+			continue;
+		}
+		newLHS[field] = lhs[field];
+		newRHS[field] = rhs[field];
+	}
+	return global.SamSoftwareModelTree.relationshipBetween(newLHS, newRHS);
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:50:04</sys_created_on>
+        <sys_id>c3c4ede847111110c859fee3846d4364</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamCloudSoftwareModelTree</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_c3c4ede847111110c859fee3846d4364</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:50:04</sys_updated_on>
+    </sys_script_include>
+    <sys_update_version action="INSERT_OR_UPDATE">
+        <action>DELETE</action>
+        <application display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</application>
+        <file_path/>
+        <instance_id>4e2646e7dbf513888264f70fbf96195b</instance_id>
+        <instance_name>dev58455</instance_name>
+        <name>sys_script_include_c3c4ede847111110c859fee3846d4364</name>
+        <payload>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;record_update table="sys_script_include"&gt;&lt;sys_script_include action="INSERT_OR_UPDATE"&gt;&lt;access&gt;public&lt;/access&gt;&lt;active&gt;true&lt;/active&gt;&lt;api_name&gt;x_807586_sam_scrip.SamCloudSoftwareModelTree&lt;/api_name&gt;&lt;caller_access/&gt;&lt;client_callable&gt;false&lt;/client_callable&gt;&lt;description/&gt;&lt;name&gt;SamCloudSoftwareModelTree&lt;/name&gt;&lt;script&gt;&lt;![CDATA[var SamCloudSoftwareModelTree = Class.create();
+
+var EQUAL = 0;
+var SUBSET = 1;
+var SUPERSET = 3;
+
+SamCloudSoftwareModelTree.prototype = Object.extendsObject(global.SamSoftwareModelTree, {
+	initialize: function(softwareModels, ignoreProperties) {
+		this.ignoreProperties = ignoreProperties || [];
+		global.SamSoftwareModelTree.prototype.initialize.call(this, softwareModels);
+	},
+
+	insertSoftwareModel: function(model) {
+		var node = {
+			model: model,
+			children: [],
+			duplicateModels: [],
+		};
+		var treeNodes = this.trees;
+		var located;
+		var duplicate = false;
+		do {
+			located = true;
+			for (var j = treeNodes.length - 1; j &gt;= 0; j--) {
+				var relationship = SamCloudSoftwareModelTree.relationshipBetween(model,
+					treeNodes[j].model, this.ignoreProperties);
+				if (relationship === SUBSET) {
+					treeNodes = treeNodes[j].children;
+					located = false;
+					break;
+				}
+
+				if (relationship === EQUAL) {
+					treeNodes[j].duplicateModels.push(model.sysId);
+					this.nodes[model.sysId] = treeNodes[j];
+					duplicate = true;
+					break;
+				}
+
+				if (relationship === SUPERSET) {
+					node.children.push(treeNodes[j]);
+					treeNodes.splice(j, 1);
+				}
+			}
+		} while (!located);
+
+		if (!duplicate) {
+			treeNodes.push(node);
+			this.nodes[model.sysId] = node;
+		}
+	},
+
+	type: 'SamCloudSoftwareModelTree',
+});
+
+// check the relationship between two software models
+SamCloudSoftwareModelTree.relationshipBetween = function(lhs, rhs, ignoreProperties) {
+	var newLHS = {};
+	var newRHS = {};
+
+	for (var field in lhs) {
+		if ((ignoreProperties || []).indexOf(field) !== -1) {
+			continue;
+		}
+		newLHS[field] = lhs[field];
+		newRHS[field] = rhs[field];
+	}
+	return global.SamSoftwareModelTree.relationshipBetween(newLHS, newRHS);
+};]]&gt;&lt;/script&gt;&lt;sys_class_name&gt;sys_script_include&lt;/sys_class_name&gt;&lt;sys_created_by&gt;admin&lt;/sys_created_by&gt;&lt;sys_created_on&gt;2022-08-10 15:50:04&lt;/sys_created_on&gt;&lt;sys_id&gt;c3c4ede847111110c859fee3846d4364&lt;/sys_id&gt;&lt;sys_mod_count&gt;0&lt;/sys_mod_count&gt;&lt;sys_name&gt;SamCloudSoftwareModelTree&lt;/sys_name&gt;&lt;sys_package display_value="SAM Scripts" source="x_807586_sam_scrip"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_package&gt;&lt;sys_policy&gt;protected&lt;/sys_policy&gt;&lt;sys_scope display_value="SAM Scripts"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_scope&gt;&lt;sys_update_name&gt;sys_script_include_c3c4ede847111110c859fee3846d4364&lt;/sys_update_name&gt;&lt;sys_updated_by&gt;admin&lt;/sys_updated_by&gt;&lt;sys_updated_on&gt;2022-08-10 15:50:04&lt;/sys_updated_on&gt;&lt;/sys_script_include&gt;&lt;/record_update&gt;</payload>
+        <payload_hash>785723050</payload_hash>
+        <record_name>SamCloudSoftwareModelTree</record_name>
+        <reverted_from/>
+        <source>6ea42de847111110c859fee3846d434c</source>
+        <source_table>sys_update_set</source_table>
+        <state>previous</state>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:50:04</sys_created_on>
+        <sys_id>cfc4ede847111110c859fee3846d4365</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_recorded_at>1828872d8360000001</sys_recorded_at>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:50:04</sys_updated_on>
+        <type>Script Include</type>
+        <update_guid>0bc4ede89f111110b6d01d2c39f24c65</update_guid>
+        <update_guid_history>0bc4ede89f111110b6d01d2c39f24c65:785723050</update_guid_history>
+    </sys_update_version>
+    <sys_metadata_delete action="INSERT_OR_UPDATE">
+        <sys_audit_delete/>
+        <sys_class_name>sys_metadata_delete</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:52:25</sys_created_on>
+        <sys_db_object display_value="" name="sys_script_include">sys_script_include</sys_db_object>
+        <sys_id>75e87173e1f54e00b173ab8adc6e4000</sys_id>
+        <sys_metadata>c3c4ede847111110c859fee3846d4364</sys_metadata>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamCloudSoftwareModelTree</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_parent/>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_scope_delete display_value="">0011b6f5266e481c80012473557b6490</sys_scope_delete>
+        <sys_update_name>sys_script_include_c3c4ede847111110c859fee3846d4364</sys_update_name>
+        <sys_update_version display_value="sys_script_include_c3c4ede847111110c859fee3846d4364">cfc4ede847111110c859fee3846d4365</sys_update_version>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:52:25</sys_updated_on>
+    </sys_metadata_delete>
+</record_update>

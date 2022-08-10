@@ -1,0 +1,367 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamPublisherCalculatorSAP</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamPublisherCalculatorSAP</name>
+        <script><![CDATA[var SamPublisherCalculatorSAP = Class.create();
+SamPublisherCalculatorSAP.prototype = Object.extendsObject(SamPublisherCalculator, {
+	initialize: function(reconEngine, coreCompanyId) {
+		SamPublisherCalculator.prototype.initialize.call(this, reconEngine, coreCompanyId);
+		this.fisSAMPSAPActive = GlidePluginManager.isActive('com.sn_samp_sap');
+	},
+
+	prepare: function() {
+		SamPublisherCalculator.prototype.prepare.call(this);
+		if (this.fisSAMPSAPActive) {
+			this.markSAPUsersAsNotReconcilied();
+			this.ignoreUnlicensableUsers();
+		}
+	},
+
+	markSAPUsersAsNotReconcilied: function () {
+		var sapUserGr = SAMPremiumUtils.getGlideMultipleUpdate(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+		sapUserGr.setValue('is_reconciled', false);
+		sapUserGr.setValue('unlicensed_user', true);
+		sapUserGr.setValue('licensable', true);
+		sapUserGr.setValue('license_metric_result', '');
+		sapUserGr.setValue('software_model_result', '');
+		sapUserGr.setValue('product_result', '');
+		sapUserGr.setValue('allocation_needed', false);
+		sapUserGr.setValue('is_allocated', false);
+		sapUserGr.setValue('potential_license_required', '');
+		sapUserGr.execute();
+	},
+
+	ignoreUnlicensableUsers: function () {
+		/*
+		(named_user_type = null AND user_type != ReconciliationConstants.SAP_DIALOG_USER_VALUE)
+		OR
+		(named_user_type != null AND named_user_type.is_licensable = false)
+		OR
+		is_reconciled = true
+		OR
+		valid_through < new GlideDate()
+		OR
+		sap_client.environment NOT IN 'P,C'
+		OR
+		discovered_user = null
+		*/
+		[
+			new GlideQuery(ReconciliationConstants.SAP_SYSTEM_USER_TABLE)
+				.whereNull('named_user_type')
+				.where('user_type', '!=', ReconciliationConstants.SAP_DIALOG_USER_VALUE),
+			new GlideQuery(ReconciliationConstants.SAP_SYSTEM_USER_TABLE)
+				.whereNotNull('named_user_type')
+				.where('named_user_type.is_licensable', false),
+			new GlideQuery(ReconciliationConstants.SAP_SYSTEM_USER_TABLE)
+				.where('valid_through', '<', new GlideDate()),
+			new GlideQuery(ReconciliationConstants.SAP_SYSTEM_USER_TABLE)
+				.where('sap_client.environment', 'NOT IN', ['P', 'C']),
+			new GlideQuery(ReconciliationConstants.SAP_SYSTEM_USER_TABLE)
+				.whereNull('discovered_user'),
+		].forEach(function (sapUser) {
+			sapUser.updateMultiple({
+				is_reconciled: true,
+				unlicensed_user: false,
+				licensable: false,
+			});
+		});
+	},
+
+	createGenericSAPEngineAggregateQuery: function() {
+		var sapEngineUsageGa = new GlideAggregate(ReconciliationConstants.SAP_CLIENT_ACCESS_TABLE);
+		sapEngineUsageGa.addQuery('is_reconciled', false);
+		sapEngineUsageGa.groupBy('software_model');
+		sapEngineUsageGa.orderByDesc('software_model');
+		sapEngineUsageGa.addAggregate('SUM', 'usage');
+		return sapEngineUsageGa;
+	},
+
+	verifyEngineSMCompliance: function(sapEngineUsageGa) {
+		var isRelevant = sapEngineUsageGa.software_model.is_relevant;
+		var reachedThreshold = (sapEngineUsageGa.getAggregate('SUM', 'usage')
+		> sapEngineUsageGa.software_model.threshold);
+		return (!isRelevant || !reachedThreshold);
+	},
+
+	hasNotCompliantSoftwareModelForProduct: function(product) {
+		var smStatus = SamPublisherCalculator.prototype.hasNotCompliantSoftwareModelForProduct.call(this, product);
+		if (!smStatus) {
+			var groupColumn = GroupingEngine.getGroupFilterColumn(ReconciliationConstants.SAP_CLIENT_ACCESS_TABLE);
+			// For SAP Engine Products we need to consider if we have any CAL records which is partially licensed for a
+			// product, if we are running Recon without grouping.
+			if (gs.nil(groupColumn) && product !== ReconciliationConstants.SAP_NAMED_USER_PRODUCT_SYS_ID) {
+				var nonCompliant = true;
+				var grCal = new GlideRecord('samp_sap_sw_client_access');
+				grCal.setLimit(1);
+				grCal.addQuery('software_model.product', product);
+				grCal.addQuery('is_reconciled', false);
+				grCal.query();
+				if (grCal.hasNext()) {
+					var sapEngineUsageGa = this.createGenericSAPEngineAggregateQuery();
+					sapEngineUsageGa.addQuery('software_model.product', product);
+					sapEngineUsageGa.query();
+					while (sapEngineUsageGa.next()) {
+						nonCompliant = !(this.verifyEngineSMCompliance(sapEngineUsageGa));
+					}
+					return smStatus || nonCompliant;
+				}
+			}
+		}
+		return smStatus;
+	},
+
+	getProductResultLeftoverUsingGroups: function (leftoverProductResults) {
+		SamPublisherCalculator.prototype.getProductResultLeftoverUsingGroups.call(this, leftoverProductResults);
+
+		// Collect leftover product results for sap named users product
+		var leftoverProductResult = {
+			product: null,
+			groupId: null,
+			subGroupId: null,
+		};
+		if (this.fisSAMPSAPActive) {
+			var sapUsersGa = new GlideAggregate(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+			sapUsersGa.addQuery('is_reconciled', false);
+			sapUsersGa.addQuery('unlicensed_user', true);
+			sapUsersGa.addQuery('licensable', true);
+
+			// Add the group filters
+			var groupColumn = GroupingEngine.getGroupFilterColumn(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+			var subGroupColumn = GroupingEngine.getSubGroupFilterColumn(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+
+			if (!gs.nil(groupColumn)) {
+				sapUsersGa.groupBy(groupColumn);
+				sapUsersGa.orderByDesc(groupColumn);
+			}
+			if (!gs.nil(subGroupColumn)) {
+				sapUsersGa.groupBy(subGroupColumn);
+				sapUsersGa.orderByDesc(subGroupColumn);
+			}
+
+			sapUsersGa.query();
+			while (sapUsersGa.next()) {
+				leftoverProductResult = {
+					product: null,
+					groupId: null,
+					subGroupId: null,
+				};
+				leftoverProductResult.product = ReconciliationConstants.SAP_NAMED_USER_PRODUCT_SYS_ID;
+
+				if (!gs.nil(groupColumn)) { leftoverProductResult.groupId = sapUsersGa.getValue(groupColumn); }
+
+				if (!gs.nil(subGroupColumn)) { leftoverProductResult.subGroupId = sapUsersGa.getValue(subGroupColumn); }
+
+				leftoverProductResults.push(leftoverProductResult);
+			}
+			// collect leftover product results for SAP Engine Products
+			var sapEngineUsage = this.createGenericSAPEngineAggregateQuery();
+			// Add the group filters
+			groupColumn = GroupingEngine.getGroupFilterColumn(ReconciliationConstants.SAP_CLIENT_ACCESS_TABLE);
+			subGroupColumn = GroupingEngine.getSubGroupFilterColumn(ReconciliationConstants.SAP_CLIENT_ACCESS_TABLE);
+			if (!gs.nil(groupColumn)) {
+				sapEngineUsage.groupBy(groupColumn);
+				sapEngineUsage.orderByDesc(groupColumn);
+			}
+			if (!gs.nil(subGroupColumn)) {
+				sapEngineUsage.groupBy(subGroupColumn);
+				sapEngineUsage.orderByDesc(subGroupColumn);
+			}
+			sapEngineUsage.query();
+			while (sapEngineUsage.next()) {
+				leftoverProductResult = {
+					product: null,
+					groupId: null,
+					subGroupId: null,
+					status: null,
+				};
+
+				leftoverProductResult.product = sapEngineUsage.software_model.product;
+				if (!gs.nil(groupColumn)) {
+					leftoverProductResult.groupId = sapEngineUsage.getValue(groupColumn);
+				}
+
+				if (!gs.nil(subGroupColumn)) {
+					leftoverProductResult.subGroupId = sapEngineUsage.getValue(subGroupColumn);
+				}
+				if (this.verifyEngineSMCompliance(sapEngineUsage)) {
+					leftoverProductResult.status = ReconciliationConstants.SOFTWARE_MODEL_RESULT_STATUS.COMPLIANT;
+				} else {
+					leftoverProductResult.status = ReconciliationConstants.SOFTWARE_MODEL_RESULT_STATUS.NOT_COMPLIANT;
+				}
+				leftoverProductResults.push(leftoverProductResult);
+			}
+		}
+	},
+
+	getProductResultLeftoverUsingRegions: function (leftoverProductResults, region) {
+		SamPublisherCalculator.prototype.getProductResultLeftoverUsingRegions.call(this, leftoverProductResults,
+			region);
+
+		// Collect leftover product results for sap named users product
+		if (this.fisSAMPSAPActive) {
+			var groupColumn;
+			var subGroupColumn;
+			var leftoverProductResult = {
+				product: null,
+				groupId: null,
+				subGroupId: null,
+			};
+			if ('region'.equals(GroupingEngine.fCurrentGroupCode)) {
+				groupColumn = GroupingEngine.getGroupFilterColumn(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+				subGroupColumn = GroupingEngine.getSubGroupFilterColumn(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+			} else {
+				groupColumn = GroupingEngine.getSubGroupFilterColumn(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+				subGroupColumn = GroupingEngine.getGroupFilterColumn(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+			}
+
+			var sapUsersGa = new GlideAggregate(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+			if (!gs.nil(region.group_id)) { sapUsersGa.addQuery(groupColumn, 'STARTSWITH', region.filter_value); }
+
+			sapUsersGa.addQuery('is_reconciled', false);
+			sapUsersGa.addQuery('unlicensed_user', true);
+			sapUsersGa.addQuery('licensable', true);
+
+			if (!gs.nil(subGroupColumn)) {
+				sapUsersGa.groupBy(subGroupColumn);
+				sapUsersGa.orderByDesc(subGroupColumn);
+			}
+
+			sapUsersGa.query();
+			while (sapUsersGa.next()) {
+				leftoverProductResult = {
+					product: null,
+					groupId: null,
+					subGroupId: null,
+				};
+				leftoverProductResult.product = ReconciliationConstants.SAP_NAMED_USER_PRODUCT_SYS_ID;
+				leftoverProductResult.groupId = region.group_id;
+
+				if (!gs.nil(subGroupColumn)) { leftoverProductResult.subGroupId = sapUsersGa.getValue(subGroupColumn); }
+				leftoverProductResults.push(leftoverProductResult);
+			}
+
+			// collect leftover product results for SAP Engine Products - Region Filter
+			var sapEngineUsageGa = this.createGenericSAPEngineAggregateQuery();
+
+			if ('region'.equals(GroupingEngine.fCurrentGroupCode)) {
+				groupColumn = GroupingEngine.getGroupFilterColumn(ReconciliationConstants.SAP_CLIENT_ACCESS_TABLE);
+				subGroupColumn = GroupingEngine.getSubGroupFilterColumn(
+					ReconciliationConstants.SAP_CLIENT_ACCESS_TABLE
+				);
+			} else {
+				groupColumn = GroupingEngine.getSubGroupFilterColumn(ReconciliationConstants.SAP_CLIENT_ACCESS_TABLE);
+				subGroupColumn = GroupingEngine.getGroupFilterColumn(ReconciliationConstants.SAP_CLIENT_ACCESS_TABLE);
+			}
+			if (!gs.nil(region.group_id)) { sapEngineUsageGa.addQuery(groupColumn, 'STARTSWITH', region.filter_value); }
+
+			if (!gs.nil(subGroupColumn)) {
+				sapEngineUsageGa.groupBy(subGroupColumn);
+				sapEngineUsageGa.orderByDesc(subGroupColumn);
+			}
+			sapEngineUsageGa.query();
+			while (sapEngineUsageGa.next()) {
+				leftoverProductResult = {
+					product: null,
+					groupId: null,
+					subGroupId: null,
+					status: null,
+				};
+				leftoverProductResult.product = sapEngineUsageGa.software_model.product;
+				leftoverProductResult.groupId = region.group_id;
+
+				if (this.verifyEngineSMCompliance(sapEngineUsageGa)) {
+					leftoverProductResult.status = ReconciliationConstants.SOFTWARE_MODEL_RESULT_STATUS.COMPLIANT;
+				} else {
+					leftoverProductResult.status = ReconciliationConstants.SOFTWARE_MODEL_RESULT_STATUS.NOT_COMPLIANT;
+				}
+				if (!gs.nil(subGroupColumn)) {
+					leftoverProductResult.subGroupId = sapEngineUsageGa.getValue(subGroupColumn);
+				}
+
+				leftoverProductResults.push(leftoverProductResult);
+			}
+		}
+	},
+
+	updateProductResult: function (product, productResultId, softwareModelResultIds) {
+		if (product === ReconciliationConstants.SAP_NAMED_USER_PRODUCT_SYS_ID) {
+			var sapUsersGr = new GlideRecord(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+			sapUsersGr.addNotNullQuery('software_model_result');
+			sapUsersGr.addNullQuery('product_result');
+			sapUsersGr.addQuery('software_model_result', softwareModelResultIds);
+			sapUsersGr.setValue('product_result', productResultId);
+			sapUsersGr.autoSysFields(false);
+			sapUsersGr.setWorkflow(false);
+			sapUsersGr.updateMultiple();
+		}
+	},
+
+	checkForUnlicensedSAPUsers: function (productResultId) {
+		var sapUsersGr = new GlideRecord(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+		sapUsersGr.addQuery('product_result', productResultId);
+		sapUsersGr.addQuery('unlicensed_user', true);
+		sapUsersGr.setLimit(1);
+		sapUsersGr.query();
+		if (sapUsersGr.hasNext()) {
+			var productResultGr = new GlideRecord(ReconciliationConstants.SOFTWARE_PRODUCT_RESULT_TABLE);
+			productResultGr.addQuery('sys_id', productResultId);
+			productResultGr.setValue('status',
+				ReconciliationConstants.SOFTWARE_MODEL_RESULT_STATUS.SOFTWARE_MODEL_RESULT_NOT_COMPLIANT_STATUS);
+			productResultGr.setWorkflow(false);
+			productResultGr.updateMultiple();
+		}
+	},
+
+	updateUnlicensedEntities: function (product, productResultId) {
+		// Update non-reconciled and unlicensed SAP Users with product result
+		if (product === ReconciliationConstants.SAP_NAMED_USER_PRODUCT_SYS_ID) {
+			var sapUsers = new SampRecord(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+			sapUsers.addNullQuery('software_model_result');
+			sapUsers.addNullQuery('product_result');
+			sapUsers.addQuery('unlicensed_user', true);
+			sapUsers.addQuery('is_reconciled', false);
+			this.reconcileLeftoverEntities(sapUsers, productResultId);
+		}
+
+		// Check For Unlicensed SAP Users
+		if (product === ReconciliationConstants.SAP_NAMED_USER_PRODUCT_SYS_ID) {
+			this.checkForUnlicensedSAPUsers(productResultId);
+		}
+	},
+
+	setUnlicensedStatus: function (product, productResultId) {
+		// Update SAP Users
+		if (product === ReconciliationConstants.SAP_NAMED_USER_PRODUCT_SYS_ID) {
+			var sapUsersGr = new SampRecord(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+			sapUsersGr.addNullQuery('product_result');
+			sapUsersGr.addNullQuery('license_metric_result');
+			sapUsersGr.addNullQuery('software_model_result');
+			sapUsersGr.addQuery('unlicensed_user', true);
+			sapUsersGr.addQuery('is_reconciled', false);
+			this.reconcileLeftoverEntities(sapUsersGr, productResultId);
+			return;
+		}
+		SamPublisherCalculator.prototype.setUnlicensedStatus.call(this, product, productResultId);
+	},
+
+	type: 'SamPublisherCalculatorSAP',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:39</sys_created_on>
+        <sys_id>dad5e96c47111110c859fee3846d43f1</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamPublisherCalculatorSAP</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_dad5e96c47111110c859fee3846d43f1</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:39</sys_updated_on>
+    </sys_script_include>
+</record_update>

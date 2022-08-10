@@ -1,0 +1,1071 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamCalLicenseCalculator</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamCalLicenseCalculator</name>
+        <script><![CDATA[var SamCalLicenseCalculator = Class.create();
+SamCalLicenseCalculator.prototype = Object.extendsObject(SamLicenseCalculator, {
+	initialize: function(coreCompany, product, reconResult, singleLicenseMetric, calculateRightsNeeded, metric) {
+		var entitlementMapConfig = {
+			parent: 'swModel',
+			children: 'downgradeModels',
+			mode: ReconciliationConstants.ENTITLEMENT_MAP_MODE.NO_GROUPING,
+		};
+		SamLicenseCalculator.prototype.initialize.call(
+			this, metric, ReconciliationConstants.MICROSOFT_METRIC_GROUP,
+			coreCompany, product, reconResult, entitlementMapConfig, singleLicenseMetric, calculateRightsNeeded
+		);
+		this.allocationCols = SamCalLicenseCalculator.allocationCols[metric];
+		this.allocationCol = this.allocationCols[0];
+		this.calType = SamCalLicenseCalculator.type[metric];
+		this.calEntities = {};
+		this.allocatedConsumers = [];
+		this.ALLOCATED_PASS = 'allocated';
+		this.UNALLOCATED_PASS = 'unallocated';
+	},
+
+	runAllocatedPass: function() {
+		for (var index = 0; index < this.allocationCols.length; index += 1) {
+			this.allocationCol = this.allocationCols[index];
+			var allocatedConsumerGr = this.getConsumersWithAllocation();
+			SAMPremiumUtils.processInBatch(
+				allocatedConsumerGr, ReconciliationConstants.BATCHSIZE,
+				[this.allocationCol], this.runAllocatedPassForConsumers.bind(this)
+			);
+		}
+		this.markClientAccessRecords(this.ALLOCATED_PASS);
+	},
+
+	runAllocatedPassForConsumers: function(consumersInBatch) {
+		var allocationCol = this.allocationCol;
+		// Get the consumersInBatch entries into the format we want them
+		var processedConsumersInBatch = consumersInBatch.map(
+			function(consumerInBatch) {
+				return consumerInBatch[allocationCol];
+			}
+		);
+		this.allocatedConsumers = this.allocatedConsumers.concat(processedConsumersInBatch);
+		// Process each consumer in the batch
+		var breakdownsInBatch = this.getBreakdownsOfConsumerInBatch(processedConsumersInBatch);
+		for (var i = 0; i < processedConsumersInBatch.length; i++) {
+			var breakdowns = breakdownsInBatch[processedConsumersInBatch[i]] || [];
+			this.runAllocatedPassForConsumer(processedConsumersInBatch[i], breakdowns);
+		}
+	},
+
+	// Custom initRightsUsage in order to add-in the cals array.
+	initRightsUsage: function(rightsUsage, entitlementSets) {
+		for (var entitlementSet in entitlementSets) {
+			rightsUsage[entitlementSet] = {
+				allocatedInUse: 0,
+				allocatedNotInUse: entitlementSets[entitlementSet].rights,
+				notAllocatedInUse: 0,
+				installs: entitlementSets[entitlementSet].swModel,
+				cals: [],
+				breakdowns: [],
+			};
+		}
+	},
+
+	// DONE: For the latest deactivation changes on the UI, add in a query on active=True
+	// on the cal breakdowns table.
+	getBreakdownsOfConsumerInBatch: function(consumers) {
+		var entityColumn = this.allocationCol === 'allocated_to' ? 'device' : 'user';
+		var breakdowns = {};
+		// Make consumer buckets prior to processing the breakdowns
+		consumers.forEach(
+			function(consumer) {
+				breakdowns[consumer] = [];
+			}
+		);
+		var breakdownsGr = new SampRecord(this.breakdownsTable);
+		breakdownsGr.addQuery(entityColumn, 'IN', consumers);
+		breakdownsGr.addQuery('active', true);
+		breakdownsGr.addQuery('is_reconciled', false);
+		breakdownsGr.addQuery('client_access.software_model.product', this.fSoftwareProduct);
+		breakdownsGr.addQuery('client_access.type', this.calType);
+		breakdownsGr.query();
+		while (breakdownsGr.next()) {
+			var consumer = breakdownsGr.getValue(entityColumn);
+			breakdowns[consumer].push({
+				breakdownSysId: breakdownsGr.getUniqueValue(),
+				calSysId: breakdownsGr.getValue('client_access'),
+				softwareModel: breakdownsGr.getGlideRecord().client_access.software_model + '',
+			});
+		}
+		return breakdowns;
+	},
+
+	clearAllocatedInUse: function(rightsUsage) {
+		var allocatedNotInUse = 0;
+		for (var entSet in rightsUsage) {
+			rightsUsage[entSet].allocatedInUse = 0;
+			allocatedNotInUse += rightsUsage[entSet].allocatedNotInUse;
+		}
+		return allocatedNotInUse > 0;
+	},
+
+	runAllocatedPassForConsumer: function(consumer, breakdowns) {
+		var entitlementSetsAlloc;
+		var entitlementMapAlloc;
+		var rightsUsage = {};
+		var rightsNeeded = {};
+		var consumerInfo = {
+			sysId: consumer,
+			virtual: null,
+			table: this.allocationCol === 'allocated_to' ? 'cmdb_ci' : 'sys_user',
+		};
+
+		entitlementSetsAlloc = this.getAllocatedEntitlementSet(consumer);
+		this.initRightsUsage(rightsUsage, entitlementSetsAlloc); // TODO: need add CAL into DS?
+		if (breakdowns.length !== 0) {
+			entitlementMapAlloc = this.generateEntitlementMap(entitlementSetsAlloc);
+			// Loop through breakdowns
+			for (var i = 0; i < breakdowns.length; i++) {
+				// Store all cal infos in the batching (in addition to sys ids)
+				var breakdownInfo = breakdowns[i];
+				// var calSysId = breakdownInfo.calSysId;
+				var softwareModel = breakdownInfo.softwareModel;
+				this.consumeRights(
+					rightsUsage, breakdownInfo, softwareModel, entitlementSetsAlloc,
+					entitlementMapAlloc, 1, rightsNeeded
+				);
+			}
+			this.updateDowngradeRightsUsage(rightsUsage);
+			// Process Rights Usage
+			this.processRightsObject(consumer, consumerInfo, rightsUsage, this.ALLOCATED_PASS, 'rightsUsage');
+			this.processRightsObject(consumer, consumerInfo, rightsNeeded, this.ALLOCATED_PASS, 'rightsNeeded');
+			// The reason we call this is for the case where we "split" an allocation (eg. device1, 2 allocations)
+			// (1 is allocated under use under CAL 1, the other is separately allocated not in use).
+			var hasAllocatedNotInUse = this.clearAllocatedInUse(rightsUsage);
+			if (hasAllocatedNotInUse) {
+				this.generateRightsUsedByForConsumer(rightsUsage, consumerInfo);
+			}
+		} else {
+			this.generateRightsUsedByForConsumer(rightsUsage, consumerInfo);
+		}
+	},
+
+	runUnallocatedPass: function() {
+		// (1) Process all breakdowns for each cal (with no allocations, is_reconciled=false)
+		var consumersWithoutAllocationsGa = this.getConsumersWithoutAllocations();
+		SAMPremiumUtils.processInBatch(
+			consumersWithoutAllocationsGa, ReconciliationConstants.BATCHSIZE,
+			['user', 'device'], this.runUnallocatedPassForConsumers.bind(this)
+		);
+		// (2) Loop through all cals, process the remaining counts.
+		var calRec = new SampRecord(this.table);
+		calRec.addQuery('software_model.product', this.fSoftwareProduct);
+		calRec.addQuery('is_reconciled', false);
+		calRec.addQuery('type', this.calType);
+		calRec.addQuery('software_model', 'IN', this.orderedSwModels);
+		calRec.orderByDesc('software_model.downgrade_rank');
+		calRec.query();
+
+		while (calRec.next()) {
+			var rightsAvailable;
+			var rightsUsage = {};
+			var rightsNeeded = {};
+			var swModel = calRec.getValue('software_model');
+			var calSysId = calRec.getUniqueValue();
+			var calInfo = {
+				sysId: calSysId, virtual: null, table: this.table, softwareModel: swModel,
+			};
+
+			// 2 Cases:
+			// (i) Cal is in this.calEntities
+			// (ii) Cal is not in this.calEntities
+			if (!(calSysId in this.calEntities)) {
+				this.calEntities[calSysId] = {};
+				this.calEntities[calSysId].rightsAvailable = parseInt(calRec.getValue('count'), 10);
+			}
+			rightsAvailable = this.calEntities[calSysId].rightsAvailable;
+
+			this.consumeRights(rightsUsage, null, swModel, null, null, rightsAvailable, rightsNeeded);
+			this.updateDowngradeRightsUsage(rightsUsage);
+
+			this.processCALRightsObject(calInfo, rightsUsage, 'rightsUsage');
+			this.processCALRightsObject(calInfo, rightsNeeded, 'rightsNeeded');
+		}
+		this.markClientAccessRecords(this.UNALLOCATED_PASS);
+	},
+
+	runUnallocatedPassForConsumers: function(consumersInBatch) {
+		var processedConsumersInBatch = consumersInBatch.map(
+			function(consumerInBatch) {
+				if (consumerInBatch.user !== '') {
+					return { entity: consumerInBatch.user, type: 'user' };
+				}
+				return { entity: consumerInBatch.device, type: 'device' };
+			}
+		);
+
+		var consumersToBreakdowns = this.getBreakdownsOfConsumersWithoutAllocations(processedConsumersInBatch);
+		for (var consumerIndex = 0; consumerIndex < processedConsumersInBatch.length; consumerIndex += 1) {
+			var consumer = processedConsumersInBatch[consumerIndex];
+			var breakdowns = consumersToBreakdowns[consumer.entity];
+			this.runUnallocatedPassForConsumer(consumer, breakdowns);
+		}
+	},
+
+	runUnallocatedPassForConsumer: function(consumer, breakdowns) {
+		var rightsUsage = {};
+		var rightsNeeded = {};
+		var consumerInfo = {
+			sysId: consumer.entity,
+			virtual: null,
+			table: consumer.type === 'device' ? 'cmdb_ci' : 'sys_user',
+		};
+
+		// Loop through breakdowns
+		for (var i = 0; i < breakdowns.length; i++) {
+			var breakdownInfo = breakdowns[i];
+			var softwareModel = breakdownInfo.softwareModel;
+			this.consumeRights(rightsUsage, breakdownInfo, softwareModel, null, null, 1, rightsNeeded);
+		}
+
+		this.updateDowngradeRightsUsage(rightsUsage);
+		this.processRightsObject(consumer, consumerInfo, rightsUsage, this.UNALLOCATED_PASS, 'rightsUsage');
+		this.processRightsObject(consumer, consumerInfo, rightsNeeded, this.UNALLOCATED_PASS, 'rightsNeeded');
+	},
+
+	processCALRightsObject: function(calInfo, rightsObject, rightsMode) {
+		var calSysId = calInfo.sysId;
+		for (var entitlementSet in rightsObject) {
+			if (!this.calEntities[calSysId] || !this.calEntities[calSysId][entitlementSet]) {
+				this.generateCalEntity(calInfo, null, entitlementSet);
+			}
+
+			this.calEntities[calSysId][entitlementSet] = this.calEntities[calSysId][entitlementSet] || {};
+
+			var rightsObjectBreakdowns;
+			if (rightsMode === 'rightsUsage') {
+				rightsObjectBreakdowns = this.breakdownRightsUsage(rightsObject[entitlementSet]);
+			} else {
+				rightsObjectBreakdowns = this.breakdownRightsNeeded(rightsObject[entitlementSet]);
+			}
+
+			for (var breakdownIndex = 0; breakdownIndex < rightsObjectBreakdowns.length; breakdownIndex += 1) {
+				var rightsObjectBreakdown = rightsObjectBreakdowns[breakdownIndex];
+				if (rightsMode === 'rightsUsage') {
+					this.updateCalEntity(rightsObjectBreakdown, null, entitlementSet, calInfo);
+				} else {
+					this.updateCalEntity(null, rightsObjectBreakdown, entitlementSet, calInfo);
+				}
+			}
+		}
+	},
+
+	// 09-10-21: Switch consumerInfo buckets to [cal][entitlementSet]
+	processRightsObject: function(consumer, consumerInfo, rightsObject, pass, rightsMode) {
+		// var swModel;
+		for (var entitlementSet in rightsObject) {
+			var cals = rightsObject[entitlementSet].cals;
+			var rightsBreakdowns = rightsObject[entitlementSet].breakdowns;
+			// (1) Split up the current entitlementSet's RUB for the current consumer.
+			var rightsObjectBreakdowns;
+			if (rightsMode === 'rightsUsage') {
+				rightsObjectBreakdowns = this.breakdownRightsUsage(rightsObject[entitlementSet]);
+			} else {
+				rightsObjectBreakdowns = this.breakdownRightsNeeded(rightsObject[entitlementSet]);
+			}
+			for (var calIndex = 0; calIndex < cals.length; calIndex += 1) {
+				var cal = cals[calIndex];
+				var rightsBreakdown = rightsBreakdowns[calIndex];
+				var calGr = new GlideRecord(this.table);
+				calGr.get(cal);
+				var calSwModel = calGr.getValue('software_model');
+				var calInfo = {
+					sysId: cal, virtual: null, table: this.table, softwareModel: calSwModel,
+				};
+
+				consumerInfo[cal] = consumerInfo[cal] || {};
+				// (2) Create dummy parent rub, only if this (cal, lmr) combo hasn't been
+				// processed yet.
+				if (!this.calEntities[cal] || !this.calEntities[cal][entitlementSet]) {
+					this.generateCalEntity(calInfo, consumerInfo, entitlementSet);
+				}
+
+				this.calEntities[cal] = this.calEntities[cal] || {};
+				this.calEntities[cal][entitlementSet] = this.calEntities[cal][entitlementSet] || {};
+
+				var calEntity = this.calEntities[cal][entitlementSet];
+				// (3) Make an entry for this (cal, lmr) combo in consumerInfo, if it doen't already exist.
+				consumerInfo[cal][entitlementSet] = consumerInfo[cal][entitlementSet] || {
+					sysId: pass === this.UNALLOCATED_PASS ? consumer.entity : consumer,
+					virtual: null,
+				};
+
+				if (pass === this.ALLOCATED_PASS) {
+					consumerInfo[cal][entitlementSet].table = this.allocationCol === 'allocated_to'
+						? 'cmdb_ci' : 'sys_user';
+				} else {
+					consumerInfo[cal][entitlementSet].table = consumer.type === 'device'
+						? 'cmdb_ci' : 'sys_user';
+				}
+
+				if (rightsMode === 'rightsUsage') {
+					consumerInfo[cal][entitlementSet].parentRightsUsedBy = calEntity.rightsUsedBy;
+					consumerInfo[cal][entitlementSet].parentLicensesRequiredByRUB = calEntity.licensesRequiredByRUB;
+				} else {
+					if (gs.nil(calEntity.rightsNeededBy)) {
+						this.setRightsNeededByOnCAL(entitlementSet, calInfo);
+					}
+					calEntity = this.calEntities[cal][entitlementSet];
+					consumerInfo[cal][entitlementSet].parentRightsNeededBy = calEntity.rightsNeededBy;
+					consumerInfo[cal][entitlementSet].parentLicensesRequiredByRNB = calEntity.licensesRequiredByRNB;
+				}
+
+				// (4) Generate child RUB.
+				var rightsObjectBreakdown = rightsObjectBreakdowns[calIndex];
+				rightsObjectBreakdown.installs = calSwModel;
+				var currentConsumerInfo = consumerInfo[cal][entitlementSet];
+
+				if (rightsMode === 'rightsUsage') {
+					this.generateRightsUsedBy(entitlementSet, currentConsumerInfo, rightsObjectBreakdown);
+					// (5) Make an entry for this (cal, lmr) combo in this.licensedEntities.
+					this.licensedEntities[cal] = this.licensedEntities[cal] || {};
+					this.licensedEntities[cal][entitlementSet] = this.licensedEntities[cal][entitlementSet] || [];
+					this.licensedEntities[cal][entitlementSet].push(rightsBreakdown);
+					// (6) Update the CAL's RUB record.
+					this.updateCalEntity(rightsObjectBreakdown, null, entitlementSet, calInfo);
+				} else {
+					// Call generateRightsNeededByForConsumer to generate remediation options
+					var rightsNeededObj = {};
+					rightsNeededObj[entitlementSet] = rightsObjectBreakdown;
+					this.generateRightsNeededByForConsumer(rightsNeededObj, currentConsumerInfo);
+					// (6) Update the CAL's RNB record.
+					this.updateCalEntity(null, rightsObjectBreakdown, entitlementSet, calInfo);
+				}
+			}
+		}
+	},
+
+	// Returns a list of consumers with no allocations.
+	getConsumersWithoutAllocations: function() {
+		var calBreakdownGa = new SampAggregate(this.breakdownsTable);
+		calBreakdownGa.addQuery('is_reconciled', false);
+		calBreakdownGa.addQuery('active', true);
+		calBreakdownGa.addEncodedQuery('userISNOTEMPTY^ORdeviceISNOTEMPTY');
+		calBreakdownGa.addQuery('client_access.software_model.product', this.fSoftwareProduct);
+		calBreakdownGa.addQuery('client_access.type', this.calType);
+		calBreakdownGa.addQuery('client_access.software_model', 'IN', this.orderedSwModels);
+		calBreakdownGa.groupBy('user');
+		calBreakdownGa.groupBy('device');
+		calBreakdownGa.query();
+		return calBreakdownGa;
+	},
+
+	// Returns a list of Client Access Breakdowns that don't have any allocations
+	// for all relevant Client Access Sys Ids. Entries are in the following form:
+	// {
+	//		Consumer 1:
+	//			[{
+	//				breakdownSysId: <>, calSysId: <>, softwareModel: <>
+	// 			}, ...]
+	//		, Consumer 2: [{ ... }], ...
+	// }
+	getBreakdownsOfConsumersWithoutAllocations: function(consumers) {
+		var consumersToBreakdowns = {};
+		var that = this;
+		consumers.forEach(
+			function(consumer) {
+				var entity = consumer.entity;
+				var type = consumer.type;
+				consumersToBreakdowns[entity] = consumersToBreakdowns[entity] || [];
+				var calBreakdownGr = new SampRecord(that.breakdownsTable);
+				calBreakdownGr.addQuery('client_access.type', that.calType);
+				calBreakdownGr.addQuery('is_reconciled', false);
+				calBreakdownGr.addQuery(type, entity);
+				calBreakdownGr.query();
+				while (calBreakdownGr.next()) {
+					consumersToBreakdowns[entity].push({
+						breakdownSysId: calBreakdownGr.getUniqueValue(),
+						calSysId: calBreakdownGr.getValue('client_access'),
+						softwareModel: calBreakdownGr.getGlideRecord().client_access.software_model + '',
+					});
+				}
+			}
+		);
+		return consumersToBreakdowns;
+	},
+
+	breakdownRightsNeeded: function(entitlementSetRightsNeeded) {
+		var breakdownRNBs = [];
+		var rights = entitlementSetRightsNeeded.rights;
+		while (rights > 0) {
+			rights -= 1;
+			breakdownRNBs.push({
+				rights: 1,
+				swModelCombo: entitlementSetRightsNeeded.swModelCombo,
+			});
+		}
+		return breakdownRNBs;
+	},
+
+	breakdownRightsUsage: function(entitlementSetRightsUsage) {
+		var breakdownRUBs = [];
+		var allocatedInUse = entitlementSetRightsUsage.allocatedInUse;
+		var notAllocatedInUse = entitlementSetRightsUsage.notAllocatedInUse;
+		while (allocatedInUse > 0) {
+			allocatedInUse -= 1;
+			breakdownRUBs.push({
+				allocatedInUse: 1,
+				allocatedNotInUse: 0,
+				notAllocatedInUse: 0,
+				installs: entitlementSetRightsUsage.installs,
+			});
+		}
+		while (notAllocatedInUse > 0) {
+			notAllocatedInUse -= 1;
+			breakdownRUBs.push({
+				allocatedInUse: 0,
+				allocatedNotInUse: 0,
+				notAllocatedInUse: 1,
+				installs: entitlementSetRightsUsage.installs,
+			});
+		}
+		return breakdownRUBs;
+	},
+
+	generateCalEntity: function(calInfo, consumerInfo, entitlementSet) {
+		var calSysId = calInfo.sysId;
+		this.calEntities[calSysId] = this.calEntities[calSysId] || {};
+		// Generate CAL RUB + Related LRB Records
+		if (!(entitlementSet in this.calEntities[calSysId])) {
+			var rubInfo = this.createEmptyRightsUsedByRecord(entitlementSet, calInfo);
+			this.calEntities[calSysId][entitlementSet] = this.calEntities[calSysId][entitlementSet] || {};
+			this.calEntities[calSysId][entitlementSet].rightsUsedBy = rubInfo[0];
+			this.calEntities[calSysId][entitlementSet].licensesRequiredByRUB = rubInfo[1];
+
+			this.calEntities[calSysId][entitlementSet].allocatedInUse = 0;
+			this.calEntities[calSysId][entitlementSet].allocatedNotInUse = 0;
+			this.calEntities[calSysId][entitlementSet].notAllocatedInUse = 0;
+			this.calEntities[calSysId][entitlementSet].rightsUsed = 0;
+		}
+		// initialize
+		var calRecGr = new SampRecord(this.table);
+		calRecGr.get(calSysId);
+		this.calEntities[calSysId].rightsNeeded = 0;
+		// Added to keep track of the maximum number of rights this CAL can 'consume'
+		// Update this inside the updateCalEntity function.
+		this.calEntities[calSysId].rightsAvailable = parseInt(calRecGr.getValue('count'), 10);
+		this.calEntities[calSysId].softwareModel = calInfo.softwareModel;
+	},
+
+	// Create a dummy RUB for CAL
+	createEmptyRightsUsedByRecord: function (entitlementSet, consumerInfo) {
+		var rightUsedByGr = new SampRecord(ReconciliationConstants.ENTITLEMENT_RESULT_TABLE);
+		rightUsedByGr.intialize();
+		var rub = {
+			publisher: this.coreCompanyId,
+			license_metric_result: entitlementSet,
+			used_by_table: consumerInfo.table,
+			used_by: consumerInfo.sysId,
+			rights_used: 0,
+			allocations_needed: 0,
+			allocated_not_in_use: 0,
+			allocated_in_use: 0,
+			not_allocated_in_use: 0,
+			reconciled_software_models: consumerInfo.softwareModel,
+			virtual: consumerInfo.virtual,
+			cluster: consumerInfo.cluster,
+		};
+		this.updateORInsertRecord(rightUsedByGr, rub, 'insert');
+		rub.licensing_status = 'licensed';
+		var licensesRequiredByRUB = this.createEmptyLicensesRequiredByRecord(
+			entitlementSet, consumerInfo, rub
+		);
+		return [rightUsedByGr.getUniqueValue(), licensesRequiredByRUB];
+	},
+
+	// Create a dummy LRB for CAL
+	createEmptyLicensesRequiredByRecord: function (entitlementSet, consumerInfo, lrbInfo) {
+		lrbInfo.license_metric_result = entitlementSet;
+		lrbInfo.required_by_cal = consumerInfo.sysId;
+		lrbInfo.required_by = consumerInfo.sysId;
+		lrbInfo.required_by_table = consumerInfo.table;
+		var licensesRequiredByGr = new SampRecord(ReconciliationConstants.LICENSES_REQUIRED_BY_TABLE);
+		licensesRequiredByGr.initialize();
+		this.updateORInsertRecord(licensesRequiredByGr, lrbInfo, 'insert');
+		return licensesRequiredByGr.getUniqueValue();
+	},
+
+	// Create a dummy RNB for CAL
+	createEmptyRightsNeededByRecord: function (entitlementSet, consumerInfo) {
+		var rightsNeededObj = {};
+		rightsNeededObj[entitlementSet] = {};
+		this.generateRightsNeededByForConsumer(rightsNeededObj, null);
+		var rightsNeededByGr = new SampRecord(ReconciliationConstants.RIGHTS_NEEDED_BY_TABLE);
+		rightsNeededByGr.initialize();
+		var rnb = {
+			publisher: this.coreCompanyId,
+			remediation_option: this.purchaseRights[entitlementSet].remediationOption,
+			needed_by_table: consumerInfo.table,
+			needed_by: consumerInfo.sysId,
+			virtual: consumerInfo.virtual,
+			rights_needed: 0,
+			reconciled_software_models: entitlementSet.swModelCombo,
+			cluster: consumerInfo.cluster,
+		};
+		this.updateORInsertRecord(rightsNeededByGr, rnb, 'insert');
+		rnb.allocations_needed = 0;
+		rnb.allocated_not_in_use = 0;
+		rnb.allocated_in_use = 0;
+		rnb.not_allocated_in_use = 0;
+		rnb.licensing_status = 'not_licensed';
+		var licensesRequiredByRNB = this.createEmptyLicensesRequiredByRecord(
+			entitlementSet, consumerInfo, rnb
+		);
+		return [rightsNeededByGr.getUniqueValue(), licensesRequiredByRNB];
+	},
+
+	setRightsNeededByOnCAL: function(entitlementSet, calInfo) {
+		var calSysId = calInfo.sysId;
+		var rnbInfo = this.createEmptyRightsNeededByRecord(entitlementSet, calInfo);
+		this.calEntities[calSysId] = this.calEntities[calSysId] || {};
+		this.calEntities[calSysId][entitlementSet] = this.calEntities[calSysId][entitlementSet] || {};
+		this.calEntities[calSysId][entitlementSet].rightsNeededBy = rnbInfo[0];
+		this.calEntities[calSysId][entitlementSet].licensesRequiredByRNB = rnbInfo[1];
+		return rnbInfo[0];
+	},
+
+	getTotalCALRightNeeded: function(entitlementSet) {
+		var totalRightsNeeded = 0;
+		for (var calSysId in this.calEntities) {
+			if (entitlementSet in this.calEntities[calSysId]) {
+				var currRightsNeeded = this.calEntities[calSysId].rightsNeeded;
+				totalRightsNeeded += currRightsNeeded;
+			}
+		}
+		return totalRightsNeeded;
+	},
+
+	// (1) Loop through each of the entitlementSets in rightsUsage (its lmrs)
+	// (2) Update the correct "bucket" inside this.calEntities for the given (lmr,cal) combination.
+	updateCalEntity: function(breakdownRUB, breakdownRNB, entitlementSet, calInfo) {
+		var calSysId = calInfo.sysId;
+		var cal = this.calEntities[calSysId];
+		var calEntity = this.calEntities[calSysId][entitlementSet];
+		if (breakdownRUB != null) {
+			if (cal.rightsAvailable > 0 && breakdownRUB.allocatedInUse > 0) {
+				calEntity.allocatedInUse += 1;
+				calEntity.rightsUsed += 1;
+				cal.rightsAvailable -= 1;
+				breakdownRUB.allocatedInUse = 0;
+			}
+			if (cal.rightsAvailable > 0 && breakdownRUB.notAllocatedInUse > 0) {
+				calEntity.notAllocatedInUse += 1;
+				calEntity.rightsUsed += 1;
+				cal.rightsAvailable -= 1;
+				breakdownRUB.notAllocatedInUse = 0;
+			}
+		}
+
+		if (breakdownRUB != null) {
+			// Update the CAL RUB Records
+			var rightUsedByGr = new SampRecord(ReconciliationConstants.ENTITLEMENT_RESULT_TABLE);
+			var rubSysId = calEntity.rightsUsedBy;
+			rightUsedByGr.get(rubSysId);
+			rightUsedByGr.setValue('allocated_in_use', calEntity.allocatedInUse);
+			rightUsedByGr.setValue('allocated_not_in_use', calEntity.allocatedNotInUse);
+			rightUsedByGr.setValue('not_allocated_in_use', calEntity.notAllocatedInUse);
+			rightUsedByGr.setValue('rights_used', calEntity.rightsUsed);
+			rightUsedByGr.update();
+			// Update the CAL LRB (RUB) Records
+			var licensesRequiredByRUBGr = new SampRecord(ReconciliationConstants.LICENSES_REQUIRED_BY_TABLE);
+			var licensesRequiredByRUBSysId = calEntity.licensesRequiredByRUB;
+			licensesRequiredByRUBGr.get(licensesRequiredByRUBSysId);
+			licensesRequiredByRUBGr.setValue('allocated_in_use', calEntity.allocatedInUse);
+			licensesRequiredByRUBGr.setValue('allocated_not_in_use', calEntity.allocatedNotInUse);
+			licensesRequiredByRUBGr.setValue('not_allocated_in_use', calEntity.notAllocatedInUse);
+			var licensesRequiredRUB = parseInt(licensesRequiredByRUBGr.getValue('licenses_required') || '0', 10);
+			licensesRequiredRUB += 1;
+			licensesRequiredByRUBGr.setValue('licenses_required', licensesRequiredRUB);
+			licensesRequiredByRUBGr.update();
+		}
+		// Update the CAL RNB Records
+		if (breakdownRNB != null) {
+			var rightsNeededByGr = new SampRecord(ReconciliationConstants.RIGHTS_NEEDED_BY_TABLE);
+			var rnbSysId = calEntity.rightsNeededBy;
+
+			if (gs.nil(rnbSysId)) {
+				rnbSysId = this.setRightsNeededByOnCAL(entitlementSet, calInfo);
+			}
+
+			if (cal.rightsAvailable > 0 && breakdownRNB.rights > 0) {
+				cal.rightsNeeded += 1;
+				cal.rightsAvailable -= 1;
+				breakdownRNB.rights = 0;
+
+				var entSetPurchaseRights = this.purchaseRights[entitlementSet];
+				entSetPurchaseRights.rightsNeeded = entSetPurchaseRights.rightsNeeded || 0;
+				entSetPurchaseRights.rightsNeeded = this.getTotalCALRightNeeded(entitlementSet);
+				// Update the CAL LRB (RNB) Records
+				var licensesRequiredByRNBGr = new SampRecord(ReconciliationConstants.LICENSES_REQUIRED_BY_TABLE);
+				var licensesRequiredByRNBSysId = calEntity.licensesRequiredByRNB;
+				licensesRequiredByRNBGr.get(licensesRequiredByRNBSysId);
+				var licensesRequired = parseInt(licensesRequiredByRNBGr.getValue('licenses_required') || '0', 10);
+				licensesRequired += 1;
+				licensesRequiredByRNBGr.setValue('licenses_required', licensesRequired);
+				licensesRequiredByRNBGr.update();
+			}
+
+			rightsNeededByGr.get(rnbSysId);
+			rightsNeededByGr.setValue('rights_needed', cal.rightsNeeded);
+			rightsNeededByGr.setValue('reconciled_software_models', breakdownRNB.swModelCombo);
+			rightsNeededByGr.update();
+		}
+	},
+
+	// Rights Needed By uses cheapest on the entitlementMap
+	// Licensed / Unlicensed
+	consumeRights: function(
+		rightsUsage, breakdownInfo, softwareModel, entitlementSetsAlloc,
+		entitlementMapAlloc, numRightsNeeded, rightsNeeded
+	) {
+		var entitlementSet;
+		var rightsNeededNum = numRightsNeeded;
+		var lmrs = [];
+		var calSysId = null;
+		var breakdownSysId = null;
+		if (breakdownInfo != null) {
+			calSysId = breakdownInfo.calSysId;
+			breakdownSysId = breakdownInfo.breakdownSysId;
+		}
+		// Calculating total available rights (allocated and unallocated)
+		var totalAllocatedRights = 0;
+		if (entitlementSetsAlloc) {
+			totalAllocatedRights = entitlementMapAlloc.getTotalRights(softwareModel);
+		}
+		var totalUnallocatedRights = this.entitlementMap.getTotalRights(softwareModel);
+		var totalRights = totalAllocatedRights + totalUnallocatedRights;
+
+		// If there is not enough rights, then create Rights Needed By
+		if (totalRights < rightsNeededNum) {
+			entitlementSet = this.entitlementMap.cheapest[softwareModel];
+			if (entitlementSet != null) {
+				if (!(entitlementSet in rightsNeeded)) {
+					rightsNeeded[entitlementSet] = {
+						rights: rightsNeededNum - totalRights,
+						swModelCombo: softwareModel,
+					};
+					if (breakdownInfo != null) {
+						rightsNeeded[entitlementSet].cals = [calSysId];
+						rightsNeeded[entitlementSet].breakdowns = [breakdownSysId];
+					}
+				} else {
+					rightsNeeded[entitlementSet].rights += (rightsNeededNum - totalRights);
+					if (breakdownInfo != null) {
+						rightsNeeded[entitlementSet].cals.push(calSysId);
+						rightsNeeded[entitlementSet].breakdowns.push(breakdownSysId);
+					}
+				}
+				// Update rightsNeededNum
+				rightsNeededNum = totalRights;
+			}
+		}
+
+		// This is for the allocated pass
+		if (entitlementSetsAlloc) {
+			var entitlementOptionsAlloc = entitlementMapAlloc.get(softwareModel) || [];
+			var consumedInfo = this.consumeAllocatedRightsForModelCombo(
+				softwareModel, entitlementOptionsAlloc, entitlementSetsAlloc, rightsUsage, null, rightsNeededNum
+			);
+			rightsNeededNum = consumedInfo.remainder;
+			lmrs = consumedInfo.lmrs;
+		}
+
+		if (rightsNeededNum > 0) {
+			var entitlementOptions = this.entitlementMap.get(softwareModel) || [];
+			lmrs = this.consumeUnallocatedRightsForModelCombo(
+				softwareModel, entitlementOptions, rightsUsage, null, rightsNeededNum
+			);
+		}
+
+		if (breakdownInfo != null) {
+			lmrs.forEach(
+				function(lmr) {
+					if (!('cals' in rightsUsage[lmr])) {
+						rightsUsage[lmr].cals = [];
+					}
+					if (!('breakdowns' in rightsUsage[lmr])) {
+						rightsUsage[lmr].breakdowns = [];
+					}
+					rightsUsage[lmr].cals.push(calSysId);
+					rightsUsage[lmr].breakdowns.push(breakdownSysId);
+				}
+			);
+		}
+	},
+
+	prepare: function() {
+		this.createSwModelTree();
+		this.markSwModelWithRank();
+		this.getAllEntitlementSet();
+		this.entitlementMap = this.generateEntitlementMap(this.entitlementSets);
+		this.debug('General information, Initial entitlement map: ' + JSON.stringify(this.entitlementMap.map));
+	},
+
+	wrapUp: function() {
+		SamLicenseCalculator.prototype.wrapUp.call(this);
+		var calRec = new GlideRecord(this.table);
+		calRec.addQuery('software_model.product', this.fSoftwareProduct);
+		calRec.addQuery('is_reconciled', false);
+		calRec.addQuery('software_model', 'IN', this.orderedSwModels);
+		calRec.orderByDesc('software_model.downgrade_rank');
+		calRec.query();
+		// Only do this when all of the cals are reconciled
+		if (!calRec.next()) {
+			this.licenseAllInstalls();
+		}
+	},
+
+	generateRemediationOptions: function() {
+		this.setSoftwareModelsWithELA();
+		this.updatePurchaseRights();
+	},
+
+	getRelatedPR: function(smrSysId) {
+		var smrGr = new GlideRecord(ReconciliationConstants.SOFTWARE_MODEL_RESULT_TABLE);
+		smrGr.get(smrSysId);
+		return smrGr.getValue('product_result');
+	},
+
+	getRelatedSMR: function(lmrSysId) {
+		var lmrGr = new GlideRecord(ReconciliationConstants.LICENSE_METRIC_RESULT_TABLE);
+		lmrGr.get(lmrSysId);
+		return lmrGr.getValue('software_model_result');
+	},
+
+	makeOverflowRecords: function(calSysId, entitlementSets, relatedInstalls) {
+		var entityToLmrGr = new GlideRecord(ReconciliationConstants.SOFTWARE_ENTITY_TO_METRIC_RESULT_TABLE);
+		if (entitlementSets.length > 1) {
+			for (var i = 1; i < entitlementSets.length; i++) {
+				// Make overflow record for the CAL Record.
+				if (!gs.nil(calSysId)) {
+					entityToLmrGr.initialize();
+					entityToLmrGr.setValue('software_entity', calSysId);
+					entityToLmrGr.setValue('software_entity_table', this.table);
+					entityToLmrGr.setValue('license_metric_result', entitlementSets[i]);
+					entityToLmrGr.insert();
+				}
+				// Make overflow record for the related installs.
+				for (var j = 0; j < relatedInstalls.length; j += 1) {
+					entityToLmrGr.initialize();
+					entityToLmrGr.setValue('software_entity', relatedInstalls[j]);
+					entityToLmrGr.setValue(
+						'software_entity_table', ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE
+					);
+					entityToLmrGr.setValue('license_metric_result', entitlementSets[i]);
+					entityToLmrGr.insert();
+				}
+			}
+		}
+	},
+
+	markBreakdownRecords: function(calSysId, unlicensed) {
+		// Mark breakdowns with the lmrs each of them were licensed with.
+		var entitlementSetsToBreakdowns = this.licensedEntities[calSysId];
+		for (var entitlementSet in entitlementSetsToBreakdowns) {
+			var relatedSMR = this.getRelatedSMR(entitlementSet);
+			var relatedPR = this.getRelatedPR(relatedSMR);
+			var breakdowns = entitlementSetsToBreakdowns[entitlementSet];
+			for (var index = 0; index < breakdowns.length; index += 1) {
+				var breakdownSysId = breakdowns[index];
+				var query = {};
+				query.license_metric_result = entitlementSet;
+				query.software_model_result = relatedSMR;
+				query.product_result = relatedPR;
+				query.unlicensed_client_access_breakdown = unlicensed;
+				query[this.isReconciledField] = true;
+				new GlideQuery(this.breakdownsTable)
+					.disableWorkflow()
+					.where('sys_id', breakdownSysId)
+					.updateMultiple(query);
+			}
+		}
+	},
+
+	markRelatedInstalls: function(entitlementSet, relatedInstalls, unlicensed) {
+		var relatedSMR = this.getRelatedSMR(entitlementSet);
+		var relatedPR = this.getRelatedPR(relatedSMR);
+		for (var index = 0; index < relatedInstalls.length; index += 1) {
+			// For each matching install, just stamp with the passed in entitlementSet
+			var query = {};
+			query.license_metric_result = entitlementSet;
+			query.software_model_result = relatedSMR;
+			query.product_result = relatedPR;
+			query.unlicensed_install = unlicensed;
+			query[this.isReconciledField] = true;
+			new GlideQuery(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE)
+				.where('sys_id', relatedInstalls[index])
+				.where(this.isReconciledField, false)
+				.updateMultiple(query);
+		}
+	},
+
+	// Helper Function to get all installs related to the inputted cal sys id
+	getRelatedInstalls: function(calSysId) {
+		var relatedInstalls = [];
+		var softwareModel = this.calEntities[calSysId].softwareModel;
+		// Find the Discovery Models related to the Software Model
+		var swModelGr = new GlideRecord(ReconciliationConstants.SOFTWARE_MODEL_TABLE);
+		swModelGr.get(softwareModel);
+		var discoveryModels = new SAMPSWModelUtil().getDiscModelArray(swModelGr);
+		// Query for the installed on devices for this CAL
+		var installedOnGr = new GlideRecord('samp_sw_client_access_installed_device');
+		installedOnGr.addQuery('active', true);
+		installedOnGr.addQuery('client_access', calSysId);
+		installedOnGr.query();
+		// Loop through each of the matching installed on devices
+		while (installedOnGr.next()) {
+			var installsGr = new GlideRecord(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+			// Apply the related Install Condition(s)
+			SampInstallConditionEngine.addSampQueryCondition(installsGr);
+			installsGr.addQuery('installed_on', installedOnGr.getValue('device'));
+			installsGr.addQuery('discovery_model', 'IN', discoveryModels);
+			var qc = installsGr.addNullQuery('inferred_suite');
+			// Check if the CAL's software model is a suite
+			if (SAMPSWModelUtil.isSuite(softwareModel)) {
+				qc.addOrCondition('inferred_suite', softwareModel);
+			}
+			installsGr.query();
+			while (installsGr.next()) {
+				relatedInstalls.push(installsGr.getUniqueValue());
+			}
+		}
+		return relatedInstalls;
+	},
+
+	getLicenseAllInstallsFlag: function(calSysId) {
+		var calRec = new GlideRecord(this.table);
+		calRec.get(calSysId);
+		return calRec.software_model.license_all_installs_accessed_by_clients;
+	},
+
+	getLicenseAllInstallsFlagSWModel: function(swModelSysId) {
+		var swModelGr = new GlideRecord(ReconciliationConstants.SOFTWARE_MODEL_TABLE);
+		swModelGr.get(swModelSysId);
+		return swModelGr.getValue('license_all_installs_accessed_by_clients') === '1';
+	},
+
+	getEntitlementSets: function(calSysId) {
+		var entitlementSets = Object.keys(this.calEntities[calSysId]);
+		entitlementSets = entitlementSets.filter(
+			function(entitlementSet) {
+				var keysToIgnore = [
+					'rightsNeededBy', 'licensesRequiredByRNB', 'rightsNeeded', 'rightsAvailable', 'softwareModel',
+				];
+				return keysToIgnore.indexOf(entitlementSet) < 0;
+			}
+		);
+		return entitlementSets;
+	},
+
+	// Returns a list of unique entitlementSet sys ids for the inputted list of CALs.
+	// Ex: { CAL Sys Id 1: [EntitlementSet1, EntitlementSet2], ... }
+	getEntitlementSetsForCALs: function(calSysIds) {
+		var entitlementSets = [];
+		for (var index = 0; index < calSysIds.length; index += 1) {
+			var calSysId = calSysIds[index];
+			var currentEntSets = this.getEntitlementSets(calSysId);
+			for (var entSetIndex = 0; entSetIndex < currentEntSets.length; entSetIndex += 1) {
+				var currentEntSet = currentEntSets[entSetIndex];
+				if (entitlementSets.indexOf(currentEntSet) < 0) {
+					entitlementSets.push(currentEntSet);
+				}
+			}
+		}
+		return entitlementSets;
+	},
+
+	// Loop through this.calEntities[calSysId], collect unique softwareModels
+	// Loop through the software models collected:
+	// 		Check if ALL cals that have this software_model have unlicensed = False,
+	//		if they do, then we:
+	//			(1) Get all installs related to current software_model, license
+	//			them by filling in the appropriate fields, making overflow records
+	licenseAllInstalls: function() {
+		var swModelsToCALs = {};
+		var swModel;
+		for (var calSysId in this.calEntities) {
+			swModel = this.calEntities[calSysId].softwareModel;
+			if (!(swModel in swModelsToCALs)) {
+				swModelsToCALs[swModel] = [calSysId];
+			} else {
+				swModelsToCALs[swModel].push(calSysId);
+			}
+		}
+
+		var uniqueSwModels = Object.keys(swModelsToCALs);
+		var licenseAllInstalls = this.getLicenseAllInstallsFlagSWModel(swModel);
+
+		for (var swModelIndex = 0; swModelIndex < uniqueSwModels.length; swModelIndex += 1) {
+			swModel = uniqueSwModels[swModelIndex];
+
+			var calsForSwModel = swModelsToCALs[swModel];
+			var entitlementSets = this.getEntitlementSetsForCALs(calsForSwModel);
+			var entitlementSet = entitlementSets[0];
+			var swModelGr = new GlideRecord(ReconciliationConstants.SOFTWARE_MODEL_TABLE);
+			swModelGr.get(swModel);
+
+			var allInstalls = [];
+			// Helper function that finds all installs, accounting for install
+			// conditions and suites.
+			var installsGr = new SAMPSWModelUtil().getInstalls(swModelGr);
+			while (installsGr.next()) {
+				allInstalls.push(installsGr.getUniqueValue());
+			}
+
+			var unlicensedCalGr = new GlideRecord(this.table);
+			unlicensedCalGr.addQuery('software_model', swModel);
+			unlicensedCalGr.addQuery('unlicensed_client_access', true);
+			unlicensedCalGr.query();
+			if (licenseAllInstalls) {
+				entitlementSets = [];
+				var calRec = new GlideRecord(this.table);
+				calRec.addQuery('software_model.product', this.fSoftwareProduct);
+				calRec.addQuery('software_model', 'IN', this.orderedSwModels);
+				calRec.orderByDesc('software_model.downgrade_rank');
+				calRec.query();
+				while (calRec.next()) {
+					entitlementSets.push(calRec.getValue('license_metric_result'));
+				}
+				entitlementSet = entitlementSets[0];
+				if (!unlicensedCalGr.hasNext()) {
+					// Mark all the installs
+					this.markRelatedInstalls(entitlementSet, allInstalls, false);
+				} else {
+					// Stamp all installs that aren't reconciled with lmr etc
+					this.markRelatedInstalls(entitlementSet, allInstalls, true);
+				}
+				// Make Overflow records for all installs, if applicable
+				this.makeOverflowRecords(null, entitlementSets, allInstalls);
+			}
+		}
+	},
+
+	// DONE: Update this to do the following:
+	// "Fully Consumed" => the whole count is used up?
+	// (i) Allocated Pass ->
+	//     (1) If a CAL record is "fully consumed", stamp it with (PR, SMR, LMR, isReconciled)
+	//     (2) [Only if fully consumed?] Mark the allocated installs with (PR, SMR, LMR, isReconciled)?
+	// (ii) Unallocated Pass -> Mark the unalloc installs with (PR, SMR, LMR, isReconciled)
+	//     - licensedEntities -> Breakdowns that have some license covering them
+	//     - unlicensedEntities -> Breakdowns that don't have a license covering them
+	// DONE: Change the logic to only set is_reconciled to true only if rightsAvailable = 0
+	markClientAccessRecords: function(pass) {
+		var calSysIds = Object.keys(this.calEntities);
+		for (var index = 0; index < calSysIds.length; index += 1) {
+			var calSysId = calSysIds[index];
+			if (pass === this.UNALLOCATED_PASS) {
+				new GlideQuery(ReconciliationConstants.ENTITLEMENT_RESULT_TABLE)
+					.where('rights_used', 0)
+					.where('used_by', calSysId)
+					.where('used_by_table', this.table)
+					.deleteMultiple();
+			}
+			// Find Rights Needed By Entries / Delete any where
+			// this.calEntities[calSysId].rightsNeeded = 0. Only after the
+			// unallocated pass.
+			var calRightsNeeded = this.calEntities[calSysId].rightsNeeded;
+			if (calRightsNeeded === 0 && pass === this.UNALLOCATED_PASS) {
+				new GlideQuery(ReconciliationConstants.RIGHTS_NEEDED_BY_TABLE)
+					.where('needed_by', calSysId)
+					.where('needed_by_table', this.table)
+					.deleteMultiple();
+			}
+			var entitlementSets = this.getEntitlementSets(calSysId);
+			if (entitlementSets.length > 0) {
+				// Stamp with the first entitlementSet
+				var entitlementSet = entitlementSets[0];
+				var query = {};
+				// Select some entitlementSet to stamp with
+				query.license_metric_result = entitlementSet;
+				query.software_model_result = this.getRelatedSMR(entitlementSet);
+				query.product_result = this.getRelatedPR(query.software_model_result);
+				// Unlicensed = True if the CAL isn't fully consumed OR has rights needed
+				var calEntity = this.calEntities[calSysId];
+				var unlicensed = calEntity.rightsAvailable !== 0 || calEntity.rightsNeeded !== 0;
+				query.unlicensed_client_access = unlicensed;
+				query[this.isReconciledField] = calEntity.rightsAvailable === 0 || pass === this.UNALLOCATED_PASS;
+				new GlideQuery(this.table)
+					.where('sys_id', calSysId)
+					.updateMultiple(query);
+				// Mark the related Breakdowns
+				this.markBreakdownRecords(calSysId, unlicensed);
+				// Only do the following if the 'License all installs...' flag on the
+				// software model is NOT checked.
+				var licenseAllInstallsForCal = this.getLicenseAllInstallsFlag(calSysId);
+				if ((pass === this.ALLOCATED_PASS && !unlicensed) || pass === this.UNALLOCATED_PASS) {
+					if (!licenseAllInstallsForCal) {
+						// Mark the related Installs
+						var relatedInstalls = this.getRelatedInstalls(calSysId);
+						this.markRelatedInstalls(entitlementSet, relatedInstalls, unlicensed);
+						// Make the overflow records for the other etitlementSets for both the CAL and
+						// related installs.
+						this.makeOverflowRecords(calSysId, entitlementSets, relatedInstalls);
+					} else {
+						// Only make overflow records for the other entitlementSets only for the CAL
+						this.makeOverflowRecords(calSysId, entitlementSets, []);
+					}
+				}
+			}
+		}
+		if (pass === this.UNALLOCATED_PASS) {
+			// Delete any remediation options with no remaining Rights Needed Bys
+			for (var entset in this.purchaseRights) {
+				var remediationOption = this.purchaseRights[entset].remediationOption;
+				var rnbCount = new GlideQuery(ReconciliationConstants.RIGHTS_NEEDED_BY_TABLE)
+					.where('remediation_option', remediationOption)
+					.count();
+				if (rnbCount === 0) {
+					var remediationGr = new GlideRecord(ReconciliationConstants.REMEDIATION_OPTION_TABLE);
+					remediationGr.get(remediationOption);
+					remediationGr.deleteRecord();
+				}
+			}
+		}
+	},
+
+	calField: 'count',
+	isReconciledField: 'is_reconciled',
+	table: ReconciliationConstants.CLIENT_ACCESS_TABLE,
+	breakdownsTable: ReconciliationConstants.CLIENT_ACCESS_BREAKDOWN_TABLE,
+	type: 'SamCalLicenseCalculator',
+});
+
+SamCalLicenseCalculator.allocationCols = {};
+SamCalLicenseCalculator.allocationCols[LicenseMetric.DEVICE_CAL_FOR_MICROSOFT] = ['allocated_to'];
+SamCalLicenseCalculator.allocationCols[LicenseMetric.USER_DEVICE_CAL_FOR_CITRIX] = ['allocated_to', 'assigned_to'];
+SamCalLicenseCalculator.allocationCols[LicenseMetric.NAMED_USER_PLUS_FOR_ORACLE] = ['allocated_to', 'assigned_to'];
+SamCalLicenseCalculator.allocationCols[LicenseMetric.USER_CAL_FOR_MICROSOFT] = ['assigned_to'];
+SamCalLicenseCalculator.allocationCols[LicenseMetric.CONCURRENT_USER_FOR_CITRIX] = ['assigned_to'];
+SamCalLicenseCalculator.allocationCols[LicenseMetric.USER_DEVICE_CAL] = ['allocated_to', 'assigned_to'];
+
+SamCalLicenseCalculator.type = {};
+SamCalLicenseCalculator.type[LicenseMetric.DEVICE_CAL_FOR_MICROSOFT] = 'device_cal';
+SamCalLicenseCalculator.type[LicenseMetric.USER_DEVICE_CAL_FOR_CITRIX] = 'user_device_cal';
+SamCalLicenseCalculator.type[LicenseMetric.NAMED_USER_PLUS_FOR_ORACLE] = 'user_device_cal';
+SamCalLicenseCalculator.type[LicenseMetric.USER_CAL_FOR_MICROSOFT] = 'user_cal';
+SamCalLicenseCalculator.type[LicenseMetric.CONCURRENT_USER_FOR_CITRIX] = 'user_cal';
+SamCalLicenseCalculator.type[LicenseMetric.USER_DEVICE_CAL] = 'user_device_cal';]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:39</sys_created_on>
+        <sys_id>dad5e96c47111110c859fee3846d43d3</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamCalLicenseCalculator</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_dad5e96c47111110c859fee3846d43d3</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:39</sys_updated_on>
+    </sys_script_include>
+</record_update>

@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampInstallConditionEngine</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SampInstallConditionEngine</name>
+        <script><![CDATA[var SampInstallConditionEngine = Class.create();
+SampInstallConditionEngine.prototype = {
+	initialize: function() {
+	},
+	type: 'SampInstallConditionEngine',
+};
+
+SampInstallConditionEngine.currentInstallCondition = '';
+SampInstallConditionEngine.fieldPrefix = '';
+
+SampInstallConditionEngine.softwareModelChange = function(softwareModelId) {
+	var softwareModelGr = new GlideRecord('cmdb_software_product_model');
+	if (softwareModelGr.get(softwareModelId) && softwareModelGr.install_condition) {
+		SampInstallConditionEngine.currentInstallCondition = softwareModelGr.getValue('install_condition');
+	} else {
+		SampInstallConditionEngine.currentInstallCondition = '';
+	}
+};
+
+SampInstallConditionEngine.clearInstallCondition = function() {
+	SampInstallConditionEngine.currentInstallCondition = '';
+};
+
+SampInstallConditionEngine.addSampQueryCondition = function(gr) {
+	if (SampInstallConditionEngine.currentInstallCondition) {
+		var tableName = gr.getTableName();
+		if (SampInstallConditionEngine.checkTableName(tableName)) {
+			SampInstallConditionEngine.addQueryCondition(gr, SampInstallConditionEngine.currentInstallCondition,
+				SampInstallConditionEngine.fieldPrefix);
+		}
+	}
+};
+
+// Method addQueryCondition should not use or update any class variables
+// In addition to Recon, it is also used in SampBlacklistEngine
+// Since both can run at the same time, we don't wan't them to overwrite each other's values
+// Only Recon will use class variables by calling addSampQueryCondition.
+// Blacklist will directly call addQueryCondition
+SampInstallConditionEngine.addQueryCondition = function(gr, installCondition, fieldPrefix) {
+	var conditionsMustMeet = gr.getEncodedQuery();
+	var index;
+	index = conditionsMustMeet.indexOf('^GROUPBY');
+	if (index > -1) {
+		conditionsMustMeet = conditionsMustMeet.substring(0, index);
+	}
+	index = conditionsMustMeet.indexOf('^ORDERBY');
+	if (index > -1) {
+		conditionsMustMeet = conditionsMustMeet.substring(0, index);
+	}
+
+	var installConditionEncodedQuery = SampInstallConditionEngine.fixInstallConditionPrefix(
+		fieldPrefix,
+		installCondition
+	);
+
+	// find each top level OR condition, insert conditionsMustMeet after it
+	var i = installConditionEncodedQuery.indexOf('^NQ', 0);
+	while (i !== -1) {
+		installConditionEncodedQuery = installConditionEncodedQuery.substring(0, i + 3)
+				+ conditionsMustMeet + '^'
+				+ installConditionEncodedQuery.substring(i + 3);
+		i = installConditionEncodedQuery.indexOf('^NQ', i + 3);
+	}
+	gr.addEncodedQuery(installConditionEncodedQuery);
+};
+
+SampInstallConditionEngine.getSampQueryCondition = function(gr) {
+	// This function is only used to get query condition in case of updateMultiple for GlideRecord
+	// Will assume, in case of updateMultiple, there will be no groupBy or OrderBy
+
+	if (SampInstallConditionEngine.currentInstallCondition) {
+		var tableName = gr.getTableName();
+		if (SampInstallConditionEngine.checkTableName(tableName)) {
+			var conditionsMustMeet = gr.getEncodedQuery();
+
+			var installConditionEncodedQuery = SampInstallConditionEngine.fixInstallConditionPrefix(
+				SampInstallConditionEngine.fieldPrefix,
+				SampInstallConditionEngine.currentInstallCondition
+			);
+
+			// find each top level OR condition, insert conditionsMustMeet after it
+			var i = installConditionEncodedQuery.indexOf('^NQ', 0);
+			while (i !== -1) {
+				installConditionEncodedQuery = installConditionEncodedQuery.substring(0, i + 3)
+				+ conditionsMustMeet + '^'
+				+ installConditionEncodedQuery.substring(i + 3);
+				i = installConditionEncodedQuery.indexOf('^NQ', i + 3);
+			}
+			return conditionsMustMeet + '^' + installConditionEncodedQuery;
+		}
+	}
+
+	return gr.getEncodedQuery();
+};
+
+SampInstallConditionEngine.checkTableName = function(tableName) {
+	if (tableName === 'cmdb_sam_sw_install') {
+		SampInstallConditionEngine.fieldPrefix = '';
+		return true;
+	}
+
+	var installViews = ['samp_vminstall_on_pinstall'];
+
+	if (GlidePluginManager.isActive('com.snc.samp.core')) {
+		installViews.push.apply(installViews, SampVirtualizationAdapter.getSupportedInstallViews());
+	}
+
+	if (installViews.indexOf(tableName) !== -1) {
+		SampInstallConditionEngine.fieldPrefix = 'inst_';
+		return true;
+	}
+
+	return false;
+};
+
+SampInstallConditionEngine.fixInstallConditionPrefix = function(prefix, origQueryString) {
+	var queryString = origQueryString;
+	// Need to fix install condition when apply to database view
+	// Fix logic: since only ^; ^OR; ^NQ; can be added by user, adding prefix after each of them
+	if (prefix) {
+		// find each ^
+		var i = queryString.indexOf('^', 0);
+		while (i !== -1) {
+			var substring = queryString.substring(i, i + 3);
+
+			if (substring === '^EQ') {
+				break;
+			}
+
+			if (substring === '^OR' || substring === '^NQ') {
+				queryString = queryString.substring(0, i + 3) + prefix + queryString.substring(i + 3);
+			} else {
+				queryString = queryString.substring(0, i + 1) + prefix + queryString.substring(i + 1);
+			}
+
+			i = queryString.indexOf('^', i + 1);
+		}
+	}
+
+	return prefix + queryString;
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:39</sys_created_on>
+        <sys_id>92d5e96c47111110c859fee3846d43d1</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampInstallConditionEngine</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_92d5e96c47111110c859fee3846d43d1</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:39</sys_updated_on>
+    </sys_script_include>
+</record_update>

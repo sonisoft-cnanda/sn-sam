@@ -1,0 +1,1536 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SAMPSuiteEngine</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>Suite Engine logic to handle the logic for Suite inference values in SAM Premium Core</description>
+        <name>SAMPSuiteEngine</name>
+        <script><![CDATA[var SAMPSuiteEngine = Class.create();
+SAMPSuiteEngine.prototype = {
+	CI_TABLE: 'cmdb_ci_hardware',
+	INSTALL_TABLE: 'cmdb_sam_sw_install',
+	SUITES_TABLE: 'cmdb_m2m_suite_model',
+	INFERRED_SUITE_HISTORY_TABLE: 'samp_inferred_suite_history',
+	MAX_INFERENCE: 999,
+	USER_SUBSCRIPTION_LM: '48c5d8d293200300544814f1b47ffb45',
+	initialize: function(reconResultId) {
+		this.fReconResultId = reconResultId;
+		this.suitesParentsWithEntitlement = {};
+		this.swToSuitesObjectMap = {};
+		this.suiteParentCache = {};
+		this.DMToSM = {};
+		this.SMToDM = {};
+		this.suiteInfo = {};
+		/*
+			productToHeight map of product height in the context of suite of suites.
+			e.g. {
+				SC : 1,
+				CIS : 2
+			}
+		*/
+		this.productToHeight = {};
+		/*
+			productToSuiteDowngradeRelations is a map of product to suite downgrades.
+			e.g. {
+				SC: { SC 2019: [SC 2018, SC 2017],
+					SC 2017: [SC 2016] },
+				CIS: { CIS 2019: [CIS 2018, CIS 2017],
+					CIS 2017: [CIS 2016] },
+				}
+		*/
+		this.productToSuiteDowngradeRelations = {};
+		/*
+			PRB1416403
+			A map to check if a pair is already processed to avoid cycle in downgrade relations
+			e.g.
+				2017 has downgrade to 2016 and 2016 has upgrade to 2017
+				productToSuiteDowngradeRelations will have
+				a:[b],
+				b:[a]
+			toposort will fail for it. so we need to keep only one pair.
+		*/
+		this.downgradeRelationPairProcessed = {};
+		/*
+			Products sorted as per their height in the suite levels.
+		*/
+		this.sortedProducts = [];
+		this.processedInstalls = 0;
+		this.fisSAMPActive = GlidePluginManager.isActive('com.snc.samp');
+
+		if (this.fisSAMPActive) {
+			this.virtualizationAdapter = new SampVirtualizationAdapter();
+		}
+	},
+
+	// Main function, this will search for a Suite Candidate for the given install record and
+	// update the values if there's a match
+	findSuiteBySampRecord: function(installGr, previousSuiteId, currSuite) {
+		if (!installGr.gr || installGr.gr.omit_from_suites) {
+			return false;
+		}
+		var candidate = this._findCandidate(installGr, currSuite);
+		// Update all the installs with the Suite Candidate
+		if (candidate.candidate_found) {
+			this._updateInstallFromDiscoveryModels(candidate, installGr);
+		} else {
+			this._clearSingleInstall(installGr);
+		}
+		return candidate.candidate_found;
+	},
+
+	/*
+		With STRY50327985, this API is enhanced to return suite downgrades.
+		The way this works is we build a productToSuiteDowngradeRelations map contains product to suite downgrade
+		relation mapping.
+		We also build productToHeight map to track the height of the product in the context of suite of suites.
+		We process the each product in order of increasing height.
+		For each product, we perform a topological sort of the dowgrade graph and store the result in the reverse
+		order in the array of sortedSuites.
+		e.g.
+		productToSuiteDowngradeRelations = {
+			SC: { SC 2019: [SC 2018, SC 2017],
+				SC 2017: [SC 2016] },
+			CIS: { CIS 2019: [CIS 2018, CIS 2017],
+				CIS 2017: [CIS 2016] },
+			}
+		productToHeight = {
+			SC : 1,
+			CIS: 2
+		}
+		Following the order of processing of the suites above.
+		sortedSuites = [SC 2016, SC 2017, SC 2018, SC 2019, CIS 2016, CIS 2017, CIS 2018, CIS 2019]
+	*/
+
+	findSuitesParentSMWithEntitlement: function(publisherId) {
+		var swModelArray = [];
+		var entitementGa = new SampAggregate('alm_license');
+		entitementGa.addNotNullQuery('license_metric');
+		entitementGa.addQuery('model.manufacturer', publisherId);
+		entitementGa.addQuery('install_status', '=', 1);
+		entitementGa.groupBy('model');
+		entitementGa.query();
+		while (entitementGa.next()) {
+			swModelArray.push(entitementGa.getValue('model'));
+		}
+		if (this.fisSAMPActive) {
+			new GlideQuery('cmdb_software_product_model')
+				.where('manufacturer', publisherId)
+				.where('license_under_management', false)
+				.select('sys_id')
+				.forEach(function(lumSwModel) {
+					if (swModelArray.indexOf(lumSwModel.sys_id) === -1) {
+						swModelArray.push(lumSwModel.sys_id);
+					}
+				});
+		}
+		var suiteSMParent = new SampRecord(this.SUITES_TABLE);
+		suiteSMParent.addQuery('suite_parent', swModelArray);
+		suiteSMParent.query();
+		while (suiteSMParent.next()) {
+			var parentSuite = suiteSMParent.getValue('suite_parent');
+			var productSysId = suiteSMParent.gr.suite_parent.product;
+			if (!this.suitesParentsWithEntitlement[parentSuite]) {
+				var height = this.addChildSuites(parentSuite);
+				this.suitesParentsWithEntitlement[parentSuite] = height;
+				this.productToHeight[productSysId] = height;
+				this.addSuiteDowngradesToMap(parentSuite, productSysId);
+			}
+		}
+		var sortedSuites = [];
+		this.sortedProducts = this.sortProductsByHeight();
+		var that = this;
+		this.sortedProducts.forEach(function(product) {
+			var sortedSuitesForProduct = that.topoSort(that.productToSuiteDowngradeRelations[product]).reverse();
+			Array.prototype.push.apply(sortedSuites, sortedSuitesForProduct);
+		});
+		return sortedSuites;
+	},
+
+	isDowngradePairProcessed: function(model1, model2) {
+		var pair;
+		if (model1.localeCompare(model2) === -1) {
+			pair = model1.concat(model2);
+		} else {
+			pair = model2.concat(model1);
+		}
+		if (!this.downgradeRelationPairProcessed[pair]) {
+			this.downgradeRelationPairProcessed[pair] = true;
+			return false;
+		}
+		return true;
+	},
+
+	topoSort: function(graph) {
+		var inDegreeCount = {};
+		var sortedArr = [];
+		var node;
+		var children;
+		var child;
+		for (node in graph) {
+			children = graph[node];
+			if (!inDegreeCount.hasOwnProperty(node)) {
+				inDegreeCount[node] = 0;
+			}
+			for (var i = 0; i < children.length; i++) {
+				child = children[i];
+				inDegreeCount[child] = inDegreeCount.hasOwnProperty(child) ? inDegreeCount[child] + 1 : 1;
+			}
+		}
+		var orphans = [];
+		for (node in inDegreeCount) {
+			if (inDegreeCount[node] === 0) {
+				orphans.push(node);
+			}
+		}
+		while (orphans.length !== 0) {
+			node = orphans.pop();
+			sortedArr.push(node);
+			children = graph[node] || [];
+			for (var j = 0; j < children.length; j++) {
+				child = children[j];
+				inDegreeCount[child] -= 1;
+				if (inDegreeCount[child] === 0) {
+					orphans.push(child);
+				}
+			}
+		}
+		return sortedArr;
+	},
+
+	addSuiteDowngradesToMap: function(parentSuite, productSysId) {
+		if (!this.productToSuiteDowngradeRelations.hasOwnProperty(productSysId)) {
+			this.productToSuiteDowngradeRelations[productSysId] = {};
+		}
+		if (!this.productToSuiteDowngradeRelations[productSysId].hasOwnProperty(parentSuite)) {
+			this.productToSuiteDowngradeRelations[productSysId][parentSuite] = [];
+		}
+		var downgradeModels = this.getDowngradeChildrenSMs(parentSuite);
+		for (var i = 0; i < downgradeModels.length; i++) {
+			var model = downgradeModels[i];
+			if (!this.isDowngradePairProcessed(parentSuite, model)) {
+				this.productToSuiteDowngradeRelations[productSysId][parentSuite].push(model);
+			}
+			if (!this.suitesParentsWithEntitlement[model]) {
+				var height = this.addChildSuites(model);
+				this.suitesParentsWithEntitlement[model] = height;
+				this.addSuiteDowngradesToMap(model, productSysId);
+			}
+		}
+	},
+	sortProductsByHeight: function() {
+		var that = this;
+		return Object.keys(that.productToHeight).sort(
+			function (a, b) {
+				return (that.productToHeight[a] - that.productToHeight[b]);
+			}
+		);
+	},
+
+	addChildSuites: function(parent) {
+		var childComponentsGr = new GlideRecord(this.SUITES_TABLE);
+		childComponentsGr.addQuery('suite_parent', parent);
+		childComponentsGr.query();
+		var childSwModelArray = [];
+		while (childComponentsGr.next()) {
+			childSwModelArray.push(childComponentsGr.getValue('suite_child'));
+		}
+		var parentSuiteGa = new SampAggregate(this.SUITES_TABLE);
+		parentSuiteGa.addQuery('suite_parent', childSwModelArray);
+		parentSuiteGa.groupBy('suite_parent');
+		parentSuiteGa.query();
+		var height = 0;
+		while (parentSuiteGa.next()) {
+			var parentSuite = parentSuiteGa.getValue('suite_parent');
+			var currHeight;
+			if (!this.suitesParentsWithEntitlement[parentSuite]) {
+				currHeight = this.addChildSuites(parentSuite);
+				this.suitesParentsWithEntitlement[parentSuite] = currHeight;
+				var modelGr = new GlideRecord('cmdb_software_product_model');
+				modelGr.get(parentSuite);
+				var productSysId = modelGr.getValue('product');
+				this.productToHeight[productSysId] = currHeight;
+				if (!this.productToSuiteDowngradeRelations.hasOwnProperty(productSysId)) {
+					this.productToSuiteDowngradeRelations[productSysId] = {};
+				}
+				this.addSuiteDowngradesToMap(parentSuite, productSysId);
+			} else {
+				currHeight = this.suitesParentsWithEntitlement[parentSuite];
+			}
+			height = currHeight > height ? currHeight : height;
+		}
+		return height + 1;
+	},
+
+	publisherSuiteEngine: function(publisherId, reconGroups, reconWorkerId) {
+		for (var i = 0; i < reconGroups.length; i++) {
+			SampReconLogUtil.log(this.fReconResultId,
+				'Running SuiteEngine for the Publisher '
+				+ '(' + publisherId + ')'
+				+ 'for the Group '
+				+ '(' + reconGroups[i].groupDisplay() + ')'
+				+ ' and the Subgroup '
+				+ '(' + reconGroups[i].subGroupDisplay() + ')',
+				reconWorkerId);
+			GroupingEngine.setCurrentGroup(reconGroups[i]);
+			this.findSuiteFromPublisher(publisherId);
+		}
+	},
+
+	constructSuiteObj: function(subscriptionSuite) {
+		for (var i in subscriptionSuite) {
+			var suiteParentId = subscriptionSuite[i];
+
+			var ALWAYS_MANDATORY = 1;
+			var MANDATORY_GROUP = 2;
+
+			var modelGr = new SampRecord('cmdb_software_product_model');
+			modelGr.get(suiteParentId);
+
+			var suite = {
+				swModel: suiteParentId,
+				product: modelGr.getValue('product'),
+				childModelIds: [],
+				modelToMandMap: {},
+				mandAlwaysCount: 0,
+				mandGroupCount: 0,
+				inferencePercent: Number(modelGr.gr.inference),
+			};
+
+			var parentChildrenGr = new SampRecord(this.SUITES_TABLE);
+			parentChildrenGr.addQuery('suite_parent', suiteParentId);
+			parentChildrenGr.query();
+			while (parentChildrenGr.next()) {
+				var childModelId = parentChildrenGr.gr.suite_child + '';
+				suite.childModelIds.push(childModelId);
+				var mandChoice = Number(parentChildrenGr.gr.mandatory);
+				suite.modelToMandMap[childModelId] = mandChoice;
+				if (mandChoice === ALWAYS_MANDATORY) {
+					suite.mandAlwaysCount += 1;
+				}
+				if (mandChoice === MANDATORY_GROUP) {
+					suite.mandGroupCount += 1;
+				}
+			}
+			this.suiteInfo[suiteParentId] = suite;
+		}
+	},
+
+	processSubscriptionSuites: function(publisherId) {
+		var subscriptionSuites = [];
+		var licenseGa = new SampAggregate('alm_license');
+		licenseGa.addQuery('software_model.apply_to_subscriptions', true);
+		licenseGa.addQuery('install_status', '=', 1);
+		licenseGa.addNotNullQuery('license_metric');
+		licenseGa.addQuery('software_model.manufacturer', publisherId);
+		licenseGa.setGroup(true);
+		licenseGa.groupBy('software_model');
+		licenseGa.query();
+		while (licenseGa.next()) {
+			subscriptionSuites.push(licenseGa.getValue('software_model'));
+		}
+
+		this.constructSuiteObj(subscriptionSuites);
+		this.markSubscriptionInferenceLevel(subscriptionSuites);
+
+		for (var i in subscriptionSuites) {
+			var suiteObj = this.suiteInfo[subscriptionSuites[i]];
+			if (suiteObj.childModelIds.length > 0) {
+				var subsGr = new SampRecord('samp_sw_subscription');
+				subsGr.addQuery('software_model', suiteObj.childModelIds);
+				subsGr.addNotNullQuery('user_principal_name');
+				subsGr.addQuery('inferred_suite_level', '<', this.suitesParentsWithEntitlement[suiteObj.swModel]);
+				subsGr.orderBy('user_principal_name');
+				subsGr.query();
+				var currUser; var
+					prevUser;
+				var subsToBeMarked = [];
+				var subsToBeEvaluated = {};
+				var subIds;
+				while (subsGr.next()) {
+					currUser = subsGr.getValue('user_principal_name');
+					if (currUser !== prevUser) {
+						prevUser = currUser;
+						if (this.canInfer(suiteObj, subsToBeEvaluated)) {
+							subIds = Object.keys(subsToBeEvaluated);
+							Array.prototype.push.apply(subsToBeMarked, subIds);
+						}
+						subsToBeEvaluated = {};
+					}
+					subsToBeEvaluated[subsGr.getUniqueValue()] = subsGr.getValue('software_model');
+					if (subsToBeMarked.length >= ReconciliationConstants.BATCHSIZE) {
+						this.stampSuiteForSubs(subsToBeMarked, suiteObj);
+						subsToBeMarked = [];
+					}
+				}
+				if (this.canInfer(suiteObj, subsToBeEvaluated)) {
+					subIds = Object.keys(subsToBeEvaluated);
+					Array.prototype.push.apply(subsToBeMarked, subIds);
+				}
+				if (subsToBeMarked.length > 0) {
+					this.stampSuiteForSubs(subsToBeMarked, suiteObj);
+				}
+			}
+		}
+	},
+
+	markSubscriptionInferenceLevel: function (subscriptionSuites) {
+		var suiteChildren = [];
+
+		for (var i in subscriptionSuites) {
+			Array.prototype.push.apply(suiteChildren, this.suiteInfo[subscriptionSuites[i]].childModelIds);
+		}
+
+		var userAllocGr = new GlideRecord('alm_entitlement_user');
+		userAllocGr.addQuery('licensed_by.software_model', suiteChildren);
+		userAllocGr.query();
+		while (userAllocGr.next()) {
+			var subsGr = new GlideRecord('samp_sw_subscription');
+			subsGr.addQuery('user', userAllocGr.getValue('assigned_to'));
+			subsGr.addQuery('software_model', userAllocGr.licensed_by.software_model.toString());
+			subsGr.addQuery('inferred_suite_level', '<', this.MAX_INFERENCE);
+			subsGr.setValue('inferred_suite_level', this.MAX_INFERENCE);
+			subsGr.setWorkflow(false);
+			subsGr.updateMultiple();
+		}
+	},
+
+	stampSuiteForSubs: function(subsToBeMarked, suiteObj) {
+		var subsGr = new SampRecord('samp_sw_subscription');
+		subsGr.addQuery('sys_id', subsToBeMarked);
+		subsGr.setValue('inferred_suite', suiteObj.swModel);
+		subsGr.setValue('inferred_suite_product', suiteObj.product);
+		subsGr.setValue('inferred_suite_level', this.suitesParentsWithEntitlement[suiteObj.swModel]);
+		subsGr.setValue('licensable_software_model', suiteObj.swModel);
+		subsGr.setValue('licensable_software_model_source', 'suite_engine');
+		subsGr.setWorkflow(false);
+		subsGr.updateMultiple();
+	},
+
+	canInfer: function(suiteObj, subsToBeEvaluated) {
+		var ALWAYS_MANDATORY = 1;
+		var MANDATORY_GROUP = 2;
+		var subsMandAlwaysCount = 0;
+		var subsMandGroupCount = 0;
+		var foundModelCount = 0;
+
+		for (var subId in subsToBeEvaluated) {
+			var modelId = subsToBeEvaluated[subId];
+			var mandChoice = suiteObj.modelToMandMap[modelId];
+			if (mandChoice === ALWAYS_MANDATORY) {
+				subsMandAlwaysCount += 1;
+			} else if (mandChoice === MANDATORY_GROUP) {
+				subsMandGroupCount += 1;
+			}
+			foundModelCount += 1;
+		}
+
+		var currentInference = (foundModelCount / suiteObj.childModelIds.length) * 100;
+		// All "Always mandatory" components have to exist
+		if (subsMandAlwaysCount < suiteObj.mandAlwaysCount) {
+			return false;
+		}
+		// If there are any components part of the mandatory group of the Suite at least one must exist
+		if (suiteObj.mandGroupCount > 0 && subsMandGroupCount === 0) {
+			return false;
+		}
+		// Ignore suites where the inference percent is higher than the current CI install inference
+		if (currentInference < suiteObj.inferencePercent) {
+			return false;
+		}
+
+		return true;
+	},
+
+	// This method will find all the Suite SW Models with entitlements and run the SuiteEngine
+	// to find matching groups for them in the install table (licensable installs table)
+	findSuiteFromPublisher: function(publisherId) {
+		var installGr;
+		var suite;
+		if (this.fisSAMPActive) {
+			this.markAssignedSoftwareInstalls();
+		}
+		// Initialize inference_calculated flag to prevent false positives
+		// find all suite parents with entitlement for this publisher
+		var sortedSuiteParents = this.findSuitesParentSMWithEntitlement(publisherId);
+		if (this.fisSAMPActive) {
+			this.processSubscriptionSuites(publisherId);
+		}
+		// Allocations and subscriptions round
+		// It has dependency on findSuitesParentSMWithEntitlement.
+		// It uses findSuitesParentSMWithEntitlement calculations to decide order between suites.
+		var pass = 'subscription';
+		this.subscriptionsAndAllocationSuitePass(publisherId, sortedSuiteParents, pass);
+		pass = 'allocation';
+		this.subscriptionsAndAllocationSuitePass(publisherId, sortedSuiteParents, pass);
+
+		// Components allocations and subscriptions round
+		pass = 'subscription';
+		this.subscriptionsAndAllocationComponentPass(publisherId, sortedSuiteParents, pass);
+		pass = 'allocation';
+		this.subscriptionsAndAllocationComponentPass(publisherId, sortedSuiteParents, pass);
+
+		// Get the software models with entitlements for the given publisher
+		for (var i in sortedSuiteParents) {
+			suite = this._getSuiteComponentsDMs(sortedSuiteParents[i]);
+
+			if (suite.applyToSubscriptions) { // Skip installs where apply_to_subscriptions = true
+				continue;
+			}
+
+			if (suite.childrenDMs.length > 0 || suite.childSuiteSMs.length > 0) {
+				installGr = this._getInstallFromComponents(suite);
+				while (installGr.next()) {
+					var swModel = suite.dmToSwm[installGr.getValue('discovery_model')].sw_model;
+					var filter = new GlideFilter(suite.smToInstallConditions[swModel], 'install-condition');
+					filter.setCaseSensitive(false);
+					if (suite.smToInstallConditions[swModel]
+						&& !filter.match(installGr.gr, true)) { continue; }
+					var installGrUnique = new SampRecord(this.INSTALL_TABLE);
+					installGrUnique.get(installGr.getUniqueValue());
+					var currSuiteLevel = this.suitesParentsWithEntitlement[suite.swModel];
+					if (installGrUnique.gr.isValidRecord()
+						&& !(installGrUnique.gr.inference_calculated
+								&& installGrUnique.gr.inferred_suite_level >= currSuiteLevel)
+						&& (!installGrUnique.gr.omit_from_suites)) {
+						this.findSuiteBySampRecord(installGrUnique, null, suite.swModel);
+					}
+				}
+			}
+		}
+		this._flushReconProgress();
+	},
+
+	markAssignedSoftwareInstalls: function() {
+		var singleAppModels = new SampAggregate('samp_sw_subscription');
+		singleAppModels.addNotNullQuery('assigned_software');
+		singleAppModels.groupBy('software_model');
+		singleAppModels.setGroup(true);
+		singleAppModels.query();
+		while (singleAppModels.next()) {
+			var usersByModels = {};
+			var singleAppModel = singleAppModels.getValue('software_model');
+			var subscriptions = new SampRecord('samp_sw_subscription');
+			subscriptions.addQuery('software_model', singleAppModel);
+			subscriptions.addNotNullQuery('user');
+			subscriptions.addNotNullQuery('assigned_software');
+			subscriptions.query();
+			var batchCount = 0;
+			while (subscriptions.next()) {
+				batchCount += 1;
+				var assignedSoftware = subscriptions.getValue('assigned_software');
+				var user = subscriptions.getValue('user');
+				(usersByModels[assignedSoftware] = usersByModels[assignedSoftware] || []).push(user);
+				if (batchCount === ReconciliationConstants.BATCHSIZE) {
+					this.updateSingleAppInstalls(singleAppModel, usersByModels);
+					usersByModels = {};
+					batchCount = 0;
+				}
+			}
+			if (Object.keys(usersByModels).length > 0) {
+				this.updateSingleAppInstalls(singleAppModel, usersByModels);
+			}
+		}
+	},
+
+	updateSingleAppInstalls: function(singleAppModel, usersByModels) {
+		for (var softwareModel in usersByModels) {
+			this.markInstallsByModel(singleAppModel, softwareModel, usersByModels[softwareModel]);
+		}
+	},
+
+	markInstallsByModel: function(singleAppModel, assignedSoftwareModel, userIds) {
+		if (userIds === null || userIds.length === 0) {
+			return;
+		}
+		var singleAppModelGr = new GlideRecord(ReconciliationConstants.SOFTWARE_MODEL_TABLE);
+		singleAppModelGr.get(singleAppModel);
+		var softwareProduct = singleAppModelGr.getValue('product');
+		var install = new GlideRecord('cmdb_sam_sw_install');
+		install.addQuery('discovery_model', SAMPremiumUtils.getDiscoveryModelsFromSwModel(assignedSoftwareModel));
+		install.addQuery('assigned_to', userIds);
+		install.setValue('inferred_suite', singleAppModel);
+		install.setValue('inferred_suite_product', softwareProduct);
+		install.setValue('inferred_suite_level', 1);
+		install.setValue('inference_calculated', true);
+		install.setValue('inferred_software_model', singleAppModel);
+		install.setWorkflow(false);
+		install.autoSysFields(false);
+		install.updateMultiple();
+	},
+
+	getUsersAndDevicesFromAllocations: function (pass, model, users, devices) {
+		var allocGr = new SampRecord('alm_entitlement');
+		allocGr.addQuery('licensed_by.model', model);
+		if (pass === 'allocation') {
+			// allocation pass
+			allocGr.addQuery('licensed_by.license_metric', '!=', this.USER_SUBSCRIPTION_LM);
+		} else {
+			// subscription pass
+			allocGr.addQuery('licensed_by.license_metric', this.USER_SUBSCRIPTION_LM);
+		}
+		allocGr.query();
+		var user;
+		while (allocGr.next()) {
+			user = allocGr.getValue('assigned_to');
+			if (user != null && (users.indexOf(user) === -1)) {
+				users.push(user);
+			}
+			if (pass === 'allocation') {
+				this.getDevices(allocGr, devices);
+			}
+		}
+	},
+
+	getDevices: function (allocGr, devices) {
+		var device = allocGr.getValue('allocated_to');
+		var isVirtual = allocGr.gr.allocated_to.virtual.toString() === '1';
+		var metricId = allocGr.gr.licensed_by.license_metric.toString();
+		if (this.fisSAMPActive && !isVirtual && this.isPhysicalOnlyMetric(metricId)) {
+			this.getMemberDevices(device, devices);
+		} else if (device != null && (devices.indexOf(device) === -1)) {
+			devices.push(device);
+		}
+	},
+
+	isPhysicalOnlyMetric: function(metric) {
+		var physicalOnlyMetrics = [LicenseMetric.PER_CORE_FOR_MICROSOFT,
+			LicenseMetric.PER_CORE_WITH_CAL_FOR_MICROSOFT,
+			LicenseMetric.PER_PROCESSOR_FOR_MICROSOFT,
+			LicenseMetric.PER_SERVER_FOR_MICROSOFT,
+			LicenseMetric.PER_SOCKET_PAIR_FOR_REDHAT,
+			LicenseMetric.PER_PHYSICAL_CORE_FOR_ORACLE,
+			LicenseMetric.NAMED_USER_PLUS_FOR_ORACLE];
+		if (physicalOnlyMetrics.indexOf(metric) !== -1) {
+			return true;
+		}
+		return false;
+	},
+
+	getMemberDevices: function (device, devices) {
+		if (gs.nil(device) || (devices.indexOf(device) !== -1)) {
+			return;
+		}
+		var deviceClass = SAMPremiumUtils.getClassFromCISysId(device);
+		if (this.virtualizationAdapter.supportedClusterClasses.indexOf(deviceClass) !== -1) {
+			var hostsToVMs = this.virtualizationAdapter.getVMsOnCluster(device, deviceClass);
+			for (var host in hostsToVMs) {
+				if (!gs.nil(host) && (devices.indexOf(host) === -1)) {
+					devices.push(host);
+					hostsToVMs[host].forEach(function (vm) {
+						if (!gs.nil(vm) && (devices.indexOf(vm) === -1)) {
+							devices.push(vm);
+						}
+					});
+				}
+			}
+		} else if (!gs.nil(device) && (devices.indexOf(device) === -1)) {
+			devices.push(device);
+			var vms = this.virtualizationAdapter.getVMsOnHost(device, deviceClass);
+			vms.forEach(function (vm) {
+				if (!gs.nil(vm) && (devices.indexOf(vm) === -1)) {
+					devices.push(vm);
+				}
+			});
+		}
+	},
+
+	getUsersFromSubscriptions: function (model, users) {
+		if (this.fisSAMPActive) {
+			var subsGr = new SampAggregate('samp_sw_subscription');
+			var queryString = this.generateSubscriptionQuery(model);
+			subsGr.addEncodedQuery(queryString);
+			subsGr.addNotNullQuery('user');
+			subsGr.groupBy('user');
+			subsGr.query();
+			while (subsGr.next()) {
+				var user = subsGr.getValue('user');
+				if (user != null && users.indexOf(user) === -1) {
+					users.push(user);
+				}
+			}
+		}
+	},
+
+	divideIntoBatches: function (array, batchSize) {
+		var results = [];
+		var index = 0;
+		while (index < array.length) {
+			results.push(array.slice(index, batchSize + index));
+			index += batchSize;
+		}
+		return results;
+	},
+
+	sortAnArrayUsingAnotherArray: function (a, b) {
+		var result = b.filter(function (item) {
+			return a.indexOf(item) !== -1;
+		});
+		return result;
+	},
+
+	// Get downgrades from entitlements for a suite.
+	getDowngradesfromEntitlement: function (suite) {
+		var downgradeModels = [];
+		// consider downgrade rights from entitlements
+		new GlideQuery('samp_downgrade_model')
+			.where('license.software_model', suite)
+			.where('active', true)
+			.select('model')
+			.forEach(function (s) {
+				downgradeModels.push(s.model);
+			});
+		return downgradeModels;
+	},
+
+	// Get the models having entitlements with some allocations (device or user) or having license metric as user
+	// subscription.
+	getEntitledModelsForAllocsOrSubs: function (publisherId, pass) {
+		var encodedQuery;
+		var swArray = [];
+		var lModel;
+		var license = new SampAggregate('alm_license');
+		if (pass === 'subscription') {
+			// subscription
+			encodedQuery = 'license_metric=' + this.USER_SUBSCRIPTION_LM;
+		} else {
+			// allocation
+			encodedQuery = 'allocations_availableLT_FIELDrights';
+			license.addQuery('license_metric', '!=', this.USER_SUBSCRIPTION_LM);
+		}
+		license.addNotNullQuery('license_metric');
+		license.addQuery('install_status', '=', 1);
+		license.addEncodedQuery(encodedQuery);
+		license.addQuery('model.manufacturer', publisherId);
+		license.query();
+		while (license.next()) {
+			lModel = license.getValue('model');
+			if (lModel != null && (swArray.indexOf(lModel) === -1)) {
+				swArray.push(lModel);
+			}
+		}
+		return swArray;
+	},
+
+	// Allocation and Subscriptions Suite pass
+	subscriptionsAndAllocationSuitePass: function (publisherId, sortedSuiteParents, pass) {
+		var swArray = [];
+		swArray = this.getEntitledModelsForAllocsOrSubs(publisherId, pass);
+		// Sort them in the descending order of their height.
+		var suitesToBeProcessed = sortedSuiteParents;
+		suitesToBeProcessed = this.sortAnArrayUsingAnotherArray(swArray, suitesToBeProcessed);
+		suitesToBeProcessed.reverse();
+		for (var suite in suitesToBeProcessed) {
+			var softwareModel = new GlideQuery('cmdb_software_product_model')
+				.get(suitesToBeProcessed[suite], ['product', 'install_condition']);
+			var product = softwareModel._value.product;
+			var installCondition = softwareModel._value.install_condition;
+			var users = [];
+			var devices = [];
+			this.getUsersAndDevicesFromAllocations(pass, suitesToBeProcessed[suite], users, devices);
+			if (pass === 'subscription') {
+				this.getUsersFromSubscriptions(suitesToBeProcessed[suite], users);
+			}
+			var downgradesAndEntitledSuite = [];
+			if (pass === 'allocation') {
+				var downgradeModels = this.getDowngradesfromEntitlement(suitesToBeProcessed[suite]);
+				// order them by most specific to general.
+				downgradesAndEntitledSuite = sortedSuiteParents;
+				downgradesAndEntitledSuite = this.sortAnArrayUsingAnotherArray(downgradeModels,
+					downgradesAndEntitledSuite);
+			}
+			if (downgradesAndEntitledSuite.indexOf(suitesToBeProcessed[suite]) === -1) {
+				downgradesAndEntitledSuite.push(suitesToBeProcessed[suite]);
+			}
+			for (var i = 0; i < downgradesAndEntitledSuite.length; i++) {
+				var dms = [];
+				this.getDMsForWholeSuiteTree(downgradesAndEntitledSuite[i], dms);
+				if (dms.length > 0) {
+					this.markInference(dms, users, downgradesAndEntitledSuite[i], installCondition, product,
+						'assigned_to');
+					this.markInference(dms, devices, downgradesAndEntitledSuite[i], installCondition,
+						product, 'installed_on');
+				}
+			}
+		}
+	},
+
+	subscriptionsAndAllocationComponentPass: function(publisherId, sortedSuiteParents, pass) {
+		var componentsModels = [];
+		componentsModels = this.getEntitledModelsForAllocsOrSubs(publisherId, pass);
+		// filter out suites
+		componentsModels = componentsModels.filter(function(model) {
+			return sortedSuiteParents.indexOf(model) < 0;
+		});
+		for (var compo in componentsModels) {
+			var softwareModel = new GlideQuery('cmdb_software_product_model')
+				.get(componentsModels[compo], ['install_condition']);
+			var installCondition = softwareModel._value.install_condition;
+			var users = [];
+			var devices = [];
+			this.getUsersAndDevicesFromAllocations(pass, componentsModels[compo], users, devices);
+			if (pass === 'subscription') {
+				this.getUsersFromSubscriptions(componentsModels[compo], users);
+			}
+			var downgradesAndEntitledModel = [];
+			if (pass === 'allocation') {
+				downgradesAndEntitledModel = this.getDowngradesfromEntitlement(componentsModels[compo]);
+			}
+			if (downgradesAndEntitledModel.indexOf(componentsModels[compo]) === -1) {
+				downgradesAndEntitledModel.push(componentsModels[compo]);
+			}
+			for (var i = 0; i < downgradesAndEntitledModel.length; i++) {
+				if (sortedSuiteParents.indexOf(downgradesAndEntitledModel[i]) < 0) {
+					var dms = SAMPremiumUtils.getDiscoveryModelsFromSwModel(downgradesAndEntitledModel[i]);
+					if (dms.length > 0) {
+						this.markInference(dms, users, '', installCondition, '', 'assigned_to');
+						this.markInference(dms, devices, '', installCondition, '', 'installed_on');
+					}
+				}
+			}
+		}
+	},
+
+	markInference: function (dms, AllocatedTo, suiteId, installCondition, product, allocationType) {
+		var batches = this.divideIntoBatches(AllocatedTo, 100);
+		for (var batchNo = 0; batchNo < batches.length; batchNo++) {
+			var updateInstDmGr = new SampRecord(this.INSTALL_TABLE);
+			updateInstDmGr.addQuery('omit_from_suites', '!=', true);
+			updateInstDmGr.addQuery('inference_calculated', '!=', true)
+				.addOrCondition('inferred_suite_level', '<', this.MAX_INFERENCE);
+			updateInstDmGr.addQuery('discovery_model', dms);
+			updateInstDmGr.addQuery(allocationType, batches[batchNo]);
+			if (installCondition) {
+				SampInstallConditionEngine.addQueryCondition(updateInstDmGr, installCondition, '');
+			}
+			updateInstDmGr.setValue('inferred_suite', suiteId);
+			updateInstDmGr.setValue('inferred_suite_product', product);
+			updateInstDmGr.setValue('inferred_suite_level', this.MAX_INFERENCE);
+			updateInstDmGr.setValue('inference_calculated', true);
+			updateInstDmGr.setWorkflow(false);
+			updateInstDmGr.updateMultiple();
+			this._updateReconProgress(updateInstDmGr.getRowCount());
+		}
+	},
+
+	getDMsForWholeSuiteTree: function (suiteID, dms) {
+		var suite = this._getSuiteComponentsDMs(suiteID);
+		Array.prototype.push.apply(dms, suite.childrenDMs);
+		for (var i = 0; i < suite.childSuiteSMs.length; i++) {
+			this.getDMsForWholeSuiteTree(suite.childSuiteSMs[i], dms);
+		}
+	},
+
+	_getInstallFromComponents: function(suite) { // DM array, SM child suite array
+		var instPublisherGr = new SampRecord(this.INSTALL_TABLE);
+		if (suite.childrenDMs.length > 0 || suite.childSuiteSMs.length > 0) { // Sanity check
+			instPublisherGr.addQuery('discovery_model', suite.childrenDMs)
+				.addOrCondition('inferred_suite', suite.childSuiteSMs);
+			instPublisherGr.addQuery('inference_calculated', false)
+				.addOrCondition('inferred_suite_level', '<', this.suitesParentsWithEntitlement[suite.swModel]);
+			instPublisherGr.addQuery('omit_from_suites', '!=', true);
+			if (suite.installCondition) {
+				SampInstallConditionEngine.addQueryCondition(instPublisherGr, suite.installCondition, '');
+			}
+			instPublisherGr.query();
+		}
+		return instPublisherGr;
+	},
+
+	// if the current processed install is not one of the suite component of current suite
+	// should change it to an install which belong to current suite
+	_switchCurrentInstallToAnother: function(suite, licenseMetric, currentInstall, optionalInstalls) {
+		var installIdsReceived = Boolean(optionalInstalls && optionalInstalls.length);
+		var installGr = new SampRecord(this.INSTALL_TABLE);
+		if (suite.childrenDMs.length > 0 || suite.childSuiteSMs.length > 0) {
+			if (installIdsReceived) {
+				// Best effort to match with the closest installs for a collateral Suite
+				installGr.addQuery('sys_id', optionalInstalls);
+			}
+			installGr.addQuery('discovery_model', suite.childrenDMs)
+				.addOrCondition('inferred_suite', suite.childSuiteSMs);
+			installGr.addQuery('inference_calculated', false);
+			installGr.addQuery('omit_from_suites', '!=', true);
+			this._addLicenseMetricFilter(installGr, licenseMetric, currentInstall);
+			installGr.setLimit(1);
+			if (suite.installCondition) {
+				SampInstallConditionEngine.addQueryCondition(installGr, suite.installCondition, '');
+			}
+			installGr.query();
+			if (installIdsReceived && !installGr.hasNext()) {
+				return this._switchCurrentInstallToAnother(suite, licenseMetric, currentInstall);
+			}
+		}
+		installGr.next();
+		return installGr;
+	},
+
+	_findCandidate: function(originalGr, currSuite) {
+		// var MAND_OPTIONAL = 0; // Not used explicitly in the code, but left for reference
+		var MAND_ALWAYS = 1; // Index holding the count of components for the always mandatory group
+		var MAND_GROUP = 2; // Index holding the count of components for the components mandatory group
+		var COUNT_TOTAL = 3; // Index holding the agg value of the total count of components
+		var currSuiteLevel = this.suitesParentsWithEntitlement[currSuite];
+		var suiteCandidate = {
+			mand_always: 0, // Number of always mandatory existing components
+			mand_group: 0, // Number of components part of mandatory group
+			inference: 0, // Inference percent
+			suite_sw_model: '', // Software Model Suite sys_id
+			suite_dms: [], // Array of discovery models related to the children SW Models of the Suite
+			installed_components_count: 0,
+			candidate_found: false,
+			is_allocated: false,
+		};
+		if (!originalGr.gr.installed_on
+				|| (originalGr.gr.inference_calculated && originalGr.gr.inferred_suite_level >= currSuiteLevel)) {
+			// SuiteEngine won't run if there's no installed_on value or logic already ran for the record
+			return suiteCandidate;
+		}
+		var installedComponentsCount; // Array containing the count of installed components
+		// per mandatory type for the current CI
+		var installedComponentsFilter; // Array containing the unique sys_ids of installed
+		// components per mandatory type for the current CI
+		var exceededInstalls; // Array containing the sys_id of installs after reaching the max installs limit
+		var includedInstalls; // Array containing the sys_id of installs considered in the selected Suite group
+		var swInstallCheckGr; // SampRecord to validate the installs in the CI from the given DM
+		var currentInference; // Variable to store the inference percent for the current Suite
+		var betterCandidate; // Flag used for comparison between the current suite candidate and the stored one
+		var mandTmp;
+		var swmTmp;
+		var dmTmp;
+		var instTmp;
+		var suite;
+		var suiteFoundInInstall = false;
+		var installSwModel = [];
+		if (originalGr.gr.inferred_suite) {
+			installSwModel.push(originalGr.gr.inferred_suite);
+		} else {
+			// Could return more than 1
+			installSwModel = this._getSoftwareModelsFromDiscModel(originalGr.gr.discovery_model);
+		}
+		if (!installSwModel.length) {
+			// There are no matching Software Models for the DM in the install record
+			return suiteCandidate;
+		}
+		var suiteParents = this.getCollateralSuiteParents(installSwModel);
+		if (!suiteParents) {
+			suiteParents = {};
+			var suiteInf = new GlideQuery('cmdb_software_product_model').where('sys_id', currSuite)
+				.select('inference').toArray(1);
+			suiteParents[currSuite] = suiteInf[0].inference ? suiteInf[0].inference : 0;
+		}
+		for (var suiteParent in suiteParents) {
+			if (suiteFoundInInstall) {
+				break;
+			}
+			if (this.swToSuitesObjectMap[suiteParent]) {
+				suite = this.swToSuitesObjectMap[suiteParent];
+			} else {
+				// Get all the children of the current Suite parent
+				suite = this._getSuiteComponentsDMs(suiteParent);
+			}
+			var suiteIsAllocated = false;
+			if (suite.childrenDMs.length > 0 || suite.childSuiteSMs.length > 0) {
+			// check if the suite has an allocation
+				var allocationSwGr = new SampRecord('alm_entitlement');
+				allocationSwGr.addQuery('licensed_by.model', suiteParent);
+				allocationSwGr.query();
+				if (allocationSwGr.next()) {
+					suiteIsAllocated = true;
+				}
+				var licMetricArr = this._getLicenseMetrics(suiteParent, suiteIsAllocated); // todo - clean up
+				for (var lm = 0; lm < licMetricArr.length; lm++) {
+					installedComponentsCount = [0, 0, 0, 0];
+					installedComponentsFilter = [{}, {}, {}];
+					exceededInstalls = [];
+					// Default to max int
+					var maxInstalls = Number.MAX_VALUE;
+					var installGr;
+					if (!this.installInSuite(originalGr, suite)) {
+						if (suiteCandidate.included_installs.length) {
+							installGr = this._switchCurrentInstallToAnother(suite,
+								licMetricArr[lm].name, originalGr, suiteCandidate.included_installs);
+						} else {
+							installGr = this._switchCurrentInstallToAnother(suite, licMetricArr[lm].name, originalGr);
+						}
+					} else {
+						installGr = originalGr;
+					}
+					// The easiest scenario (and first condition) to detect the correct suite for the install is
+					// when the Suite SW Model is found as an install record itself for the CI
+					if (installGr.gr.sys_id && this._checkForSuiteInInstall(installGr, suite, licMetricArr[lm].name)) {
+						suiteFoundInInstall = true;
+					} else if (suiteFoundInInstall) {
+						continue;
+					}
+					includedInstalls = [];
+					exceededInstalls = [];
+					swInstallCheckGr = new SampRecord(this.INSTALL_TABLE);
+					this._addLicenseMetricFilter(swInstallCheckGr, licMetricArr[lm].name, installGr);
+					swInstallCheckGr.addQuery('omit_from_suites', '!=', true);
+					swInstallCheckGr.addQuery('inference_calculated', '!=', true)
+						.addOrCondition('inferred_suite_level', '<', this.suitesParentsWithEntitlement[suite.swModel]);
+					swInstallCheckGr.addQuery('discovery_model', suite.childrenDMs)
+						.addOrCondition('inferred_suite', suite.childSuiteSMs);
+					swInstallCheckGr.query();
+					if (!swInstallCheckGr.hasNext()) {
+						continue;
+					}
+					while (swInstallCheckGr.next()) {
+						instTmp = swInstallCheckGr.gr.sys_id + ''; // instSysID
+						dmTmp = swInstallCheckGr.gr.discovery_model + '';
+						swmTmp = '';
+						mandTmp = '';
+						if (swInstallCheckGr.gr.inferred_suite) {
+							swmTmp = swInstallCheckGr.gr.inferred_suite;
+							mandTmp = suite.smToMand[swmTmp];
+						}
+						if (gs.nil(mandTmp)) {
+							swmTmp = suite.dmToSwm[dmTmp].sw_model;
+							mandTmp = suite.dmToSwm[dmTmp].mandatory;
+						}
+						var smFilter = new GlideFilter(suite.smToInstallConditions[swmTmp], 'install-condition1');
+						smFilter.setCaseSensitive(false);
+						var suiteFilter = new GlideFilter(suite.installCondition, 'install-condition2');
+						suiteFilter.setCaseSensitive(false);
+						if ((suite.smToInstallConditions[swmTmp] && !smFilter.match(swInstallCheckGr.gr, true))
+								|| (suite.installCondition && !suiteFilter.match(swInstallCheckGr.gr, true))) {
+							continue;
+						}
+						if (!installedComponentsFilter[mandTmp].hasOwnProperty(swmTmp)) {
+							installedComponentsFilter[mandTmp][swmTmp] = 1;
+							installedComponentsCount[mandTmp] += 1;
+							installedComponentsCount[COUNT_TOTAL] += 1;
+							includedInstalls.push(instTmp);
+						} else if (installedComponentsFilter[mandTmp][swmTmp] < maxInstalls) {
+							installedComponentsFilter[mandTmp][swmTmp] += 1;
+							includedInstalls.push(instTmp);
+						} else {
+						// Keep track of exceeded installs to avoid including them as part of the same Suite
+							exceededInstalls.push(instTmp);
+						}
+					}
+					if (includedInstalls.length < 1) {
+						continue;
+					}
+					betterCandidate = false;
+					if (suiteFoundInInstall) {
+						currentInference = 100;
+						betterCandidate = true;
+					} else {
+						currentInference = (installedComponentsCount[COUNT_TOTAL]
+											/ suite.componentsCount[COUNT_TOTAL]) * 100;
+						// Basic conditions before comparing the current Suite with the candidate:
+						if (includedInstalls.length === 0) {
+							continue;
+						}
+						// All "Always mandatory" components have to exist
+						if (installedComponentsCount[MAND_ALWAYS] < suite.componentsCount[MAND_ALWAYS]) {
+							continue;
+						}
+						// If there are any components part of the mandatory group of the Suite at least one must exist
+						if (suite.componentsCount[MAND_GROUP] > 0 && installedComponentsCount[MAND_GROUP] === 0) {
+							continue;
+						}
+						// Ignore suites where the inference percent is higher than the current CI install inference
+						if (currentInference < suiteParents[suiteParent]) {
+							continue;
+						}
+						// Bundles (Components in Optional Mandatory Group) take precedence over non-bundled suites
+						if (installedComponentsCount[MAND_GROUP] === 0 && suiteCandidate.mand_group > 0) {
+							continue;
+						}
+						// Allocated suite take precedence over unallocated suite
+						if (!suiteIsAllocated && (suiteCandidate.is_allocated)) {
+							continue;
+						}
+						// ====================== SUITE CANDIDATES COMPARISON: NEW VS EXISTING ======================
+						// Swap the Suite Candidate if:
+						// There's a component part of the Mandatory Group and none in the Suite Candidate, or
+						// the number of components part of the Mandatory Group is higher than the previous candidate
+						if (suiteIsAllocated && (!suiteCandidate.is_allocated)) {
+							betterCandidate = true;
+						}
+						if (installedComponentsCount[MAND_GROUP] > suiteCandidate.mand_group) {
+							betterCandidate = true;
+						} else if ((installedComponentsCount[MAND_GROUP] === suiteCandidate.mand_group)) {
+						// The number of mandatory components is higher than the number in the Suite Candidate
+							if (installedComponentsCount[MAND_ALWAYS] > suiteCandidate.mand_always) {
+								betterCandidate = true;
+							} else if (installedComponentsCount[MAND_ALWAYS] === suiteCandidate.mand_always) {
+							// The inference percent is higher than the Suite Candidate
+							// AND the Mandatory Group components are non-existent or existent in both sides
+							// AND the number of mandatory components is equal
+								if (currentInference > suiteCandidate.inference) {
+									betterCandidate = true;
+								} else if (currentInference === suiteCandidate.inference
+								&& (installedComponentsCount[COUNT_TOTAL] > suiteCandidate.installed_components_count
+										|| Number(licMetricArr[lm].rank) < suiteCandidate.license_metric_rank)) {
+									// Everything is the same but the number of installed components is higher OR
+									// Suite metric rank is better (lower rank has predesence)
+									betterCandidate = true;
+								}
+							}
+						}
+					}
+					if (betterCandidate === true) {
+						suiteCandidate.mand_always = installedComponentsCount[MAND_ALWAYS];
+						suiteCandidate.mand_group = installedComponentsCount[MAND_GROUP];
+						suiteCandidate.inference = currentInference;
+						suiteCandidate.suite_sw_model = suiteParent;
+						suiteCandidate.product = suite.product;
+						suiteCandidate.suite_dms = suite.childrenDMs;
+						suiteCandidate.suite_sms = suite.childSuiteSMs;
+						suiteCandidate.license_metric = licMetricArr[lm].name;
+						suiteCandidate.license_metric_rank = Number(licMetricArr[lm].rank);
+						suiteCandidate.candidate_found = true;
+						suiteCandidate.installed_components_count = installedComponentsCount[COUNT_TOTAL];
+						suiteCandidate.included_installs = includedInstalls;
+						suiteCandidate.exceeded_installs = exceededInstalls;
+						suiteCandidate.installGrRef = installGr;
+						suiteCandidate.is_allocated = suiteIsAllocated;
+					}
+				}
+			}
+		}
+		// Because of collateral suites there could be the case when the original install does not
+		// exist in the best candidate suite, in that case handle it differently
+		if (suiteCandidate.candidate_found && suiteCandidate.installGrRef !== originalGr) {
+			// Tag the installs with the inferred suite for this collateral suite
+			this._updateInstallFromDiscoveryModels(suiteCandidate, suiteCandidate.installGrRef);
+			// Lastly re-run the logic for the original install
+			return this._findCandidate(originalGr, currSuite);
+		}
+		// Otherwise follow the regular flow
+		return suiteCandidate;
+	},
+
+	installInSuite: function (inst, suite) {
+		for (var c = 0; c < suite.childrenDMs.length; c++) {
+			if (suite.childrenDMs[c] === inst.gr.getValue('discovery_model')) {
+				return true;
+			}
+		}
+		for (var i = 0; i < suite.childSuiteSMs.length; i++) {
+			if (suite.childSuiteSMs[i] === inst.gr.getValue('inferred_suite')) {
+				return true;
+			}
+		}
+		return false;
+	},
+
+	getCollateralSuiteParents: function(swModelsArr) {
+		// If we have seen this particular swModelsArr already reaturn the cached copy
+		var swModelsArrKey = swModelsArr.toString();
+		if (!(gs.nil(this.suiteParentCache[swModelsArrKey]))) {
+			return this.suiteParentCache[swModelsArrKey];
+		}
+		var existingParentsArr = []; // Used to query in the SampRecord
+		var existingParentsMap = {}; // Returned variable containing inference percent
+		var unentitledParents = [];
+		var suiteGr;
+		var componentsGr;
+		var tmpParent;
+		var tmpComponent;
+		do {
+			// Get all the Parents
+			suiteGr = new SampAggregate('cmdb_m2m_suite_model');
+			suiteGr.addQuery('suite_child', swModelsArr);
+			suiteGr.addQuery('suite_parent', 'NOT IN', existingParentsArr.concat(unentitledParents));
+			suiteGr.groupBy('suite_parent');
+			suiteGr.setGroup(true);
+			suiteGr.query();
+			while (suiteGr.next()) {
+				tmpParent = suiteGr.gr.suite_parent + '';
+				// Check if Suite Parent has entitlements
+				if (this.suitesParentsWithEntitlement[tmpParent]) {
+					if (existingParentsArr.indexOf(tmpParent) === -1) {
+						existingParentsArr.push(tmpParent);
+						existingParentsMap[tmpParent] = Number(suiteGr.gr.suite_parent.inference);
+					}
+				} else if (unentitledParents.indexOf(tmpParent) === -1) {
+					unentitledParents.push(tmpParent);
+				}
+				// Then for each parent get all the missing components
+				componentsGr = new SampRecord('cmdb_m2m_suite_model');
+				componentsGr.addQuery('suite_child', 'NOT IN', swModelsArr);
+				componentsGr.addQuery('suite_parent', tmpParent);
+				componentsGr.query();
+				while (componentsGr.next()) {
+					tmpComponent = componentsGr.gr.suite_child + '';
+					if (swModelsArr.indexOf(tmpComponent) === -1) {
+						swModelsArr.push(tmpComponent);
+					}
+				}
+			}
+		} while (suiteGr.getRowCount());
+		if (existingParentsArr.length > 0) {
+			this.suiteParentCache[swModelsArrKey] = existingParentsMap;
+			return existingParentsMap;
+		}
+		return null;
+	},
+
+	_getSoftwareModelsFromDiscModel: function(discoveryModel) {
+		var installSwModel;
+		if (discoveryModel in this.DMToSM) {
+			installSwModel = this.DMToSM[discoveryModel];
+		} else {
+			installSwModel = SAMPremiumUtils.getSoftwareModelsFromDiscModel(discoveryModel);
+			// add to DMToSM cache
+			this.DMToSM[discoveryModel] = installSwModel;
+		}
+		return installSwModel.slice(0); // return a copy of the array so the cache is not corrupted
+	},
+
+	_getDiscoveryModelsFromSwModel: function(suiteChildSwModel) {
+		var installDiscoveryModel;
+		if (suiteChildSwModel in this.SMToDM) {
+			installDiscoveryModel = this.SMToDM[suiteChildSwModel];
+		} else {
+			installDiscoveryModel = SAMPremiumUtils.getDiscoveryModelsFromSwModel(suiteChildSwModel);
+			// add to SMToDM cache
+			this.SMToDM[suiteChildSwModel] = installDiscoveryModel;
+		}
+		return installDiscoveryModel.slice(0); // return a copy of the array so the cache is not corrupted
+	},
+
+	_updateInstallsFromSwModels: function(candidate, installGr) {
+		if (candidate && (candidate.suite_dms || candidate.suite_sms) && candidate.license_metric) { // Sanity check
+			var updateInstDmGr = new SampRecord(this.INSTALL_TABLE);
+			updateInstDmGr.addQuery('omit_from_suites', '!=', true);
+			updateInstDmGr.addQuery('inferred_suite_level',
+				'<', this.suitesParentsWithEntitlement[candidate.suite_sw_model]);
+			updateInstDmGr.addQuery('inferred_suite', candidate.suite_sms);
+			updateInstDmGr.addQuery('sys_id', candidate.included_installs);
+			this._addLicenseMetricFilter(updateInstDmGr, candidate.license_metric, installGr);
+			updateInstDmGr.query();
+			this._updateReconProgress(updateInstDmGr.getRowCount());
+			while (updateInstDmGr.next()) {
+				var inferredSuiteHistoryGr = GlideRecord(this.INFERRED_SUITE_HISTORY_TABLE);
+				inferredSuiteHistoryGr.setValue('software_install', updateInstDmGr.getUniqueValue());
+				inferredSuiteHistoryGr.setValue('inferred_suite', updateInstDmGr.gr.inferred_suite);
+				inferredSuiteHistoryGr.setValue('inferred_suite_product', updateInstDmGr.gr.inferred_suite_product);
+				inferredSuiteHistoryGr.insert();
+				updateInstDmGr.setValue('inferred_suite', candidate.suite_sw_model);
+				updateInstDmGr.setValue('inferred_suite_product', candidate.product);
+				updateInstDmGr.setValue('inferred_suite_level',
+					this.suitesParentsWithEntitlement[candidate.suite_sw_model]);
+				updateInstDmGr.setValue('inference_calculated', true);
+				updateInstDmGr.setWorkflow(false);
+				updateInstDmGr.update();
+			}
+		}
+	},
+
+	_updateInstallFromDiscoveryModels: function(candidate, installGr) {
+		if (candidate && (candidate.suite_dms || candidate.suite_sms) && candidate.license_metric) { // Sanity check
+			var updateInstDmGr = new SampRecord(this.INSTALL_TABLE);
+			updateInstDmGr.addQuery('omit_from_suites', '!=', true);
+			updateInstDmGr.addQuery('inference_calculated', '!=', true)
+				.addOrCondition('inferred_suite_level',
+					'<', this.suitesParentsWithEntitlement[candidate.suite_sw_model]);
+			updateInstDmGr.addQuery('discovery_model', candidate.suite_dms);
+			updateInstDmGr.addQuery('sys_id', candidate.included_installs);
+			this._addLicenseMetricFilter(updateInstDmGr, candidate.license_metric, installGr);
+			// updateInstDmGr.query();
+			// TODO: Check if entitlements have to be reset, if they have then updateMultiple can't be used
+			updateInstDmGr.setValue('inferred_suite', candidate.suite_sw_model);
+			updateInstDmGr.setValue('inferred_suite_product', candidate.product);
+			updateInstDmGr.setValue('inferred_suite_level',
+				this.suitesParentsWithEntitlement[candidate.suite_sw_model]);
+			updateInstDmGr.setValue('inference_calculated', true);
+			updateInstDmGr.setWorkflow(false);
+			updateInstDmGr.updateMultiple();
+			this._updateReconProgress(updateInstDmGr.getRowCount());
+			this._updateInstallsFromSwModels(candidate, installGr);
+			// Clear the values for exceeded installs
+			if (candidate.exceeded_installs && candidate.exceeded_installs.length) {
+				this._clearMultipleInstallsById(candidate.exceeded_installs);
+			}
+		}
+	},
+
+	_clearInstallsFromSuiteId: function(suiteSwId, licMetricName, dataGr) {
+		if (suiteSwId && licMetricName) { // Sanity check
+			var updateInstGr = new SampRecord(this.INSTALL_TABLE);
+			updateInstGr.addQuery('omit_from_suites', '!=', true);
+			updateInstGr.addQuery('inferred_suite', suiteSwId);
+			this._addLicenseMetricFilter(updateInstGr, licMetricName, dataGr);
+			updateInstGr.setValue('inference_calculated', true);
+			updateInstGr.setValue('inferred_suite', '');
+			updateInstGr.setWorkflow(false);
+			updateInstGr.updateMultiple();
+			this._updateReconProgress(updateInstGr.getRowCount());
+		}
+	},
+
+	_clearSingleInstall: function (instGr) {
+		instGr.setValue('inference_calculated', true);
+		instGr.setWorkflow(false);
+		instGr.update();
+		this._updateReconProgress(1);
+	},
+
+	_clearMultipleInstallsById: function (installIds) {
+		var updateInstGr = new SampRecord(this.INSTALL_TABLE);
+		updateInstGr.addQuery('sys_id', installIds);
+		updateInstGr.query();
+		while (updateInstGr.next()) {
+			updateInstGr.setValue('inference_calculated', true);
+			updateInstGr.setValue('inferred_suite', '');
+			updateInstGr.setWorkflow(false);
+			updateInstGr.update();
+		}
+		this._updateReconProgress(updateInstGr.getRowCount());
+	},
+
+	_updateReconProgress: function(count) {
+		this.processedInstalls += count;
+		if (this.processedInstalls >= ReconciliationConstants.BATCHSIZE) {
+			this._flushReconProgress();
+		}
+	},
+
+	_flushReconProgress: function() {
+		SampReconProgressUtil.updateProgress(this.fReconResultId, this.processedInstalls);
+		this.processedInstalls = 0;
+	},
+
+	/*
+		With STRY50328007, this API has been enhanced to account for suite component downgrades.
+		The idea is to query up installs with downgrade software versions too while considering for suites.
+		The way this is acheived is
+			1.	Include all the downgrade models in the childrenSMs
+			2.  Include all discovery models of downgrades in childrenDMs
+			3.  update smToMand & dmToSwm accordingly.
+		componentsCount remains as is.
+	*/
+	// Get all the children Discovery Models of the given Suite sys_id
+	_getSuiteComponentsDMs: function(suiteSwId) {
+		if (suiteSwId in this.swToSuitesObjectMap) {
+			return this.swToSuitesObjectMap[suiteSwId];
+		}
+		var COUNT_TOTAL = 3; // Index holding the agg value of the total count of components
+		var mandIdTmp; // Temp variable to hold the mandatoriness index of the Suite component
+		var suiteSwChild; // Temp variable to hold the sys_id of a SWM component
+		var discMdlArr; // Temp array to hold all the DM from a given SWM
+		var downgradeModelArr = []; // Array to hold all the downgrades from a given suite
+		// Return object (initialized)
+		/* suite.componentsCount index:
+			[0]: Optional component
+			[1]: Always mandatory component
+			[2]: Part of the Mandatory group (at least one must exist)
+			[3]: - Custom index to store the total count
+		*/
+
+		var suiteSwGr = new GlideRecord('cmdb_software_product_model');
+		suiteSwGr.get(suiteSwId);
+
+		var suite = {
+			swModel: suiteSwId, //
+			componentsCount: [0, 0, 0, 0], // Count of installed components per mandatory type
+			childrenDMs: [], // Array containing all the DM for the Suite Component SWM
+			childSuiteSMs: [], // Array containing all the SM for the child suites
+			dmToSwm: {}, // Map to retrieve the SWM from a DM and know its mandatory type
+			smToMand: {}, // Map from SM to the mandatory type
+			smToInstallConditions: {},
+			applyToSubscriptions: !!suiteSwGr.apply_to_subscriptions,
+			product: suiteSwGr.getValue('product'),
+			// todo -- findout if suite has children suites
+		};
+
+		var installCondition = suiteSwGr.getValue('install_condition');
+		if (installCondition) {
+			suite.installCondition = installCondition;
+		}
+
+		var parentChildrenGr = new SampRecord(this.SUITES_TABLE);
+		parentChildrenGr.addQuery('suite_parent', suiteSwId);
+		parentChildrenGr.query();
+		while (parentChildrenGr.next()) {
+			mandIdTmp = Number(parentChildrenGr.gr.mandatory);
+			suiteSwChild = parentChildrenGr.gr.suite_child + '';
+			var swChildInstallCondition = parentChildrenGr.gr.suite_child.install_condition;
+			if (swChildInstallCondition) {
+				suite.smToInstallConditions[suiteSwChild] = swChildInstallCondition;
+			}
+			// for each Suite Child get all downgrades
+			downgradeModelArr = this.getDowngradeChildrenSMs(suiteSwChild);
+			downgradeModelArr.push(suiteSwChild);
+			// if it is a suite it should be in the childSuiteSMs
+			if (this.hasChildren(suiteSwChild)) {
+				Array.prototype.push.apply(suite.childSuiteSMs, downgradeModelArr);
+			}
+
+			if (mandIdTmp >= 0 && mandIdTmp < 3) { // Mandatoriness choice list consist of only 3 values [0..2]
+				for (var j in downgradeModelArr) {
+					var dwnModel = downgradeModelArr[j];
+					discMdlArr = this._getDiscoveryModelsFromSwModel(dwnModel);
+					Array.prototype.push.apply(suite.childrenDMs, discMdlArr);
+					suite.smToMand[dwnModel] = mandIdTmp;
+					// Build map of relationship between a DM and it's SWM
+					for (var i = 0; i < discMdlArr.length; i++) {
+						suite.dmToSwm[discMdlArr[i]] = {
+							mandatory: mandIdTmp,
+							sw_model: dwnModel,
+						};
+					}
+				}
+				suite.componentsCount[mandIdTmp] += 1;
+				suite.componentsCount[COUNT_TOTAL] += 1;
+			}
+		}
+		this.swToSuitesObjectMap[suiteSwId] = suite;
+		return suite;
+	},
+
+	getDowngradeChildrenSMs: function(parentSuite) {
+		// using a map to ensure uniqueness of children
+		var downgradeModels = {};
+		// consider downgrade rights from entitlements
+		new GlideQuery('samp_downgrade_model')
+			.where('license.software_model', parentSuite)
+			.where('active', true)
+			.select('model')
+			.forEach(function (suite) {
+				downgradeModels[suite.model] = true;
+			});
+		// consider downgrade rights from content.
+		new GlideQuery('samp_sw_downgrade_model')
+			.where('parent_model', parentSuite)
+			.where('active', true)
+			.select('model')
+			.forEach(function (suite) {
+				downgradeModels[suite.model] = true;
+			});
+		return Object.keys(downgradeModels);
+	},
+
+	hasChildren: function(swModel) {
+		var grSuites = new GlideRecord(this.SUITES_TABLE);
+		grSuites.addQuery('suite_parent', swModel);
+		grSuites.query();
+		return grSuites.hasNext();
+	},
+
+	// Retrieve an array containing all the license metrics for the software model
+	// or "per device" as the default value
+	_getLicenseMetrics: function(swModel, isAllocated) {
+		var licMetric = [];
+		try {
+			licMetric = this._getLicenseMetricsforSoftwareModel(swModel, isAllocated);
+		} catch (err) {
+			var gl = new GSLog('err', 'SAMPSuiteEngine');
+			gl.logErr('Error calling _getLicenseMetricsforSoftwareModel: ' + err);
+		}
+		if (!licMetric.length) {
+			licMetric = [{ name: 'per device', rank: 1000 }]; // Default license metric with a high rank (low priority)
+		}
+		return licMetric;
+	},
+
+	_getLicenseMetricsforSoftwareModel: function (swModelId, isAllocated) {
+		// In order to keep track of the rank for the license metric, the Array will maintain
+		// the order and the HashMap will store the value
+		var licMetrics = [];
+		var licMetric;
+		var rank;
+		var swLicenses = this._getEntitlementsGrForSwModel(swModelId, isAllocated);
+		swLicenses.query();
+		while (swLicenses.next()) {
+			if (isAllocated) {
+				rank = swLicenses.getValue('license_metric.rank_allocated');
+			} else {
+				rank = swLicenses.getValue('license_metric.rank_unallocated');
+			}
+			licMetric = [];
+			licMetric.name = swLicenses.getValue('license_metric.value');
+			licMetric.rank = rank + '';
+			licMetrics.push(licMetric);
+		}
+		return licMetrics;
+	},
+
+	_getEntitlementsGrForSwModel: function (swModelId, isAllocated) {
+		var swLicensesGr = new GlideAggregate(ReconciliationConstants.ENTITLEMENT_TABLE);
+		swLicensesGr.setNoLimit(true);
+		swLicensesGr.addNotNullQuery('license_metric');
+		swLicensesGr.addQuery('install_status', '=', 1);
+		if (!GlideProperties.getBoolean('com.snc.samp.recon.enablecustommetrics', true)) {
+			swLicensesGr.addQuery('metric_group', '!=', ReconciliationConstants.CUSTOM_METRIC_GROUP);
+		}
+		swLicensesGr.addQuery('model', swModelId);
+		swLicensesGr.groupBy('license_metric.value');
+		if (isAllocated) {
+			swLicensesGr.groupBy('license_metric.rank_allocated');
+			swLicensesGr.orderBy('license_metric.rank_allocated');
+		} else {
+			swLicensesGr.groupBy('license_metric.rank_unallocated');
+			swLicensesGr.orderBy('license_metric.rank_unallocated');
+		}
+		return swLicensesGr;
+	},
+
+	_addLicenseMetricFilter: function(grQuery, licMetric, grData) {
+		if ((licMetric === 'per named user' || licMetric === 'per user' || licMetric === 'user subscription')
+			&& !grData.gr.assigned_to.nil()) {
+			grQuery.addQuery('assigned_to', grData.gr.assigned_to);
+		}
+		// "per device" OR "per named device", For "per user" license metric also need to consider the device
+		if (grData.getTableName() === this.CI_TABLE) {
+			grQuery.addQuery('installed_on', grData.gr.sys_id);
+		} else {
+			grQuery.addQuery('installed_on', grData.gr.installed_on);
+		}
+		// NOTE: additional else-if conditions should be included here for new license metrics
+	},
+
+	_checkForSuiteInInstall: function(installGr, suite, licMetric) {
+		var dms = this._getDiscoveryModelsFromSwModel(suite.swModel);
+		if (dms.length) {
+			var instSuiteGr = new SampRecord(this.INSTALL_TABLE);
+			instSuiteGr.addQuery('discovery_model', dms);
+			this._addLicenseMetricFilter(instSuiteGr, licMetric, installGr);
+			instSuiteGr.setLimit(1);
+			if (suite.installCondition) {
+				SampInstallConditionEngine.addQueryCondition(instSuiteGr, suite.installCondition, '');
+			}
+			instSuiteGr.query();
+			return instSuiteGr.hasNext();
+		}
+		return false;
+	},
+
+	_isSuite: function(swModelId) {
+		var suitesGr = new SampRecord(this.SUITES_TABLE);
+		suitesGr.addQuery('suite_parent', swModelId);
+		suitesGr.setLimit(1);
+		suitesGr.query();
+		return suitesGr.hasNext();
+	},
+
+	generateSubscriptionQuery: function(model) {
+		return 'inferred_suiteISEMPTY^software_modelISNOTEMPTY^software_model='
+			+ String(model)
+			+ '^NQinferred_suite=' + String(model);
+	},
+
+	type: 'SAMPSuiteEngine',
+};
+]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:35</sys_created_on>
+        <sys_id>99d5e96c47111110c859fee3846d4300</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SAMPSuiteEngine</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_99d5e96c47111110c859fee3846d4300</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:35</sys_updated_on>
+    </sys_script_include>
+</record_update>

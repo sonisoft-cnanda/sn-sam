@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamMLSExcelParser</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamMLSExcelParser</name>
+        <script><![CDATA[var SamMLSExcelParser = Class.create();
+SamMLSExcelParser.prototype = {
+	initialize: function() {
+		this.columnHeaderIndicator = '"Customer Name on Agreement"';
+		// child contract mapping. create master contract based on child contract.
+		this.entitlementColumnMapping = {
+			'Part Number': 'publisher part number',
+			'Customer Name on Agreement': 'company',
+			'License Program': 'agreement type',
+			'Coverage Start Date': 'start date',
+			'Coverage End Date': 'end date',
+			'Transaction Quantity': 'purchased rights',
+			'Country on Agreement': 'location',
+			'Product Description': 'product description',
+			'Date Reseller Submitted to Microsoft': 'purchased',
+			'Reseller Name': 'vendor',
+			'License / Enrollment / Customer Number': 'contract number',
+		};
+		this.contractColumnMapping = {
+			'Customer Name on Agreement': 'Description',
+			'Authorization / Agreement Number': 'Parent contract',
+			'License / Enrollment / Customer Number': 'Contract number',
+			'Customer Purchase Order Number': 'PO Number',
+			'Agreement Start Date': 'Start date',
+			'Agreement End Date': 'End date',
+		};
+	},
+	findAndValidateExcelHeaderRow: function(attachmentSysId) {
+		var parser = new sn_impex.GlideExcelParser();
+		var attachment = new GlideSysAttachment();
+		var attachmentStream = attachment.getContentStream(attachmentSysId);
+		parser.setSheetName('Transaction Data');
+		parser.parse(attachmentStream);
+		var headerRow = 0;
+		var found = false;
+		if (!parser.next()) {
+			return -2;
+		}
+		do {
+			var row = parser.getRow();
+			for (var k in row) {
+				if (JSON.stringify(row[k]) === this.columnHeaderIndicator) {
+					found = true;
+					break;
+				}
+			}
+			headerRow += 1;
+		} while (parser.next() && found === false);
+		if (found === false) {
+			return -1;
+		}
+		return headerRow;
+	},
+	parseRowByRow: function(headerRow, attachmentSysId) {
+		var parser = new sn_impex.GlideExcelParser();
+		var attachment = new GlideSysAttachment();
+		var attachmentStream = attachment.getContentStream(attachmentSysId);
+		parser.setSheetName('Transaction Data');
+		parser.setHeaderRowNumber(headerRow);
+		parser.parse(attachmentStream);
+		return parser;
+	},
+	parseRow: function(row, createContract) {
+		var mappedRow = this.rowMapping(row, createContract);
+		var mappedEntitlementRow = mappedRow[0];
+		var mappedContractRow = mappedRow[1];
+		return [mappedEntitlementRow, mappedContractRow];
+	},
+	rowMapping: function(rowInput, createContract) {
+		var rowEntitlement = {};
+		var rowContract = {};
+		for (var colInput in rowInput) {
+			if (this.contractColumnMapping.hasOwnProperty(colInput)) {
+				rowContract[this.contractColumnMapping[colInput]] = this.valueMapping(colInput, rowInput[colInput]);
+			}
+			if (this.entitlementColumnMapping.hasOwnProperty(colInput)) {
+				if (createContract === String(0) && colInput === 'License / Enrollment / Customer Number') {
+					continue;
+				}
+				rowEntitlement[this.entitlementColumnMapping[
+					colInput]] = this.valueMapping(colInput, rowInput[colInput]);
+			}
+		}
+		rowEntitlement['metric group'] = 'Microsoft';
+		rowEntitlement['data source'] = 'Microsoft licensing statement (MLS)';
+		rowEntitlement['asset tag'] = '';
+		return [rowEntitlement, rowContract];
+	},
+	valueMapping: function(column, valueInput) {
+		if (column === 'License Program') {
+			if (valueInput.includes('Select')) {
+				return 'Select Plus';
+			}
+			if (valueInput.includes('Enterprise')) {
+				return 'Enterprise Agreement';
+			}
+			if (valueInput.includes('Open')) {
+				return 'Open License';
+			}
+			if (valueInput.includes('ISV')) {
+				return 'Independent Software Vendor';
+			}
+		}
+		return valueInput;
+	},
+	type: 'SamMLSExcelParser',
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:35</sys_created_on>
+        <sys_id>6dd5e96c47111110c859fee3846d4305</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamMLSExcelParser</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_6dd5e96c47111110c859fee3846d4305</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:35</sys_updated_on>
+    </sys_script_include>
+</record_update>

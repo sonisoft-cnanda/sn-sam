@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamSAPConstants</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamSAPConstants</name>
+        <script><![CDATA[var SamSAPConstants = Class.create();
+SamSAPConstants.prototype = {
+	initialize: function() {
+	},
+
+	type: 'SamSAPConstants',
+};
+
+// SOAP function name
+SamSAPConstants.SAP_SOAP_FUNCTION = 'NOW_SAMP._-now_-sampUserDetailsWsdl';
+
+// SOAP function parameters
+SamSAPConstants.SAP_FUNCTION_PARAMETER_PREFIX = '_-now_-sampUserDetailsWsdl.';
+SamSAPConstants.SAP_SOAP_REQ_TYPE_PARAMETER = SamSAPConstants.SAP_FUNCTION_PARAMETER_PREFIX + 'IRequestType';
+SamSAPConstants.SAP_SOAP_DATE_PARAMETER = SamSAPConstants.SAP_FUNCTION_PARAMETER_PREFIX + 'ILastRanDate';
+SamSAPConstants.SAP_SOAP_RFC_NAME_PARAMETER = SamSAPConstants.SAP_FUNCTION_PARAMETER_PREFIX + 'IFltrRfcName';
+SamSAPConstants.SAP_SOAP_OFFSET_PARAMETER = SamSAPConstants.SAP_FUNCTION_PARAMETER_PREFIX + 'IFltrOffset';
+SamSAPConstants.SAP_SOAP_LIMIT_PARAMETER = SamSAPConstants.SAP_FUNCTION_PARAMETER_PREFIX + 'IFltrLimit';
+SamSAPConstants.SAP_SOAP_SYSTEM_PARAMETER = SamSAPConstants.SAP_FUNCTION_PARAMETER_PREFIX + 'IFltrRfcSystem';
+SamSAPConstants.SAP_SOAP_CLIENT_PARAMETER = SamSAPConstants.SAP_FUNCTION_PARAMETER_PREFIX + 'IFltrRfcClient';
+SamSAPConstants.SAP_SOAP_REQ_SOURCE_PARAMETER = SamSAPConstants.SAP_FUNCTION_PARAMETER_PREFIX + 'ISourceType';
+
+// XML node path
+SamSAPConstants.SAP_RFC_DATA_NODE = '//EtRfcList/item[1]';
+SamSAPConstants.SAP_IS_DATA_READY_NODE = '//EIsDataReady';
+SamSAPConstants.SAP_COMMENTS_NODE = '//EComments';
+SamSAPConstants.SAP_STATUS_NODE = '//EStatus';
+SamSAPConstants.SAP_PRICE_LIST_DATA_NODE = '//EtUserPriceList/item[1]';
+SamSAPConstants.SAP_USER_DATA_NODE = '//EtXmlTable/item[1]';
+SamSAPConstants.SAP_ROLE_DATA_NODE = '//EtXmlTable/item[1]';
+SamSAPConstants.SAP_USER_ROLE_DATA_NODE = '//EtXmlTable/item[1]';
+SamSAPConstants.SAP_USER_ACTIVITY_NODE = '//EtXmlTable/item[1]';
+SamSAPConstants.SAP_USER_WEB_ACTIVITY_NODE = '//EtXmlTable/item[1]';
+SamSAPConstants.SAP_TOTAL_RECORDS_NODE = '//ETotalRecords';
+SamSAPConstants.SAP_ENGINE_DATA_NODE = '//EtXmlTable/item[1]';
+SamSAPConstants.SAP_TCODE_DATA_NODE = '//EtXmlTable/item[1]';
+SamSAPConstants.SAP_USER_ACTIVE_TCODE_DATA_NODE = '//EtXmlTable/item[1]';
+
+// SOAP function request type
+SamSAPConstants.GET_USER_DATA = 'GET_USER_DATA';
+SamSAPConstants.GET_RFC_LIST = 'GET_RFC_LIST';
+SamSAPConstants.GET_SAP_ROLES = 'GET_SAP_ROLES';
+SamSAPConstants.GET_USER_ROLES = 'GET_USER_ROLES';
+SamSAPConstants.GET_PRICE_LIST = 'GET_PRICE_LIST';
+SamSAPConstants.RUN_USER_PROGRAM = 'RUN_USER_PROGRAM';
+SamSAPConstants.RUN_RFC_PROGRAM = 'RUN_RFC_PROGRAM';
+SamSAPConstants.IS_DATA_READY = 'IS_DATA_READY';
+SamSAPConstants.RESPONSE_SUCCESS = '200';
+SamSAPConstants.RESPONSE_ERROR = '210';
+SamSAPConstants.RESPONSE_WARN = '220';
+SamSAPConstants.GET_USER_ACTIVITY = 'GET_USER_ACTIVITY_DATA';
+SamSAPConstants.GET_WEB_ACTIVITY = 'GET_USER_WEB_ACTIVITY_DATA';
+SamSAPConstants.GET_SAP_VERSION = 'GET_SAP_VERSION';
+SamSAPConstants.GET_ENGINE_USAGE = 'GET_SAP_ENGINE_DATA';
+SamSAPConstants.GET_SAP_TCODES = 'GET_ALL_TCODES';
+SamSAPConstants.GET_USER_ACTIVE_TCODES = 'GET_USER_TCODE_DATA';
+
+// Batch sizes
+SamSAPConstants.USER_RECORD_BATCH_SIZE = 10000;
+SamSAPConstants.USER_ROLE_BATCH_SIZE = 10000;
+SamSAPConstants.PRICE_LIST_BATCH_SIZE = 1000;
+SamSAPConstants.SAP_ROLE_BATCH_SIZE = 10000;
+SamSAPConstants.ACTIVITY_BATCH_SIZE = 10000;
+SamSAPConstants.WEB_ACTIVITY_BATCH_SIZE = 10000;
+SamSAPConstants.ENGINE_USAGE_BATCH_SIZE = 10000;
+SamSAPConstants.SAP_TCODE_BATCH_SIZE = 10000;
+SamSAPConstants.USER_ACTIVE_TCODE_BATCH_SIZE = 10000;
+SamSAPConstants.SAP_DATE_FORMAT = 'yyyyMMdd';
+SamSAPConstants.SAP_DELIMITER = '|';
+
+SamSAPConstants.SAP_REQ_SOURCE_UI = 'REFRESH_ALL_DATA_UI';
+SamSAPConstants.SAP_REQ_SOURCE_JOB = 'RUN_ALL_DATA_JOBS';
+
+/* Properties to enable / disable pulling of roles and activity data from SAP */
+SamSAPConstants.SAP_ABAP_LATEST_VERSION_PROPERTY = 'com.sn_samp_sap.abap.latest.version';
+SamSAPConstants.SAP_ACTIVITY_PROPERTY_COLUMN = 'fetch_activity';
+SamSAPConstants.SAP_ROLES_PROPERTY_COLUMN = 'fetch_roles';
+SamSAPConstants.SAP_LAST_RUN_COLUMN = 'last_run';
+SamSAPConstants.SAP_TRANSACTIONS_PROPERTY_COLUMN = 'fetch_user_transactions';
+SamSAPConstants.SAP_CONNECTION_ENGINE_USAGE_PROPERTY_COLUMN = 'fetch_engine_usage';
+
+// Mapping from the SOAP Ids to the ServiceNow Column names
+SamSAPConstants.SAP_SNOW_CLIENT_MAPPING = {
+	Rfcsystem: 'system',
+	Rfchost: 'host_name',
+	Rfcsystyp: 'environment',
+	RfcLastRan: 'last_run',
+	Rfcactive: 'active',
+	Rfccomments: 'comment',
+	Rfcdest: 'rfc_name',
+	Rfcclient: 'client',
+	RfcUserCnt: 'user_record_count',
+	Usertyp: 'value',
+	Utyptext: 'name',
+	ClientName: 'client_name',
+	FlagEngine: 'fetch_measurement',
+};
+
+SamSAPConstants.SAP_SNOW_USER_MAPPING = {
+	0: 'user_name',
+	2: 'system',
+	3: 'client',
+	4: 'user_deleted',
+	6: 'user_type',
+	8: 'valid_from',
+	9: 'valid_through',
+	10: 'first_name',
+	11: 'last_name',
+	12: 'full_name',
+	13: 'email',
+	14: 'license_type',
+	15: 'user_updated_on',
+	16: 'wrong_logon',
+	17: 'local_lock',
+	18: 'global_lock',
+	19: 'no_user_password',
+	20: 'admin_creator',
+	21: 'user_created_on',
+	22: 'last_log_on',
+	23: 'user_group',
+	24: 'cost_center',
+	25: 'account_number',
+	26: 'dev_access_key',
+	27: 'employee_number',
+};
+
+SamSAPConstants.SAP_SNOW_ROLE_MAPPING = { 0: 'name', 1: 'description', 4: 'role_deleted' };
+
+SamSAPConstants.SAP_SNOW_USER_ROLE_MAPPING = {
+	0: 'user_name', 2: 'system_id', 3: 'client', 4: 'role', 5: 'role_deleted',
+};
+
+SamSAPConstants.SAP_SNOW_TCODE_MAPPING = {
+	0: 'name',
+	1: 'description',
+	4: 'tcode_deleted',
+};
+SamSAPConstants.SAP_SNOW_USER_ACTIVE_TCODE_MAPPING = {
+	0: 'user_name',
+	1: 'rfc_name',
+	2: 'system_id',
+	3: 'client',
+	4: 'transaction',
+	7: 'last_modified_date',
+	9: 'tcode_deleted',
+};
+
+SamSAPConstants.SAP_SNOW_USER_ACTIVITY = {
+	0: 'user_name',
+	1: 'rfc_name',
+	2: 'system',
+	3: 'client',
+	4: 'period',
+	6: 'steps',
+	7: 'total_cpu',
+	8: 'total_db_time',
+	9: 'db_read_record',
+	10: 'db_change_record',
+	11: 'peak_date',
+	12: 'peak_count',
+};
+
+SamSAPConstants.SAP_SNOW_USER_WEB_ACTIVITY = {
+	0: 'user_name',
+	1: 'rfc_name',
+	2: 'system',
+	3: 'client',
+	4: 'period',
+	6: 'calls',
+	7: 'call_time',
+	8: 'data_sent',
+	9: 'data_received',
+	10: 'host_name',
+	11: 'path',
+	12: 'port',
+	13: 'total_rfc_calls',
+	14: 'total_rfc_sent',
+	15: 'total_rfc_receive',
+};
+
+SamSAPConstants.SAP_SNOW_ENGINE_MAPPING = {
+	0: 'rfc_name',
+	1: 'system',
+	2: 'client',
+	3: 'row_change_date',
+	4: 'measurement_date',
+	5: 'engine_id',
+	6: 'engine_name',
+	7: 'license_metric_id',
+	8: 'license_metric_name',
+	9: 'usage',
+	10: 'start_date',
+	11: 'end_date',
+	12: 'row_number',
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:41</sys_created_on>
+        <sys_id>bed52d6c47111110c859fee3846d4341</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamSAPConstants</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_bed52d6c47111110c859fee3846d4341</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:41</sys_updated_on>
+    </sys_script_include>
+</record_update>

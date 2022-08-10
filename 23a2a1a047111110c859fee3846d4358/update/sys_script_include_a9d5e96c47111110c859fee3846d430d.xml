@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampAggregate</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>SampAggregate</description>
+        <name>SampAggregate</name>
+        <script><![CDATA[var SampAggregate = Class.create();
+SampAggregate.prototype = {
+	initialize: function() {
+		if (arguments.length == 1) { this.gr = new GlideAggregate(arguments[0]); } else { this.gr.initialize(); }
+	},
+
+	addQuery: function() {
+		switch (arguments.length) {
+		case 1:
+			return this.gr.addQuery(arguments[0]);
+		case 2:
+			return this.gr.addQuery(arguments[0], arguments[1]);
+		case 3:
+			return this.gr.addQuery(arguments[0], arguments[1], arguments[2]);
+		default:
+			break;
+		}
+	},
+
+	addAggregate: function() {
+		switch (arguments.length) {
+		case 1:
+			this.gr.addAggregate(arguments[0]);
+			break;
+		case 2:
+			this.gr.addAggregate(arguments[0], arguments[1]);
+			break;
+		case 3:
+			this.gr.addAggregate(arguments[0], arguments[1], arguments[2]);
+			break;
+		default:
+			break;
+		}
+	},
+
+	getAggregate: function() {
+		switch (arguments.length) {
+		case 1:
+			return this.gr.getAggregate(arguments[0]);
+		case 2:
+			return this.gr.getAggregate(arguments[0], arguments[1]);
+		case 3:
+			return this.gr.getAggregate(arguments[0], arguments[1], arguments[2]);
+		default:
+			break;
+		}
+	},
+
+	getTableName: function() { return this.gr.getTableName(); },
+
+	getGlideRecord: function() { return this.gr; },
+
+	setNoLimit: function(val) { return this.gr.setNoLimit(val); },
+
+	getAggregateEncodedQuery: function() { return this.gr.getAggregateEncodedQuery(); },
+
+	getEncodedQuery: function() { return this.gr.getEncodedQuery(); },
+
+	addEncodedQuery: function(val) { return this.gr.addEncodedQuery(val); },
+
+	getRowCount: function() { return this.gr.getRowCount(); },
+
+	setWorkflow: function(val) { return this.gr.setWorkflow(val); },
+
+	addNullQuery: function(val) { return this.gr.addNullQuery(val); },
+
+	addNotNullQuery: function(val) { return this.gr.addNotNullQuery(val); },
+
+	orderBy: function(val) { return this.gr.orderBy(val); },
+
+	groupBy: function(val) { return this.gr.groupBy(val); },
+
+	orderByAggregate: function(val1, val2) { return this.gr.orderByAggregate(val1, val2); },
+
+	setWindow: function(val) { return this.gr.setWindow(val); },
+
+	setLimit: function(val) { return this.gr.setLimit(val); },
+
+	setGroup: function(val) { return this.gr.setGroup(val); },
+
+	get: function() {
+		switch (arguments.length) {
+		case 1:
+			return this.gr.get(arguments[0]);
+		case 2:
+			return this.gr.get(arguments[0], arguments[1]);
+		default:
+			break;
+		}
+	},
+
+	getValue: function(val) { return this.gr.getValue(val); },
+
+	getDisplayValue: function () {
+		switch (arguments.length) {
+		case 0:
+			return this.gr.getDisplayValue();
+		case 1:
+			return this.gr.getDisplayValue(arguments[0]);
+		default:
+			break;
+		}
+	},
+
+	getUniqueValue: function() { return this.gr.getUniqueValue(); },
+
+	next: function() { return this.gr.next(); },
+
+	hasNext: function() { return this.gr.hasNext(); },
+
+	query: function() {
+		// Custom modification of the GlideRecord query before doing .query()
+		GroupingEngine.addSampQueryCondition(this.gr);
+		SampInstallConditionEngine.addSampQueryCondition(this.gr);
+		this.gr.query();
+	},
+
+	type: 'SampAggregate',
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:36</sys_created_on>
+        <sys_id>a9d5e96c47111110c859fee3846d430d</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampAggregate</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_a9d5e96c47111110c859fee3846d430d</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:36</sys_updated_on>
+    </sys_script_include>
+</record_update>

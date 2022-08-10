@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamUpgradeProductResults</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamUpgradeProductResults</name>
+        <script><![CDATA[var SamUpgradeProductResults = Class.create();
+SamUpgradeProductResults.prototype = {
+	initialize: function() {
+	},
+
+	upgradeLatestProductResults: function() {
+		this.setLMRTotalSpend();
+		this.setSMRTotalSpend();
+		this.setPRTotalSpend();
+
+		this.setAggregatePRTotalSpend();
+
+		this.generatePublisherResults();
+	},
+
+	setLMRTotalSpend: function() {
+		var licenseMetricResultGr = new GlideRecord('samp_license_metric_result');
+		licenseMetricResultGr.addQuery('software_model_result.latest', true);
+		licenseMetricResultGr.query();
+		while (licenseMetricResultGr.next()) {
+			var avgPrice = gs.nil(licenseMetricResultGr.getValue('avg_price')) ? 0 : parseFloat(licenseMetricResultGr.getValue('avg_price'));
+			var rightsOwned = gs.nil(licenseMetricResultGr.getValue('rights_owned')) ? 0 : parseFloat(licenseMetricResultGr.getValue('rights_owned'));
+			var totalSpend = avgPrice * rightsOwned;
+			licenseMetricResultGr.setValue('total_spend', totalSpend);
+			licenseMetricResultGr.setWorkflow(false);
+			licenseMetricResultGr.update();
+		}
+	},
+
+	setSMRTotalSpend: function() {
+		var licenseMetricResultGa = new GlideAggregate('samp_license_metric_result');
+		licenseMetricResultGa.addQuery('software_model_result.latest', true);
+		licenseMetricResultGa.groupBy('software_model_result.sys_id');
+		licenseMetricResultGa.addAggregate('SUM', 'total_spend');
+		licenseMetricResultGa.query();
+
+		while (licenseMetricResultGa.next()) {
+			var softwareModelResultSysId = licenseMetricResultGa.getValue('software_model_result.sys_id');
+
+			var totalSpend = licenseMetricResultGa.getAggregate('SUM', 'total_spend');
+			totalSpend = gs.nil(totalSpend) ? 0 : parseFloat(totalSpend);
+
+			var softwareModelResultGr = new GlideRecord('samp_software_model_result');
+			softwareModelResultGr.get(softwareModelResultSysId);
+
+			softwareModelResultGr.setValue('total_spend', totalSpend);
+			softwareModelResultGr.setWorkflow(false);
+			softwareModelResultGr.update();
+		}
+	},
+
+	setPRTotalSpend: function() {
+		var softwareModelResultGa = new GlideAggregate('samp_software_model_result');
+		softwareModelResultGa.addQuery('latest', true);
+		softwareModelResultGa.groupBy('product_result.sys_id');
+		softwareModelResultGa.addAggregate('SUM', 'total_spend');
+		softwareModelResultGa.query();
+
+		while (softwareModelResultGa.next()) {
+			var productResultSysId = softwareModelResultGa.getValue('product_result.sys_id');
+
+			var totalSpend = softwareModelResultGa.getAggregate('SUM', 'total_spend');
+			totalSpend = gs.nil(totalSpend) ? 0 : parseFloat(totalSpend);
+
+			var productResultGr = new GlideRecord('samp_product_result');
+			productResultGr.get(productResultSysId);
+
+			productResultGr.setValue('total_spend', totalSpend);
+			productResultGr.setWorkflow(false);
+			productResultGr.update();
+		}
+	},
+
+	setAggregatePRTotalSpend: function() {
+		var RECONCILIATION_GROUP_NONE = '7de4a80c0b1232001a17650d37673afb';
+
+		var productResultGa = new GlideAggregate('samp_product_result');
+		productResultGa.addQuery('reconciliation_result.group', '!=', RECONCILIATION_GROUP_NONE);
+		productResultGa.addQuery('latest', true);
+		productResultGa.addQuery('is_parent', false);
+		productResultGa.groupBy('reconciliation_result.sys_id');
+		productResultGa.groupBy('product.sys_id');
+		productResultGa.addAggregate('SUM', 'total_spend');
+		productResultGa.query();
+
+		while (productResultGa.next()) {
+			var reconciliationResultSysId = productResultGa.getValue('reconciliation_result.sys_id');
+			var productSysId = productResultGa.getValue('product.sys_id');
+
+			var totalSpend = productResultGa.getAggregate('SUM', 'total_spend');
+			totalSpend = gs.nil(totalSpend) ? 0 : parseFloat(totalSpend);
+
+			var aggregateProductResultGr = new GlideRecord('samp_product_result');
+			aggregateProductResultGr.addQuery('latest', true);
+			aggregateProductResultGr.addQuery('is_parent', true);
+			aggregateProductResultGr.addQuery('reconciliation_result', reconciliationResultSysId);
+			aggregateProductResultGr.addQuery('product', productSysId);
+			aggregateProductResultGr.query();
+
+			if (aggregateProductResultGr.next()) {
+				aggregateProductResultGr.setValue('total_spend', totalSpend);
+				aggregateProductResultGr.setWorkflow(false);
+				aggregateProductResultGr.update();
+			}
+		}
+	},
+
+	generatePublisherResults: function() {
+		var productResultGa = new GlideAggregate('samp_product_result');
+		productResultGa.addQuery('latest', true);
+		productResultGa.addQuery('is_parent', false);
+		productResultGa.groupBy('reconciliation_result.sys_id');
+		productResultGa.groupBy('publisher.sys_id');
+		productResultGa.addAggregate('SUM', 'total_spend');
+		productResultGa.addAggregate('SUM', 'true_up_cost');
+		productResultGa.addAggregate('SUM', 'over_licensed_amount');
+		productResultGa.addAggregate('SUM', 'potential_savings');
+		productResultGa.addAggregate('SUM', 'status');
+		productResultGa.query();
+		while (productResultGa.next()) {
+			var reconciliationResultSysId = productResultGa.getValue('reconciliation_result.sys_id');
+			var publisherSysId = productResultGa.getValue('publisher.sys_id');
+
+			var reconGr = new GlideRecord('samp_reconciliation_result');
+			reconGr.get(reconciliationResultSysId);
+
+			if (!this.hasPublisherResult(reconciliationResultSysId, publisherSysId)) {
+				var publisherResultGr = new GlideRecord('samp_publisher_result');
+				publisherResultGr.initialize();
+				publisherResultGr.setValue('reconciliation_result', reconciliationResultSysId);
+				publisherResultGr.setValue('group_display', reconGr.getDisplayValue('group'));
+				publisherResultGr.setValue('subgroup_display', reconGr.getDisplayValue('subgroup'));
+				publisherResultGr.setValue('publisher', publisherSysId);
+				publisherResultGr.setValue('latest', true);
+				publisherResultGr.setValue('total_spend', productResultGa.getAggregate('SUM', 'total_spend'));
+				publisherResultGr.setValue('true_up_cost', productResultGa.getAggregate('SUM', 'true_up_cost'));
+				publisherResultGr.setValue('over_licensed_amount', productResultGa.getAggregate('SUM', 'over_licensed_amount'));
+				publisherResultGr.setValue('potential_savings', productResultGa.getAggregate('SUM', 'potential_savings'));
+				publisherResultGr.setValue('status', parseInt(productResultGa.getAggregate('SUM', 'status'), 10) > 0 ? 1 : 0);
+				publisherResultGr.setWorkflow(false);
+				var publisherResultId = publisherResultGr.insert();
+				/*
+				* update product result table with publisherResult stamp
+				*/
+				var productResultGr = new GlideRecord('samp_product_result');
+				productResultGr.addQuery('reconciliation_result', reconciliationResultSysId);
+				productResultGr.addQuery('publisher', publisherSysId);
+				productResultGr.setValue('publisher_result', publisherResultId);
+				productResultGr.setWorkflow(false);
+				productResultGr.updateMultiple();
+			}
+		}
+	},
+
+	hasPublisherResult: function(reconciliationResultSysId, publisherSysId) {
+		var publisherResultGr = new GlideRecord('samp_publisher_result');
+		publisherResultGr.addQuery('reconciliation_result', reconciliationResultSysId);
+		publisherResultGr.addQuery('publisher', publisherSysId);
+		publisherResultGr.query();
+		return publisherResultGr.hasNext();
+	},
+
+	type: 'SamUpgradeProductResults',
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:36</sys_created_on>
+        <sys_id>21d5e96c47111110c859fee3846d4327</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamUpgradeProductResults</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_21d5e96c47111110c859fee3846d4327</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:36</sys_updated_on>
+    </sys_script_include>
+</record_update>

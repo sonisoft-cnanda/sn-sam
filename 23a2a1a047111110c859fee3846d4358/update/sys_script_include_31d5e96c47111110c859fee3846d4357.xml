@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SAMSoapHandler</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SAMSoapHandler</name>
+        <script><![CDATA[var SAMSoapHandler = Class.create();
+
+SAMSoapHandler.prototype = {
+
+	initialize: function(soapMessage, soapFunction, credAlias) {
+		this.soapMessage = soapMessage;
+		this.soapFunction = soapFunction;
+		this.credentials = this.getCredentials(credAlias);
+		this.soapFuncGr = this._getSoapFuncGr();
+		this.connectionTimeout = SampConstants.SOAP_CONNECTION_TIMEOUT;
+	},
+
+	generateSoapFunction: function(forceGenerate) {
+		// Do nothing, if soap function exist
+		if (!gs.nil(this.soapFuncGr) && !forceGenerate) { return; }
+
+		var soapMsgGr = new GlideRecord('sys_soap_message');
+		soapMsgGr.addQuery('name', this.soapMessage);
+		soapMsgGr.query();
+
+		if (soapMsgGr.next()) {
+			var wsdl = soapMsgGr.getValue('wsdl');
+
+			var request = new sn_ws.RESTMessageV2();
+			request.setBasicAuth(this.credentials.username, new GlideEncrypter().decrypt(this.credentials.password));
+			request.setHttpMethod('get');
+			request.setEndpoint(wsdl);
+
+			for (var pass = 0; pass < 2; pass++) {
+				var midServer;
+
+				if (pass) {
+					midServer = this.getMidServer(this.getHostName(wsdl));
+					request.setMIDServer(midServer.name);
+				}
+
+				var response = request.execute();
+
+				if (response.getStatusCode()) {
+					soapMsgGr.setValue('wsdl_xml', response.getBody());
+					soapMsgGr.setValue('download_wsdl', false);
+					soapMsgGr.autoSysFields(false);
+					soapMsgGr.update();
+
+					var generator = new global.SOAPMessageGenerator(soapMsgGr);
+					generator.process();
+					gs.flushMessages();
+
+					this.soapFuncGr = this._getSoapFuncGr();
+
+					if (!gs.nil(this.soapFuncGr)) {
+						if (!gs.nil(midServer)) {
+							this.soapFuncGr.setValue('use_mid_server', midServer.sys_id);
+							this.soapFuncGr.update();
+						}
+
+						soapMsgGr.setValue('download_wsdl', true);
+						soapMsgGr.autoSysFields(false);
+						soapMsgGr.update();
+						return;
+					}
+				}
+			}
+		} else {
+			throw new Error('SAMSoapHandler: SOAP Message record does not exist: ' + this.soapMessage);
+		}
+
+		throw new Error('SAMSoapHandler: Unable to generate SOAP function for SOAP Message: ' + this.soapMessage);
+	},
+
+	execute: function(params) {
+		var request = new sn_ws.SOAPMessageV2(this.soapMessage, this.soapFunction);
+		request.setBasicAuth(this.credentials.username, new GlideEncrypter().decrypt(this.credentials.password));
+
+		for (var param in params) {
+			request.setStringParameterNoEscape(param, params[param]);
+		}
+
+		for (var pass = 0; pass < 2; pass++) {
+			var midServer;
+
+			if (pass) {
+				midServer = this.getMidServer(this.getHostName(this.soapFuncGr.soap_message.wsdl.toString()));
+				request.setMIDServer(midServer.name);
+			}
+
+			var response = request.execute();
+			response.waitForResponse(this.connectionTimeout);
+
+			if (response.getStatusCode()) {
+				if (!gs.nil(midServer) && gs.nil(this.soapFuncGr.getValue('use_mid_server'))) {
+					this.soapFuncGr.setValue('use_mid_server', midServer.sys_id);
+					this.soapFuncGr.update();
+				}
+
+				return response;
+			}
+		}
+
+		throw new Error('SAMSoapHandler: Invalid SOAP response');
+	},
+
+	getMidServer: function(hostName) {
+		var midServerSysId;
+
+		try {
+			var target = [hostName];
+			var midSelector = new SNC.MidSelector();
+			midServerSysId = midSelector.selectAnyMidServer(null, target, null);
+		} catch (ex) {
+			throw new Error("SAMSoapHandler: Couldn't find a valid mid server");
+		}
+
+		var midServer = {};
+
+		var midServerGr = new GlideRecord('ecc_agent');
+		if (!gs.nil(midServerSysId) && midServerGr.get(midServerSysId)) {
+			midServer.sys_id = midServerSysId;
+			midServer.name = midServerGr.getValue('name');
+		} else {
+			throw new Error("SAMSoapHandler: Couldn't find a valid mid server");
+		}
+
+		return midServer;
+	},
+
+	getCredentials: function(credAlias) {
+		var credGr = new GlideRecord('basic_auth_credentials');
+		credGr.addQuery('tag', 'CONTAINS', credAlias);
+		credGr.addActiveQuery();
+		credGr.query();
+
+		var creds = {};
+
+		if (credGr.next()) {
+			creds.username = credGr.getValue('user_name');
+			creds.password = credGr.getValue('password');
+		} else {
+			var aliasGr = new GlideRecord('sys_alias');
+			aliasGr.get(credAlias);
+
+			throw new Error("SAMSoapHandler: Couldn't find active basic auth credential record for credential alias: " + aliasGr.getValue('name'));
+		}
+
+		return creds;
+	},
+
+	_getSoapFuncGr: function() {
+		var grSoapFunc = new GlideRecord('sys_soap_message_function');
+		grSoapFunc.addQuery('function_name', this.soapFunction);
+		grSoapFunc.addQuery('soap_message.name', this.soapMessage);
+		grSoapFunc.query();
+
+		if (grSoapFunc.next()) {
+			return grSoapFunc;
+		}
+
+		return null;
+	},
+
+	getHostName: function(url) {
+		if (!gs.nil(url)) {
+			return url.replace(/(.*\/\/)?(www\d*\.)?/, '').replace(/:.*/, '').replace(/\/.*/, '');
+		}
+
+		throw new Error('SAMSoapHandler: Cannot get hostname from null url');
+	},
+
+	setConnectionTimeout: function(secs) {
+		this.connectionTimeout = secs;
+	},
+
+	type: 'SAMSoapHandler',
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:37</sys_created_on>
+        <sys_id>31d5e96c47111110c859fee3846d4357</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SAMSoapHandler</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_31d5e96c47111110c859fee3846d4357</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:37</sys_updated_on>
+    </sys_script_include>
+</record_update>

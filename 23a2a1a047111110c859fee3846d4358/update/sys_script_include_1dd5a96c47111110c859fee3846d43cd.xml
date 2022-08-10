@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampProcessReclamation</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>SampProcessReclamation</description>
+        <name>SampProcessReclamation</name>
+        <script><![CDATA[var SampProcessReclamation = Class.create();
+SampProcessReclamation.prototype = {
+	initialize: function() {
+	},
+
+	processRightsUsedBy: function(rightsUsedByGr) {
+		var installsCount = {};
+		installsCount.installs_reclaimed = 0;
+		installsCount.installs_allocated = 0;
+		installsCount.installs_found_reclaimed = 0;
+		var softwareInstalls = SampRemediationAction.getRightsUsedByInstalls(rightsUsedByGr);
+
+		// For each software install check whether a record in reclamation candidate table present
+		while (softwareInstalls.next()) {
+			if (softwareInstalls.is_allocated) {
+				// Count installs that are already allocated
+				installsCount.installs_allocated += 1;
+				continue;
+			}
+			var reclamationCandidateList = new GlideRecord('samp_sw_reclamation_candidate');
+			reclamationCandidateList.addQuery('software_install', softwareInstalls.sys_id);
+			reclamationCandidateList.query();
+
+			if (!reclamationCandidateList.next()) {
+				// If it is not present create a reclamation candidate
+				var reclamationCandidate = this.createReclamationCandidate(softwareInstalls, 'unallocated');
+				if (reclamationCandidate) { installsCount.installs_reclaimed += 1; }
+			} else { installsCount.installs_found_reclaimed += 1; } // Counts installs that are already reclaimed
+		}
+		return installsCount;
+	},
+
+	processRightsNeededBy: function(rightsNeededByGr, remediationOptionGr) {
+		var installsCount = {};
+		installsCount.installs_reclaimed = 0;
+		installsCount.installs_found_reclaimed = 0;
+		var softwareInstalls = SampRemediationAction.getRightsNeededByInstalls(rightsNeededByGr);
+
+		// For each software install check whether a record in reclamation candidate table present
+		while (softwareInstalls.next()) {
+			var reclamationCandidateList = new GlideRecord('samp_sw_reclamation_candidate');
+			reclamationCandidateList.addQuery('software_install', softwareInstalls.sys_id);
+			reclamationCandidateList.query();
+
+			if (!reclamationCandidateList.next()) {
+				// If it is not present create a reclamation candidate
+				var reclamationCandidate;
+				if ((remediationOptionGr.remediation_action.toString()
+                    === ReconciliationConstants.REMOVE_UNLICENSED_CLOUD_INSTALLS)) {
+					reclamationCandidate = this.createReclamationCandidate(softwareInstalls, 'unlicensed_cloud_install');
+				} else if ((remediationOptionGr.remediation_action.toString()
+                    === ReconciliationConstants.REMOVE_UNLICENSED_INSTALLS)) {
+					reclamationCandidate = this.createReclamationCandidate(softwareInstalls, 'unlicensed');
+				} else if ((remediationOptionGr.remediation_action.toString()
+                    === ReconciliationConstants.OPTIMIZE_VCPUS)) {
+					reclamationCandidate = this.createReclamationCandidate(softwareInstalls, 'optimize_vcpu');
+				}
+				if (reclamationCandidate) { installsCount.installs_reclaimed += 1; }
+			} else { installsCount.installs_found_reclaimed += 1; }
+		}
+		return installsCount;
+	},
+
+	createReclamationCandidate: function(softwareInstalls, justification) {
+		var reclamationCandidate = new GlideRecord('samp_sw_reclamation_candidate');
+		reclamationCandidate.initialize();
+		reclamationCandidate.setValue('software_install', softwareInstalls.sys_id);
+		reclamationCandidate.setValue('assignment_group', SampProcessReclamation.ASSIGNMENT_GROUP_DEFAULT);
+		reclamationCandidate.setValue('justification', justification);
+		reclamationCandidate.setValue('notify_user', false);
+
+		if (softwareInstalls.getValue('assigned_to')) {
+			reclamationCandidate.setValue('user', softwareInstalls.getValue('assigned_to'));
+
+			if (justification === 'unallocated') {
+				reclamationCandidate.setValue('days_before_reclamation', 10);
+				reclamationCandidate.setValue('notify_user', true);
+			}
+		}
+
+		// Set the state to ready
+		reclamationCandidate.setValue('state', gs.nil(softwareInstalls.cloud_provider) ? 11 : 10);
+		if (!gs.nil(softwareInstalls.cloud_provider)) {
+			reclamationCandidate.setValue('days_before_reclamation', 10);
+			reclamationCandidate.setValue('notify_user', true);
+		}
+		reclamationCandidate.setValue('cmdb_ci', softwareInstalls.installed_on);
+
+		return reclamationCandidate.insert();
+	},
+
+	type: 'SampProcessReclamation',
+};
+
+SampProcessReclamation.ASSIGNMENT_GROUP_DEFAULT = '9ee15afd677222007d59cbb35685efec';]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:34</sys_created_on>
+        <sys_id>1dd5a96c47111110c859fee3846d43cd</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampProcessReclamation</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_1dd5a96c47111110c859fee3846d43cd</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:34</sys_updated_on>
+    </sys_script_include>
+</record_update>

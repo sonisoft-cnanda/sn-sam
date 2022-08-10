@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SAMPAddMetricGroup</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>Script include that contains a class to help add metric group to specified license metric.</description>
+        <name>SAMPAddMetricGroup</name>
+        <script><![CDATA[/* class to help add metric group to the license metric */
+
+var SAMPAddMetricGroup = Class.create();
+
+SAMPAddMetricGroup.addMetricGroup = function(licenseMetricSysId, metricGroupSysId) {
+	var licenseMetricGr = new GlideRecord('samp_sw_license_metric');
+	if (licenseMetricGr.get(licenseMetricSysId)) {
+		if (!licenseMetricGr.metric_group) {
+			licenseMetricGr.setValue('metric_group', metricGroupSysId);
+			licenseMetricGr.update();
+		} else if (licenseMetricGr.getValue('metric_group').indexOf(metricGroupSysId) === -1) {
+			licenseMetricGr.setValue('metric_group', licenseMetricGr.getValue('metric_group') + ',' + metricGroupSysId);
+			licenseMetricGr.update();
+		}
+	}
+};
+
+SAMPAddMetricGroup.removeMetricGroup = function(licenseMetricSysId, metricGroupSysId) {
+	var licenseMetricGr = new GlideRecord('samp_sw_license_metric');
+	if (!licenseMetricGr.get(licenseMetricSysId)) {
+		return;
+	}
+	var metricGroup = licenseMetricGr.getValue('metric_group');
+	if (metricGroup && metricGroup.indexOf(metricGroupSysId) !== -1) {
+		metricGroup = metricGroup.split(',').map(function(item) { return item.trim(); }).filter(function(item) { return item !== metricGroupSysId; }).join();
+		licenseMetricGr.setValue('metric_group', metricGroup);
+		licenseMetricGr.update();
+	}
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:41</sys_created_on>
+        <sys_id>f6d52d6c47111110c859fee3846d4344</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SAMPAddMetricGroup</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_f6d52d6c47111110c859fee3846d4344</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:41</sys_updated_on>
+    </sys_script_include>
+</record_update>

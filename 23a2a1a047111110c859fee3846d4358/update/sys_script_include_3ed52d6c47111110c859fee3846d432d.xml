@@ -1,0 +1,922 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamServerLicenseCalculator</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>SamServerLicenseCalculator</description>
+        <name>SamServerLicenseCalculator</name>
+        <script><![CDATA[var SamServerLicenseCalculator = Class.create();
+SamServerLicenseCalculator.prototype = Object.extendsObject(SamLicenseCalculator, {
+	initialize: function(metric, metricGroup, coreCompany, product, reconResult, entitlementMapConfig,
+		singleLicenseMetric, calculateRightsNeeded, supportsClustering, licensePhysicalOnly, populateInstallToLRB) {
+		SamLicenseCalculator.prototype.initialize.call(this, metric, metricGroup, coreCompany, product, reconResult,
+			entitlementMapConfig, singleLicenseMetric, calculateRightsNeeded, populateInstallToLRB);
+
+		this.supportsClustering = supportsClustering;
+		this.licensePhysicalOnly = licensePhysicalOnly;
+		this.markProcessedInstalls = true;
+		this.processedInstalls = [];
+		this.allocationCol = 'allocated_to';
+		this.inferred_suites = {};
+		this.CI_REL_MANAGES_MANAGEDBY = SAMPremiumUtils.searchForManagesRelationship();
+	},
+
+	runAllocatedPass: function() {
+		var allocatedDeviceGr = this.getConsumersWithAllocation();
+		var currDevice; var entitlementSetsAlloc;
+		var entitlementMapAlloc;
+		var installModels;
+		var groups;
+		var rightsUsage;
+		var modelComboLicensedBy;
+		var allocatedPass = true;
+
+		while (allocatedDeviceGr.next()) {
+			rightsUsage = {};
+			modelComboLicensedBy = {};
+			currDevice = allocatedDeviceGr.getValue('allocated_to');
+			var deviceInfo = {
+				sysId: currDevice,
+				virtual: null,
+				table: 'cmdb_ci_computer',
+				isHostedOnCloud: false,
+			};
+
+			this.updateDeviceInfo(deviceInfo, allocatedPass);
+			entitlementSetsAlloc = this.getAllocatedEntitlementSet(currDevice);
+			this.initRightsUsage(rightsUsage, entitlementSetsAlloc);
+
+			if (this._isValidAllocationCI(deviceInfo)) {
+				deviceInfo.config = this.getDeviceConfig(deviceInfo, false, {}, allocatedPass);
+				this.installs = deviceInfo.config.installs;
+				installModels = Object.keys(this.installs);
+				this.debug('Allocated pass', 'Consumer: ' + currDevice, 'Installs: ' + JSON.stringify(this.installs));
+
+				if (installModels.length !== 0) {
+					groups = this.findRelated(installModels.sort());
+					this.debug('Allocated pass', 'Consumer: ' + currDevice,
+						'Related groups: ' + JSON.stringify(groups));
+
+					entitlementMapAlloc = this.generateEntitlementMap(entitlementSetsAlloc);
+					this.debug('Allocated pass', 'Consumer: ' + currDevice,
+						'Allocated entitlement sets: ' + JSON.stringify(entitlementSetsAlloc));
+					this.debug('Allocated pass', 'Consumer: ' + currDevice,
+						'Unallocated entitlement sets: ' + JSON.stringify(this.entitlementSets));
+
+					this.consumeRights(groups, deviceInfo, rightsUsage, modelComboLicensedBy, true,
+						entitlementSetsAlloc, entitlementMapAlloc);
+					this.debug('Allocated pass', 'Consumer: ' + currDevice,
+						'Allocated entitlement map: ' + JSON.stringify(entitlementMapAlloc.map));
+					this.debug('Allocated pass', 'Consumer: ' + currDevice,
+						'Unallocated entitlement map: ' + JSON.stringify(this.entitlementMap.map));
+					this.debug('Allocated pass', 'Consumer: ' + currDevice,
+						'Rights usage: ' + JSON.stringify(rightsUsage));
+
+					this.markInstallsAfterAssignment(modelComboLicensedBy);
+					this.updateDowngradeRightsUsage(rightsUsage);
+				}
+			}
+			this.generateRightsUsedByForConsumer(rightsUsage, deviceInfo, false);
+		}
+	},
+
+	runUnallocatedPass: function() {
+		var installModels;
+		var groups;
+		var rightsUsage;
+		var rightsNeeded;
+		var modelComboLicensedBy;
+		var processedClusterDevices = {};
+		this.processedInstalls = [];
+		var allocatedPass = false;
+		var currDevice = this.nextDevice();
+		while (currDevice) {
+			if (processedClusterDevices.hasOwnProperty(currDevice)) {
+				currDevice = this.nextDevice();
+				continue;
+			}
+			rightsUsage = {};
+			modelComboLicensedBy = {};
+			var deviceInfo = {
+				sysId: currDevice,
+				virtual: null,
+				table: 'cmdb_ci_computer',
+				isHostedOnCloud: false,
+			};
+			this.updateDeviceInfo(deviceInfo, allocatedPass);
+			deviceInfo.config = this.getDeviceConfig(deviceInfo, false, processedClusterDevices, allocatedPass);
+
+			currDevice = deviceInfo.sysId;
+			this.installs = deviceInfo.config.installs;
+			installModels = Object.keys(this.installs);
+			this.debug('Unallocated pass', 'Consumer: ' + currDevice, 'Installs: ' + JSON.stringify(this.installs));
+
+			groups = this.findRelated(installModels.sort());
+			this.debug('Unallocated pass', 'Consumer: ' + currDevice, 'Related groups: ' + JSON.stringify(groups));
+			this.debug('Unallocated pass', 'Consumer: ' + currDevice,
+				'Unallocated entitlement sets: ' + JSON.stringify(this.entitlementSets));
+
+			var cachedDevice = this.allocatedNotInUseByDevice.hasOwnProperty(currDevice);
+			var entitlementSetsAlloc = null;
+			var entitlementMapAlloc = null;
+
+			if (cachedDevice) {
+				entitlementSetsAlloc = this.allocatedNotInUseByDevice[currDevice].entitlementSets;
+				entitlementMapAlloc = this.allocatedNotInUseByDevice[currDevice].entitlementMap;
+			}
+
+			rightsNeeded = this.consumeRights(groups, deviceInfo, rightsUsage, modelComboLicensedBy, false,
+				entitlementSetsAlloc, entitlementMapAlloc);
+			this.debug('Unallocated pass', 'Consumer: ' + currDevice,
+				'Entitlement map: ' + JSON.stringify(this.entitlementMap.map));
+
+			this.processRightsUsage(deviceInfo, rightsUsage, modelComboLicensedBy, cachedDevice);
+			this.processRightsNeeded(deviceInfo, rightsNeeded);
+			currDevice = this.nextDevice();
+		}
+	},
+
+	consumeRights: function (swModelComboGroup, deviceInfo, rightsUsage, modelComboLicensedBy, allocatedPass,
+		entitlementSetsAlloc, entitlementMapAlloc) {
+		var swModelCombo;
+		var swModelComboStr;
+		var i;
+		var rightsNeeded = {};
+		var cacheAllocatedNotInUse = false;
+
+		for (i = 0; i < swModelComboGroup.length; i++) {
+			swModelCombo = swModelComboGroup[i];
+			swModelComboStr = swModelCombo.join(',');
+
+			var swModelComboDeviceConfiguration = this._getOperatingSystemsInfo(swModelComboStr, deviceInfo, false);
+
+			if (!this.isValidDeviceConfig(swModelCombo, deviceInfo)) {
+				continue;
+			}
+
+			var compliant = false;
+			var processedSoftwareModels = {};
+			var coreRights;
+			this.rightsNeededSoftwareModel = this.entitlementMap.cheapest[swModelComboStr].softwareModel;
+			this.rightsNeededAllocatedRights = 0;
+
+			if (entitlementSetsAlloc) {
+				// Needs to initiate rights usage for allocation of cached device
+				if (!allocatedPass) {
+					this.initRightsUsage(rightsUsage, entitlementSetsAlloc);
+				}
+				compliant = this._consumeRightsForModelCombo(deviceInfo, swModelComboStr,
+					processedSoftwareModels, swModelComboDeviceConfiguration, rightsUsage, modelComboLicensedBy,
+					entitlementSetsAlloc, entitlementMapAlloc);
+			}
+
+			if (!compliant) {
+				compliant = this._consumeRightsForModelCombo(deviceInfo, swModelComboStr,
+					processedSoftwareModels, swModelComboDeviceConfiguration, rightsUsage, modelComboLicensedBy);
+			}
+
+			if (!compliant) {
+				cacheAllocatedNotInUse = true;
+				if (!allocatedPass) {
+					// Calculate rights needed
+					swModelComboDeviceConfiguration.model = this.rightsNeededSoftwareModel;
+					coreRights = this._getCoreRights(swModelComboDeviceConfiguration, deviceInfo);
+					this.calculateRightsNeededBy(rightsNeeded, swModelComboStr, coreRights);
+				}
+			}
+		}
+
+		if (allocatedPass && cacheAllocatedNotInUse) {
+			this.allocatedNotInUseByDevice[deviceInfo.sysId] = {
+				entitlementSets: entitlementSetsAlloc,
+				entitlementMap: entitlementMapAlloc,
+			};
+		}
+		return rightsNeeded;
+	},
+
+	_consumeRightsForModelCombo: function(_deviceInfo, swModelComboStr, processedSoftwareModels,
+		swModelComboDeviceConfiguration, rightsUsage, modelComboLicensedBy, entitlementSetsAlloc, entitlementMapAlloc) {
+		var sortedSwModels;
+		var coreRights;
+		if (entitlementSetsAlloc) {
+			sortedSwModels = this._getSortedModels(entitlementMapAlloc, swModelComboStr);
+		} else {
+			sortedSwModels = this._getSortedModels(this.entitlementMap, swModelComboStr);
+		}
+		for (var j = 0; j < sortedSwModels.length; j++) {
+			var model = sortedSwModels[j];
+			if (processedSoftwareModels.hasOwnProperty(model)) {
+				continue;
+			}
+			processedSoftwareModels[model] = true;
+			swModelComboDeviceConfiguration.model = model;
+			coreRights = this._getCoreRights(swModelComboDeviceConfiguration, _deviceInfo);
+			if (this._consumeAvailableRights(coreRights, model, swModelComboStr, rightsUsage,
+				modelComboLicensedBy, entitlementSetsAlloc, entitlementMapAlloc)) {
+				return true;
+			}
+		}
+		return false;
+	},
+
+	calculateRightsNeededBy: function (rightsNeeded, swModelComboStr, coreRights) {
+		var rightsNeededEntitlementSet = this.entitlementMap.cheapest[swModelComboStr].entitlementSet;
+		rightsNeeded[rightsNeededEntitlementSet] = {
+			swModelCombo: swModelComboStr,
+			rights: coreRights - this.rightsNeededAllocatedRights,
+		};
+	},
+
+	_consumeAvailableRights: function (coreRights, model, swModelComboStr, rightsUsage, modelComboLicensedBy,
+		entitlementSetsAlloc, entitlementMapAlloc) {
+		var totalAllocatedRights = 0;
+		var totalUnallocatedRights = 0;
+		var allocatedOptions;
+
+		if (entitlementSetsAlloc) {
+			totalAllocatedRights = entitlementMapAlloc.getTotalRights(swModelComboStr, model);
+		}
+		if (model === this.rightsNeededSoftwareModel) {
+			this.rightsNeededAllocatedRights = totalAllocatedRights;
+		}
+		totalUnallocatedRights = this.entitlementMap.getTotalRights(swModelComboStr, model);
+
+		if (totalAllocatedRights + totalUnallocatedRights >= coreRights) {
+			var remainder = coreRights;
+			if (!modelComboLicensedBy.hasOwnProperty(swModelComboStr)) {
+				modelComboLicensedBy[swModelComboStr] = {
+					useAllocationOnly: true,
+					entitlementSets: [],
+				};
+			}
+
+			if (entitlementSetsAlloc) {
+				var allocatedEntitlementOptions = entitlementMapAlloc.get(swModelComboStr) || {};
+				allocatedOptions = allocatedEntitlementOptions[model] || [];
+				remainder = this.consumeAllocatedRightsForModelCombo(swModelComboStr, allocatedOptions,
+					entitlementSetsAlloc, rightsUsage, modelComboLicensedBy, coreRights).remainder;
+			}
+			if (remainder > 0) {
+				var unallocatedEntitlementOptions = this.entitlementMap.get(swModelComboStr) || {};
+				var unallocatedOptions = unallocatedEntitlementOptions[model] || [];
+				modelComboLicensedBy[swModelComboStr].useAllocationOnly = false;
+				this.consumeUnallocatedRightsForModelCombo(swModelComboStr, unallocatedOptions, rightsUsage,
+					modelComboLicensedBy, remainder);
+			}
+			return true;
+		}
+		return false;
+	},
+
+	_getSortedModels: function (entitlementMap, swModelComboStr) {
+		entitlementMap.cleanUpEntry(swModelComboStr);
+		return entitlementMap.sortEntryByModel(swModelComboStr);
+	},
+
+	initializePhysicalInstallsGa: function() {
+		// Get the physical devices which have the product installed on them directly
+		// Get the installs with either software models or inferred suite marked with the current product - physical
+		// (Inferred suite empty AND software model not empty AND product is current product)
+		// OR
+		// (Inferred suite's product is current product)
+		if (gs.nil(this.physicalInstallsGa)) {
+			this.physicalInstallsGa = new SampAggregate(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+			this.physicalInstallsGa.addEncodedQuery(this.generateInstallQuery(''));
+			this.physicalInstallsGa.addQuery('norm_publisher', this.coreCompanyId);
+			this.physicalInstallsGa.addQuery('is_reconciled', false);
+			this.physicalInstallsGa.groupBy('installed_on');
+			this.physicalInstallsGa.orderBy('installed_on');
+			this.physicalInstallsGa.query();
+		}
+	},
+
+	initializeVirtualInstallsGa: function() {
+		// Get the physical devices which have the product installed on their VMs
+		// Get the installs with either software models or inferred suite marked with the current product - virtuals
+		if (gs.nil(this.virtualInstallGa)) {
+			this.virtualInstallGa = new SampAggregate('samp_vminstall_on_pinstall');
+			this.virtualInstallGa.setNoLimit(true);
+			this.virtualInstallGa.addEncodedQuery(this.generateInstallQuery('inst_'));
+			this.virtualInstallGa.addQuery('inst_norm_publisher', this.coreCompanyId);
+			this.virtualInstallGa.addQuery('inst_is_reconciled', false);
+			this.virtualInstallGa.addNotNullQuery('rel_child');
+			this.virtualInstallGa.addNotNullQuery('rel_parent');
+			this.virtualInstallGa.addQuery('inst_reconciliation_state', '!=',
+				ReconciliationConstants.RECONCILIATION_STATE.PROCESSED_IN_UNALLOCATED);
+			this.virtualInstallGa.groupBy('rel_child');
+			this.virtualInstallGa.orderBy('rel_child');
+			this.virtualInstallGa.query();
+		}
+	},
+
+	nextDevice: function() {
+		if (this.licensePhysicalOnly) {
+			return this.nextPhysicalDevice();
+		}
+		return this.nextAnyDevice();
+	},
+
+	nextPhysicalDevice: function() {
+		var deviceId = this.getNextDeviceFromInstallOnPhysical();
+		if (!gs.nil(deviceId)) {
+			return deviceId;
+		}
+		this.flushProcessedInstalls();
+		deviceId = this.getNextDeviceFromInstallOnVirtual();
+		if (!gs.nil(deviceId)) {
+			return deviceId;
+		}
+		if (!this.calculateRightsNeeded) {
+			this.clearReconState();
+		}
+		return null;
+	},
+
+	getNextDeviceFromInstallOnPhysical: function() {
+		this.initializePhysicalInstallsGa();
+		while (this.physicalInstallsGa.next()) {
+			var ciGr = new GlideRecord('cmdb_ci_computer');
+			if (!ciGr.get(this.physicalInstallsGa.getValue('installed_on')) || ciGr.virtual) { continue; }
+			return this.physicalInstallsGa.getValue('installed_on');
+		}
+		return null;
+	},
+
+	getNextDeviceFromInstallOnVirtual: function() {
+		this.initializeVirtualInstallsGa();
+		if (this.virtualInstallGa.next()) {
+			return this.virtualInstallGa.getValue('rel_child');
+		}
+		return null;
+	},
+
+	flushProcessedInstalls: function() {
+		if (this.markProcessedInstalls) {
+			this.flushLicensedEntities();
+			if (this.calculateRightsNeeded) {
+				this.flushUnlicensedEntities();
+			} else {
+				this.flushReconState();
+			}
+			this.markProcessedInstalls = false;
+		}
+	},
+
+	nextAnyDevice: function() {
+		this.unlicensedInstallsGa = this.unlicensedInstallsGa || this.getUnlicensedInstallsByDevice();
+		if (this.unlicensedInstallsGa.next()) {
+			return this.unlicensedInstallsGa.getValue('installed_on');
+		}
+		return null;
+	},
+
+	markReconStateForUnlicensedInstalls: function(rightsNeeded) {
+		var entitlementSet;
+		var models;
+		for (entitlementSet in rightsNeeded) {
+			models = rightsNeeded[entitlementSet].swModelCombo.split(',');
+			for (var i = 0; i < models.length; i++) {
+				this.processedInstalls.push.apply(this.processedInstalls, this.installs[models[i]]);
+			}
+			if (this.processedInstalls.length >= ReconciliationConstants.BATCHSIZE) {
+				this.flushReconState();
+				this.processedInstalls = [];
+			}
+		}
+	},
+
+	clearReconState: function() {
+		var swInstall = new GlideRecord(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+		swInstall.addEncodedQuery(this.generateInstallQuery(''));
+		swInstall.addQuery('norm_publisher', this.coreCompanyId);
+		swInstall.setValue('reconciliation_state', ReconciliationConstants.RECONCILIATION_STATE.DEFAULT);
+		swInstall.setWorkflow(false);
+		swInstall.updateMultiple();
+	},
+
+	flushReconState: function() {
+		if (this.processedInstalls.length >= 0) {
+			var swInstall = new GlideRecord(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+			swInstall.addQuery('sys_id', this.processedInstalls);
+			swInstall.setValue('reconciliation_state',
+				ReconciliationConstants.RECONCILIATION_STATE.PROCESSED_IN_UNALLOCATED);
+			swInstall.setWorkflow(false);
+			swInstall.updateMultiple();
+		}
+	},
+
+	getDeviceConfig: function(deviceInfo, isReconciled, processedClusterDevices, allocatedPass) {
+		var deviceIdList;
+		if (deviceInfo.table === this._getClusterClass()) {
+			deviceIdList = this._getMemberHostsOfCluster(deviceInfo.sysId, processedClusterDevices);
+		} else {
+			deviceIdList = [deviceInfo.sysId];
+		}
+		var installs = {};
+		var deviceInfoList = [];
+		for (var j = 0; j < deviceIdList.length; j++) {
+			var deviceDetail = this._getDeviceInfo(deviceIdList[j], installs, isReconciled, allocatedPass);
+			if (deviceDetail) {
+				deviceInfoList.push(deviceDetail);
+			}
+		}
+		return {
+			installs: installs,
+			deviceInfoList: deviceInfoList,
+		};
+	},
+
+	_getDeviceInfo: function (deviceId, installs, isReconciled, allocatedPass) {
+		var currentInstalls = {};
+		var queryString;
+
+		// Get the installs with either software models or inferred suite
+		// marked with the current product and installed on current device - physical
+		var installsGr = new GlideRecord(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+		if (allocatedPass) {
+			queryString = this.generateAllocatedInstallQuery('');
+		} else {
+			queryString = this.generateInstallQuery('');
+		}
+		installsGr.addEncodedQuery(queryString);
+		installsGr.addQuery('norm_publisher', this.coreCompanyId);
+		installsGr.addQuery('installed_on', deviceId);
+		installsGr.addQuery('is_reconciled', isReconciled);
+		installsGr.query();
+		var swModel;
+		while (installsGr.next()) {
+			if (installsGr.getValue('norm_product') === this.fSoftwareProduct) {
+				swModel = installsGr.getValue('software_model');
+			} else {
+				swModel = installsGr.getValue('inferred_suite');
+				this.inferred_suites[swModel] = true;
+			}
+			(installs[swModel] = installs[swModel] || []).push(installsGr.getUniqueValue());
+			(currentInstalls[swModel] = currentInstalls[swModel] || []).push(installsGr.getUniqueValue());
+		}
+
+		if (this.licensePhysicalOnly) {
+			// Get installs on the VMs
+			var operatingSystems = {};
+			operatingSystems[deviceId] = true;
+
+			// Get the installs with either software models or inferred suite
+			// marked with the current product and installed on current device - virtual
+			var virtualInstallGr = this.getVirtualInstallsOnHostQuery(deviceId, allocatedPass, isReconciled);
+			if (!gs.nil(virtualInstallGr)) {
+				virtualInstallGr.query();
+				while (virtualInstallGr.next()) {
+					if (virtualInstallGr.getValue('inst_norm_product') === this.fSoftwareProduct) {
+						swModel = virtualInstallGr.getValue('inst_software_model');
+					} else {
+						swModel = virtualInstallGr.getValue('inst_inferred_suite');
+						this.inferred_suites[swModel] = true;
+					}
+					(installs[swModel] = installs[swModel] || []).push(virtualInstallGr.getValue('inst_sys_id'));
+					(currentInstalls[swModel] = currentInstalls[swModel] || [])
+						.push(virtualInstallGr.getValue('inst_sys_id'));
+					// Get list of OSEs that the product is installed on current device
+					var ose = virtualInstallGr.getValue('inst_installed_on');
+					operatingSystems[ose] = true;
+				}
+			}
+
+			var corePerProcessor = 0;
+			var processors = 1;
+			// Get the core and processor information of the device
+			var device = new GlideRecord('cmdb_ci_computer');
+			if (device.get(deviceId)) {
+				corePerProcessor = parseInt(device.getValue('cpu_core_count'), 10)
+					? parseInt(device.getValue('cpu_core_count'), 10)
+					: 1;
+				processors = parseInt(device.getValue('cpu_count'), 10);
+			}
+			return {
+				id: deviceId,
+				installs: currentInstalls,
+				operatingSystems: operatingSystems,
+				corePerProcessor: corePerProcessor,
+				processors: processors,
+			};
+		}
+		return null;
+	},
+
+	getVirtualInstallsOnHostQuery: function (hostSysId, allocatedPass, isReconciled) {
+		var virtualInstallGr = new GlideRecord('samp_vminstall_on_pinstall');
+		var queryString;
+		if (allocatedPass) {
+			queryString = this.generateAllocatedInstallQuery('inst_');
+		} else {
+			queryString = this.generateInstallQuery('inst_');
+		}
+		virtualInstallGr.addEncodedQuery(queryString);
+		virtualInstallGr.addQuery('inst_norm_publisher', this.coreCompanyId);
+		virtualInstallGr.addQuery('inst_is_reconciled', isReconciled);
+		virtualInstallGr.addNotNullQuery('rel_parent');
+		virtualInstallGr.addQuery('rel_child', hostSysId);
+		return virtualInstallGr;
+	},
+
+	_getMemberHostsOfCluster: function (clusterId, processedClusterDevices) {
+		var members = [];
+		var rec = new GlideRecord(ReconciliationConstants.CMDB_REL_CI_TABLE);
+		rec.addQuery('parent', clusterId);
+		rec.addQuery('type', ReconciliationConstants.CI_RELATION_MEMBER_OF);
+		rec.addQuery('child.sys_class_name', ReconciliationConstants.ESX_SERVER_CLASS);
+		rec.query();
+		while (rec.next()) {
+			members.push(rec.getValue('child'));
+			if (processedClusterDevices) {
+				processedClusterDevices[rec.getValue('child')] = true;
+			}
+		}
+		return members;
+	},
+
+	_getCluster: function (deviceId, isVirtual) {
+		// If its a virtual device, get virtualized by esx host device.
+		var esxHostId = deviceId;
+		if (isVirtual) {
+			var esxHost = new GlideQuery(ReconciliationConstants.CMDB_REL_CI_TABLE)
+				.where('parent', deviceId)
+				.where('child.sys_class_name', ReconciliationConstants.ESX_SERVER_CLASS)
+				.where('type', ReconciliationConstants.CI_RELATION_VIRTUALIZED_BY)
+				.limit(1)
+				.select('child')
+				.toArray(1);
+			if (esxHost.length > 0) {
+				esxHostId = esxHost[0].child;
+			}
+		}
+		var rec = new GlideRecord(ReconciliationConstants.CMDB_REL_CI_TABLE);
+		rec.addQuery('child', esxHostId);
+		rec.addQuery('child.sys_class_name', ReconciliationConstants.ESX_SERVER_CLASS);
+		rec.addQuery('type', ReconciliationConstants.CI_RELATION_MEMBER_OF);
+		rec.addQuery('parent.sys_class_name', this._getClusterClass());
+		rec.setLimit(1);
+		rec.query();
+		if (rec.next()) {
+			return rec.getValue('parent');
+		}
+		return null;
+	},
+
+	_getvCenter: function (deviceId) {
+		var ciGr = new GlideRecord('cmdb_ci');
+		if (ciGr.get(deviceId)) {
+			var className = ciGr.getValue('sys_class_name');
+			if (className === ReconciliationConstants.VCENTER_DATACENTER_CLASS) {
+				// deviceId is Datacenter
+				return this._getvCenterFromDatacenter(ciGr.getUniqueValue());
+			} if (className === ReconciliationConstants.VCENTER_CLUSTER_CLASS) {
+				// deviceId is Cluster
+				return this._getvCenterFromCluster(ciGr.getUniqueValue());
+			}
+			// deviceId is ESX
+			var clusterId = this._getCluster(deviceId);
+			if (!gs.nil(clusterId)) {
+				return this._getvCenterFromCluster(clusterId);
+			}
+		}
+		return null;
+	},
+
+	_isvCenterDatacenter: function (deviceId) {
+		var rec = new GlideRecord(this._getvCenterDatacenterClass());
+		return rec.get(deviceId);
+	},
+
+	_getvCenterDatacenterClass: function() {
+		return ReconciliationConstants.VCENTER_DATACENTER_CLASS;
+	},
+
+	_getvCenterFromDatacenter: function (datacenterId) {
+		var ciRelDcToVc = SAMPremiumUtils.getCIRelations(ReconciliationConstants.VCENTER_CLASS,
+			this.CI_REL_MANAGES_MANAGEDBY,
+			ReconciliationConstants.VCENTER_DATACENTER_CLASS,
+			'child',
+			datacenterId);
+		if (ciRelDcToVc.next()) {
+			return ciRelDcToVc.getValue('parent');
+		}
+		return null;
+	},
+
+	_getvCenterFromCluster: function (clusterId) {
+		if (!gs.nil(clusterId)) {
+			var ciRelClToDc = SAMPremiumUtils.getCIRelations(ReconciliationConstants.VCENTER_DATACENTER_CLASS,
+				ReconciliationConstants.CI_RELATION_CONTAINED_BY,
+				ReconciliationConstants.VCENTER_CLUSTER_CLASS,
+				'child',
+				clusterId);
+			if (ciRelClToDc.next()) {
+				var ciRelDcToVc = SAMPremiumUtils.getCIRelations(ReconciliationConstants.VCENTER_CLASS,
+					this.CI_REL_MANAGES_MANAGEDBY,
+					ReconciliationConstants.VCENTER_DATACENTER_CLASS,
+					'child',
+					ciRelClToDc.getValue('parent'));
+				if (ciRelDcToVc.next()) {
+					return ciRelDcToVc.getValue('parent');
+				}
+			}
+		}
+		return null;
+	},
+
+	_getClusterClass: function() {
+		return ReconciliationConstants.VCENTER_CLUSTER_CLASS;
+	},
+
+	_getvCenterClass: function() {
+		return ReconciliationConstants.VCENTER_CLASS;
+	},
+
+	_getvCenterVersion: function(vCenterId) {
+		var vCenterGr = new GlideRecord(ReconciliationConstants.VCENTER_CLASS);
+		if (vCenterGr.get(vCenterId)) {
+			return vCenterGr.getValue('api_version');
+		}
+		return null;
+	},
+
+	_getESXVersion: function(esxId) {
+		/** Return ESX's OS version
+		* input: VMware ESXi <version> build-<build_version>
+		* output: {String} ex: 5.5, 5.5.0
+		* */
+		var esx = new GlideRecord(ReconciliationConstants.ESX_SERVER_CLASS);
+		if (esx.get(esxId)) {
+			var version = esx.getValue('os_version');
+			if (!gs.nil(version)) {
+				var strArray = esx.getValue('os_version').split(' ');
+
+				var isValid = this._isVersionValid(strArray[2]);
+				if (!isValid) {
+					this.debug(esx.getUniqueValue(), ' OS version: ' + esx.getValue('os_version'),
+						'is not valid.');
+				}
+				return strArray[2];
+			}
+		}
+		return null;
+	},
+
+	_isVersionValid: function(str) {
+		var isValid = false;
+		// Contains only numbers and dots
+		if (!gs.nil(str)) {
+			isValid = /^[0-9.]*$/.test(str);
+		}
+		return isValid;
+	},
+
+	compareVersion: function (version1, version2) {
+		/** Return: true if version2 > version1
+		* input: {String} version1 = 2.2.10, version2 = 2.2.8
+		* output: {Boolean}
+		* Ex: compareVersion('2.2.10', '2.2.8') - false
+		* */
+		var result = false;
+		var v1 = version1;
+		var v2 = version2;
+		if (typeof version1 !== 'object') { v1 = version1.toString().split('.'); }
+		if (typeof version2 !== 'object') { v2 = version2.toString().split('.'); }
+		for (var i = 0; i < (Math.max(version1.length, version2.length)); i++) {
+			if (gs.nil(v1[i])) { v1[i] = 0; }
+			if (gs.nil(v2[i])) { v2[i] = 0; }
+			if (Number(v1[i]) < Number(v2[i])) {
+				result = true;
+				break;
+			}
+			if (Number(v1[i]) !== Number(v2[i])) {
+				break;
+			}
+		}
+		return result;
+	},
+
+	_isCluster: function (deviceId) {
+		var rec = new GlideRecord(this._getClusterClass());
+		return rec.get(deviceId);
+	},
+
+	_isVirtual: function (ciId) {
+		var ci = new GlideRecord('cmdb_ci_computer');
+		if (ci.get(ciId)) { return ci.getValue('virtual') === '1'; }
+		return null;
+	},
+
+	_isvCenter: function (deviceId) {
+		var rec = new GlideRecord(this._getvCenterClass());
+		return rec.get(deviceId);
+	},
+
+	_getSwModel: function (softwareModelResultId) {
+		var result = new GlideRecord('samp_software_model_result');
+		if (!result.get(softwareModelResultId)) { return null; }
+		return result.getValue('software_model');
+	},
+
+	_isValidAllocationCI: function (deviceInfo) {
+		if (!this.licensePhysicalOnly) {
+			return true;
+		}
+
+		var deviceId = deviceInfo.sysId;
+		if (this.supportsClustering) {
+			if (this._isCluster(deviceId)) {
+				return true;
+			} if (this._getCluster(deviceId)) {
+				return false;
+			}
+		}
+
+		if (deviceInfo.virtual) {
+			return false;
+		}
+		return true;
+	},
+
+	calculateProjectedRights: function (ci, ciConfiguration, dependentCisConfigurations, licensedInstalls,
+		swModels, softwareModelResult /* , licenseMetricResult */) {
+		// create projection for the passed in ci
+		var allocatedPass = true;
+
+		var projectedRightsInstalls = {
+			installs: 0,
+			rights: 0,
+		};
+
+		var modelId = this._getSwModel(softwareModelResult);
+		var currDevice = ci;
+
+		// Return empty object if the ci is virtual machine
+		if (this._isVirtual(ci) || !modelId) { return projectedRightsInstalls; }
+
+		var deviceInfo = {
+			sysId: currDevice,
+			virtual: null,
+			table: 'cmdb_ci_computer',
+		};
+		this.updateDeviceInfo(deviceInfo, allocatedPass);
+		deviceInfo.config = this.getDeviceConfig(deviceInfo, true, {}, allocatedPass);
+
+		var swModelComboDeviceConfiguration = this._getOperatingSystemsInfo(swModels, deviceInfo, true);
+		var osInfoList = swModelComboDeviceConfiguration.osInfoList;
+
+		var installCount = 0;
+		var i;
+		var deviceInfoList = deviceInfo.config.deviceInfoList;
+		for (i = 0; i < deviceInfoList.length; i++) {
+			deviceInfo = deviceInfoList[i];
+			if (deviceInfo.id === currDevice) {
+				osInfoList[i].corePerProcessor = ciConfiguration.cpuCoreCount;
+				osInfoList[i].processors = ciConfiguration.cpuCount;
+			} else if (dependentCisConfigurations.hasOwnProperty(deviceInfo.id)) {
+				osInfoList[i].corePerProcessor = dependentCisConfigurations[deviceInfo.id].cpuCoreCount;
+				osInfoList[i].processors = dependentCisConfigurations[deviceInfo.id].cpuCount;
+			} else {
+				osInfoList[i].corePerProcessor = deviceInfo.corePerProcessor;
+				osInfoList[i].processors = deviceInfo.processors;
+			}
+			installCount += osInfoList[i].installCount;
+		}
+		swModelComboDeviceConfiguration.model = modelId;
+		var coreRights = this._getCoreRights(swModelComboDeviceConfiguration);
+
+		projectedRightsInstalls.installs = installCount;
+		projectedRightsInstalls.rights = coreRights;
+
+		return projectedRightsInstalls;
+	},
+
+	processRightsUsage: function(deviceInfo, rightsUsage, modelComboLicensedBy, cachedDevice) {
+		if (Object.keys(rightsUsage).length !== 0) {
+			this.updateDowngradeRightsUsage(rightsUsage);
+			this.generateRightsUsedByForConsumer(rightsUsage, deviceInfo, cachedDevice);
+			this.markInstallsAfterAssignment(modelComboLicensedBy);
+			this.debug('Unallocated pass', 'Consumer: ' + deviceInfo.sysId, 'Rights usage: '
+				+ JSON.stringify(rightsUsage));
+		}
+	},
+
+	processRightsNeeded: function(deviceInfo, rightsNeeded) {
+		if (Object.keys(rightsNeeded).length !== 0) {
+			if (this.calculateRightsNeeded) {
+				this.generateRightsNeededByForConsumer(rightsNeeded, deviceInfo);
+				this.markUnlicensedInstallsAfterAssignment(rightsNeeded);
+			} else if (this.licensePhysicalOnly) {
+				this.markReconStateForUnlicensedInstalls(rightsNeeded);
+			}
+			this.debug('Unallocated pass', 'Consumer: ' + deviceInfo.sysId, 'Rights needed: '
+				+ JSON.stringify(rightsNeeded));
+		}
+	},
+
+	updateDeviceInfo: function (deviceInfo, allocatedPass) {
+		var deviceGr = new GlideRecord('cmdb_ci_computer');
+		if (deviceGr.get(deviceInfo.sysId)) {
+			deviceInfo.virtual = deviceGr.virtual;
+		} else {
+			deviceInfo.table = 'cmdb_ci';
+		}
+
+		if (this.supportsClustering) {
+			var clusterIdAlloc = this._isCluster(deviceInfo.sysId) ? deviceInfo.sysId : null;
+			var clusterId = allocatedPass ? clusterIdAlloc : this._getCluster(deviceInfo.sysId);
+			if (clusterId) {
+				deviceInfo.sysId = clusterId;
+				deviceInfo.table = this._getClusterClass();
+			}
+		}
+	},
+
+	_isAWSDatacenter: function(deviceId) {
+		var ci = new GlideRecord('cmdb_ci_aws_datacenter');
+		return ci.get(deviceId);
+	},
+
+	_isAzureDatacenter: function(deviceId) {
+		var ci = new GlideRecord('cmdb_ci_azure_datacenter');
+		return ci.get(deviceId);
+	},
+
+	_getOperatingSystemsInfo: function (swModelComboStr, deviceInfo, isReconciled) {
+		/*
+		Getting the no of OSEs and the installs per OSE on that device given the software model combo
+		and the list of OSEs on that device
+		*/
+		var osInfoList = [];
+		var swModelCombo = swModelComboStr.split(',');
+		var isSuite = this.inferred_suites[swModelCombo[0]];
+		var deviceInfoList = deviceInfo.config.deviceInfoList;
+		for (var j = 0; j < deviceInfoList.length; j++) {
+			var device = deviceInfoList[j];
+			var installPerOSE = 0;
+			var installCount = 0;
+			var activeOSEs = {};
+
+			var installsGa = new GlideAggregate(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+			installsGa.addQuery('installed_on', 'IN', Object.keys(device.operatingSystems));
+			installsGa.addQuery('is_reconciled', isReconciled);
+			installsGa.addQuery('inferred_suite_product', this.fSoftwareProduct)
+				.addOrCondition('norm_product', this.fSoftwareProduct);
+			installsGa.addQuery('inferred_suite', 'IN', swModelComboStr)
+				.addOrCondition('software_model', 'IN', swModelComboStr);
+			installsGa.groupBy('installed_on');
+			installsGa.setGroup(true);
+			installsGa.addAggregate('COUNT');
+			installsGa.query();
+
+			while (installsGa.next()) {
+				if (isSuite && installPerOSE < 1) {
+					installPerOSE = 1;
+				} else if (!isSuite && (installPerOSE < installsGa.getAggregate('COUNT'))) {
+					installPerOSE = parseInt(installsGa.getAggregate('COUNT'), 10);
+				}
+				activeOSEs[installsGa.getValue('installed_on')] = true;
+				installCount += parseInt(installsGa.getAggregate('COUNT'), 10);
+			}
+
+			var activeOSEPerServer = Object.keys(activeOSEs).length;
+			var operatingSystemInfo = {
+				installPerOSE: installPerOSE,
+				activeOSEPerServer: activeOSEPerServer,
+				installCount: installCount,
+				corePerProcessor: device.corePerProcessor,
+				processors: device.processors,
+				cpuCoreThread: device.cpuCoreThread,
+			};
+
+			osInfoList.push(operatingSystemInfo);
+		}
+
+		return {
+			osInfoList: osInfoList,
+		};
+	},
+
+	isValidDeviceConfig: function () {
+		return true;
+	},
+
+	type: 'SamServerLicenseCalculator',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:41</sys_created_on>
+        <sys_id>3ed52d6c47111110c859fee3846d432d</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamServerLicenseCalculator</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_3ed52d6c47111110c859fee3846d432d</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:41</sys_updated_on>
+    </sys_script_include>
+</record_update>

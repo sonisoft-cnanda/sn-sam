@@ -1,0 +1,318 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampRecord</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>SampRecord</description>
+        <name>SampRecord</name>
+        <script><![CDATA[var SampRecord = Class.create();
+SampRecord.prototype = {
+
+	initialize: function () {
+		this.setValuePair = [];
+
+		if (arguments.length == 1) { this.gr = new GlideRecord(arguments[0]); } else { this.gr.initialize(); }
+	},
+
+	addQuery: function () {
+		switch (arguments.length) {
+		case 1:
+			return this.gr.addQuery(arguments[0]);
+		case 2:
+			return this.gr.addQuery(arguments[0], arguments[1]);
+		case 3:
+			return this.gr.addQuery(arguments[0], arguments[1], arguments[2]);
+		default:
+			break;
+		}
+	},
+
+	addJoinQuery: function () {
+		switch (arguments.length) {
+		case 1:
+			return this.gr.addJoinQuery(arguments[0]);
+		case 2:
+			return this.gr.addJoinQuery(arguments[0], arguments[1]);
+		case 3:
+			return this.gr.addJoinQuery(arguments[0], arguments[1], arguments[2]);
+		default:
+			break;
+		}
+	},
+
+	getTableName: function () {
+		return this.gr.getTableName();
+	},
+
+	isValid: function () {
+		return this.gr.isValid();
+	},
+
+	isValidRecord: function () {
+		return this.gr.isValidRecord();
+	},
+
+	isValidField: function (val) {
+		return this.gr.isValidField(val);
+	},
+
+	setNoLimit: function (val) {
+		return this.gr.setNoLimit(val);
+	},
+
+	getEncodedQuery: function () {
+		return this.gr.getEncodedQuery();
+	},
+
+	addEncodedQuery: function (val) {
+		return this.gr.addEncodedQuery(val);
+	},
+
+	addNullQuery: function (val) {
+		return this.gr.addNullQuery(val);
+	},
+
+	getRowCount: function () {
+		return this.gr.getRowCount();
+	},
+
+	setWorkflow: function (val) {
+		return this.gr.setWorkflow(val);
+	},
+
+	setLimit: function (val) {
+		return this.gr.setLimit(val);
+	},
+
+	addNotNullQuery: function (val) {
+		return this.gr.addNotNullQuery(val);
+	},
+
+	get: function () {
+		switch (arguments.length) {
+		case 1:
+			return this.gr.get(arguments[0]);
+		case 2:
+			return this.gr.get(arguments[0], arguments[1]);
+		default:
+			break;
+		}
+	},
+
+	getValue: function (val) {
+		return this.gr.getValue(val);
+	},
+
+	getDisplayValue: function () {
+		switch (arguments.length) {
+		case 0:
+			return this.gr.getDisplayValue();
+		case 1:
+			return this.gr.getDisplayValue(arguments[0]);
+		default:
+			break;
+		}
+	},
+
+	getElementValue: function (val) {
+		return this.gr.getElementValue(val);
+	},
+
+	getElement: function (val) {
+		return this.gr.getElement(val);
+	},
+
+	setValue: function (attribute, value) {
+		// Used for update multiple
+		this.setValuePair.push(attribute);
+		this.setValuePair.push(value);
+		return this.gr.setValue(attribute, value);
+	},
+
+	orderBy: function (val) {
+		this.gr.orderBy(val);
+	},
+
+	orderByDesc: function (val) {
+		this.gr.orderByDesc(val);
+	},
+
+	canRead: function () {
+		this.gr.canRead();
+	},
+
+	canWrite: function () {
+		this.gr.canWrite();
+	},
+
+	canDelete: function () {
+		this.gr.canDelete();
+	},
+
+	instanceOf: function () {
+		this.gr.instanceOf();
+	},
+
+	getUniqueValue: function () {
+		return this.gr.getUniqueValue();
+	},
+
+	next: function () {
+		return this.gr.next();
+	},
+
+	update: function () {
+		this.gr.update();
+	},
+
+	hasNext: function () {
+		return this.gr.hasNext();
+	},
+
+	getGlideRecord: function () {
+		return this.gr;
+	},
+
+	query: function () {
+		// Custom modification of the GlideRecord query before doing .query()
+		GroupingEngine.addSampQueryCondition(this.gr);
+		SampInstallConditionEngine.addSampQueryCondition(this.gr);
+		this.gr.query();
+	},
+
+	updateMultiple: function () {
+		// Custom modification of the GlideRecord query before doing .updateMultiple()
+		GroupingEngine.addSampQueryCondition(this.gr);
+		var queryString = SampInstallConditionEngine.getSampQueryCondition(this.gr);
+
+		// If their is Top Level Or condition in the query, we need to update each section separately
+		var i = queryString.indexOf('^NQ', 0);
+		var j;
+		if (i != -1) {
+			while (i != -1) {
+				var subQueryString = queryString.substring(0, i);
+				queryString = queryString.substring(i + 3);
+				i = queryString.indexOf('^NQ', 0);
+				this.gr.initialize();
+				this.gr.addEncodedQuery(subQueryString);
+				for (j = 0; j < this.setValuePair.length; j += 2) {
+					this.gr.setValue(this.setValuePair[j], this.setValuePair[j + 1]);
+				}
+				this.gr.autoSysFields(false);
+				this.gr.setWorkflow(false);
+				this.gr.updateMultiple();
+			}
+
+			this.gr.initialize();
+			this.gr.addEncodedQuery(queryString);
+			for (j = 0; j < this.setValuePair.length; j += 2) {
+				this.gr.setValue(this.setValuePair[j], this.setValuePair[j + 1]);
+			}
+			this.gr.autoSysFields(false);
+			this.gr.setWorkflow(false);
+			this.gr.updateMultiple();
+		} else {
+			SampInstallConditionEngine.addSampQueryCondition(this.gr);
+			this.gr.autoSysFields(false);
+			this.gr.updateMultiple();
+		}
+	},
+
+	autoSysFields: function (val) {
+		return this.gr.autoSysFields(val);
+	},
+
+	insert: function () {
+		// Custom modification of the GlideRecord query before doing .insert()
+		GroupingEngine.addSampInsertCondition(this.gr);
+		return this.gr.insert();
+	},
+
+	deleteRecord: function () {
+		// Custom modification of the GlideRecord query before doing .delete()
+		this.gr.deleteRecord();
+	},
+
+	type: 'SampRecord',
+};
+
+SampRecord.update = function (tableName, sysId, values, options) {
+	options = options || {};
+	var sr = new SampRecord(tableName);
+	sr.get(sysId);
+	for (var field in values) {
+		sr.setValue(field, values[field]);
+	}
+	if (options.hasOwnProperty('autoSysFields')) {
+		sr.autoSysFields(options.autoSysFields);
+	}
+	if (options.hasOwnProperty('workflow')) {
+		sr.setWorkflow(options.workflow);
+	}
+	sr.update();
+};
+
+SampRecord.insert = function (tableName, values, options) {
+	options = options || {};
+	var sr = new SampRecord(tableName);
+	for (var field in values) {
+		sr.setValue(field, values[field]);
+	}
+	if (options.hasOwnProperty('autoSysFields')) {
+		sr.autoSysFields(options.autoSysFields);
+	}
+	if (options.hasOwnProperty('workflow')) {
+		sr.setWorkflow(options.workflow);
+	}
+	return sr.insert();
+};
+
+SampRecord.prepare = function (tableName, q) {
+	q = q || {};
+	var sr = new SampRecord(tableName);
+
+	if (q.where !== undefined) {
+		q.where.forEach(function (i) {
+			sr.addQuery.apply(sr, i);
+		});
+	}
+	if (q.orderBy !== undefined) {
+		q.orderBy.forEach(function (i) {
+			if (typeof i === 'string') {
+				sr.orderBy(i);
+			} else if (Array.isArray(i)) {
+				if (i[1]) {
+					sr.orderBy(i[0]);
+				} else {
+					sr.orderByDesc(i[0]);
+				}
+			}
+		});
+	}
+	if (q.limit !== undefined) {
+		sr.setLimit(q.limit);
+	}
+	return sr;
+};
+
+SampRecord.query = function (tableName, q) {
+	var sr = SampRecord.prepare(tableName, q);
+	sr.query();
+	return sr;
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:36</sys_created_on>
+        <sys_id>e9d5e96c47111110c859fee3846d4338</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampRecord</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_e9d5e96c47111110c859fee3846d4338</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:36</sys_updated_on>
+    </sys_script_include>
+</record_update>

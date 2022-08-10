@@ -1,0 +1,607 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="DELETE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamLicenseAssignHelper</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamLicenseAssignHelper</name>
+        <script><![CDATA[var SamLicenseAssignHelper = Class.create();
+SamLicenseAssignHelper.prototype = {
+	initialize: function() {
+		this.groupingPlanCache = [];
+	},
+
+	/**
+	 * Calculate the plan of splitting N elements into groups.
+	 *
+	 * The calculation is cached, which means from the 2nd invocation, result is copied from the cache.
+	 *
+	 * @returns An array of arrays of grouping descriptions.
+	 * The outer array is in ascendant order by total groupCount, whose index represents how many groups it is partitioned;
+	 * The inner array is in descendant order by groupSize, whose element represents the number of elements in the group.
+	 */
+	generateGroupingPlan: function(elemCnt) {
+		var plan = this.groupingPlanCache[elemCnt - 1];
+		if (!plan) {
+			plan = Array.apply(null, Array(elemCnt)).map(Array.prototype.slice, []);
+			this.groupingPlanCache[elemCnt - 1] = plan;
+
+			// sum of the stack will be elemCnt and stack[n] <= stack[n-1]
+			var stack = [elemCnt];
+			var remaining = 0;
+			var nextVal;
+			while (true) {
+				if (remaining === 0) {
+					// grouping finished, record
+					plan[stack.length - 1].push(this._generatePlanDesc(stack));
+					// decrease the last one
+					do {
+						nextVal = stack.pop() - 1;
+						remaining++;
+					} while (nextVal === 0 && stack.length > 0);
+
+					// is the first group decreased to 0?
+					if (stack.length === 0 && nextVal === 0) {
+						break;
+					}
+
+					stack.push(nextVal);
+				} else {
+					nextVal = Math.min(remaining, stack[stack.length - 1]);
+					remaining -= nextVal;
+					stack.push(nextVal);
+				}
+			}
+		}
+		return plan;
+	},
+
+	_generatePlanDesc: function(stack) {
+		var plan = [];
+		var groupSize = 0;
+		var groupCount = 0;
+		for (var i in stack) {
+			if (stack[i] !== groupSize) {
+				if (groupCount > 0) {
+					plan.push({ groupSize: groupSize, groupCount: groupCount });
+				}
+				groupSize = stack[i];
+				groupCount = 1;
+			} else {
+				groupCount++;
+			}
+		}
+		if (groupCount > 0) {
+			plan.push({ groupSize: groupSize, groupCount: groupCount });
+		}
+		return plan;
+	},
+
+	/**
+	 * Generate the all grouped combination of numbers according to the plan.
+	 * On each combination, callback will be called, with an optional this argument.
+	 * The callback returns if the plan is compliant. If yes, the loop will end
+	 * and not try next combinations.
+	 * Note that the argument passed to the callback is an internal array and will change
+	 * in the next round, so the callback should not change it or store a reference of it.
+	 *
+	 * A plan contains several section, each section has several groups which has same size.
+	 * Its form is like [{groupSize: size, groupCount: count}, ...]
+	 *
+	 * Once there're more than 1 group in the section, note that the order of groups doesn't count.
+	 * For example, [[1, 3], [2, 4]] is equivalent to [[2, 4], [1, 3]]
+	 *
+	 * To generate unique combination, instead of generating duplicated combination and dedupe later,
+	 * the following approach is used:
+	 *
+	 * Write down the numbers in each group in ascendant order, and the groups in ascendant order by
+	 * their first elements.
+	 * It's easy to prove that non-ordered cases are duplicated of some of ordered cases, such as
+	 * [1, 3, 2] duplicates with [1, 2, 3]
+	 *
+	 * From this, we can calculate how many numbers MUST be bigger than the current one.
+	 * For example, given a section of {groupSize: 3, groupCount: 3}, the combinaiton is in the following form,
+	 * [[a0, a1, a2], [b0, b1, b2], [c0, c1, c2]]
+	 * Then we have
+	 * a0 < a1 < a2, b0 < b1 < b2, c0 < c1 < c2, and
+	 * a0 < b0 < c0
+	 *
+	 * Thus, there are 8 elements bigger than a0: a1, a2, b0, b1, b2, c0, c1, c2;
+	 * 5 elements bigger than b0: b1, b2, c0, c1, c2, and a1, a2 could be bigger or not
+	 * 2 elements bigger than c0: c1, c2 and a1, a2, b1, b2 could be bigger or not.
+	 * 1 element bigger than a1: a2, and b0, b1, b2, c0, c1, c2 could be bigger or not.
+	 *
+	 * The algorithem is,
+	 * 1. Choose first elements of each group, from an element bigger than previous,
+	 * and reserve bigger numbers for other elements.
+	 * E.g., a0 won't reach max - 7, because there're 8 elements bigger than it.
+	 * 2. Choose rest elements within a group, with reserved numbers also, from last group to first.
+	 * That's because latter group has bigger starting value.
+	 * E.g. c1 starts from c0 + 1 and b1 starts from b0 + 1, and c0 > b0.
+	 * This avoids group b to use bigger numbers and leave number smaller than c0
+	 *
+	 * With a recursive approach, the elements in the section were chosen in the following order:
+	 * a0, b0, c0,    c1, c2, b1, b2, a1, a2
+	 */
+	groupByPlan: function(plan, callback, thisArg) {
+		var available = []; // flags for if the number is availabe to choose
+		var result = []; // storing one combination
+		var elemCount = 0;
+
+		var i; var j; var
+			k;
+		for (i in plan) {
+			elemCount += plan[i].groupSize * plan[i].groupCount;
+		}
+
+		for (i = 0; i < elemCount; i++) {
+			available.push(true);
+		}
+		for (i in plan) {
+			for (j = 0; j < plan[i].groupCount; j++) {
+				var group = [];
+				for (k = 0; k < plan[i].groupSize; k++) {
+					group.push(-1);
+				}
+				result.push(group);
+			}
+		}
+
+		thisArg = thisArg || null;
+
+		var forEachCandidate = function(iGroup, iElem, lower, reservedCount, callback) {
+			for (var upper = elemCount - 1; upper >= 0; upper--) {
+				if (available[upper]) {
+					if (reservedCount === 0) {
+						break;
+					}
+					reservedCount--;
+				}
+			}
+			for (var number = lower; number <= upper; number++) {
+				if (!available[number]) {
+					continue;
+				}
+				available[number] = false;
+				result[iGroup][iElem] = number;
+				if (callback.apply(null, [number])) {
+					return true;
+				}
+				available[number] = true;
+			}
+			return false;
+		};
+
+		var combinationInSection = function(iSection, finishedGroupCnt) {
+			var section = plan[iSection];
+
+			var chooseFirstElement = function(iGroup, lowerNumber) {
+				if (iGroup === section.groupCount) { // all first elements in the section?
+					return chooseRestElements(iGroup - 1, 1, lowerNumber);
+				}
+
+				var biggerNumberCnt = section.groupSize * (section.groupCount - iGroup) - 1;
+
+				return forEachCandidate(finishedGroupCnt + iGroup, 0, lowerNumber, biggerNumberCnt, function(number) {
+					return chooseFirstElement(iGroup + 1, number + 1);
+				});
+			};
+
+			var chooseRestElements = function(iGroup, iElem) {
+				if (iGroup < 0) { // finished current section?
+					return combinationInSection(iSection + 1, finishedGroupCnt + section.groupCount);
+				}
+
+				if (iElem >= section.groupSize) { // finished current group?
+					return chooseRestElements(iGroup - 1, 1);
+				}
+
+				var currentGroup = finishedGroupCnt + iGroup;
+				var biggerNumberCnt = section.groupSize - iElem - 1;
+
+				return forEachCandidate(currentGroup, iElem, result[currentGroup][iElem - 1] + 1, biggerNumberCnt, function(number) {
+					return chooseRestElements(iGroup, iElem + 1);
+				});
+			};
+
+			if (iSection === plan.length) { // finished all sections?
+				return callback.apply(thisArg, [result]);
+			}
+
+			return chooseFirstElement(0, 0);
+		}; // function combinationInSection
+
+		return combinationInSection(0, 0);
+	},
+
+	/**
+	 * Dictionary order permutations, duplicated elements are allowed
+	 */
+	nextPermutation: function(arr) {
+		var i; var j; var k; var
+			tmp;
+		for (i = arr.length - 1; i > 0; i--) {
+			if (arr[i] > arr[i - 1]) {
+				for (j = arr.length - 1; j >= i; j--) {
+					if (arr[j] > arr[i - 1]) {
+						tmp = arr[i - 1];
+						arr[i - 1] = arr[j];
+						arr[j] = tmp;
+						break;
+					}
+				}
+				for (k = i, j = arr.length - 1; k < j; k++, j--) {
+					tmp = arr[k];
+					arr[k] = arr[j];
+					arr[j] = tmp;
+				}
+				return false; // not finished yet
+			}
+		}
+		return true; // finished: for any i, arr[i] <= arr[i-1]
+	},
+
+	combinations: function(totalCount, selectCount, callback, thisArg) {
+		thisArg = thisArg !== undefined ? thisArg : null;
+		var arr = [];
+		var i;
+		for (i = selectCount; i < totalCount; i++) {
+			arr.push(0);
+		}
+		for (i = 0; i < selectCount; i++) {
+			arr.push(1);
+		}
+
+		if (callback.apply(thisArg, [this.findIndices(arr)])) {
+			return true;
+		}
+
+		while (!this.nextPermutation(arr)) {
+			if (callback.apply(thisArg, [this.findIndices(arr)])) {
+				return true;
+			}
+		}
+		return false;
+	},
+
+	findIndices: function(arr) {
+		return arr.reduce(function(acc, cur, idx) {
+			if (cur) {
+				acc.push(idx);
+			}
+			return acc;
+		}, []);
+	},
+
+	type: 'SamLicenseAssignHelper',
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:50:39</sys_created_on>
+        <sys_id>ffe4a12c47111110c859fee3846d437a</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamLicenseAssignHelper</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_ffe4a12c47111110c859fee3846d437a</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:50:39</sys_updated_on>
+    </sys_script_include>
+    <sys_update_version action="INSERT_OR_UPDATE">
+        <action>DELETE</action>
+        <application display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</application>
+        <file_path/>
+        <instance_id>4e2646e7dbf513888264f70fbf96195b</instance_id>
+        <instance_name>dev58455</instance_name>
+        <name>sys_script_include_ffe4a12c47111110c859fee3846d437a</name>
+        <payload>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;record_update table="sys_script_include"&gt;&lt;sys_script_include action="INSERT_OR_UPDATE"&gt;&lt;access&gt;public&lt;/access&gt;&lt;active&gt;true&lt;/active&gt;&lt;api_name&gt;x_807586_sam_scrip.SamLicenseAssignHelper&lt;/api_name&gt;&lt;caller_access/&gt;&lt;client_callable&gt;false&lt;/client_callable&gt;&lt;description/&gt;&lt;name&gt;SamLicenseAssignHelper&lt;/name&gt;&lt;script&gt;&lt;![CDATA[var SamLicenseAssignHelper = Class.create();
+SamLicenseAssignHelper.prototype = {
+	initialize: function() {
+		this.groupingPlanCache = [];
+	},
+
+	/**
+	 * Calculate the plan of splitting N elements into groups.
+	 *
+	 * The calculation is cached, which means from the 2nd invocation, result is copied from the cache.
+	 *
+	 * @returns An array of arrays of grouping descriptions.
+	 * The outer array is in ascendant order by total groupCount, whose index represents how many groups it is partitioned;
+	 * The inner array is in descendant order by groupSize, whose element represents the number of elements in the group.
+	 */
+	generateGroupingPlan: function(elemCnt) {
+		var plan = this.groupingPlanCache[elemCnt - 1];
+		if (!plan) {
+			plan = Array.apply(null, Array(elemCnt)).map(Array.prototype.slice, []);
+			this.groupingPlanCache[elemCnt - 1] = plan;
+
+			// sum of the stack will be elemCnt and stack[n] &lt;= stack[n-1]
+			var stack = [elemCnt];
+			var remaining = 0;
+			var nextVal;
+			while (true) {
+				if (remaining === 0) {
+					// grouping finished, record
+					plan[stack.length - 1].push(this._generatePlanDesc(stack));
+					// decrease the last one
+					do {
+						nextVal = stack.pop() - 1;
+						remaining++;
+					} while (nextVal === 0 &amp;&amp; stack.length &gt; 0);
+
+					// is the first group decreased to 0?
+					if (stack.length === 0 &amp;&amp; nextVal === 0) {
+						break;
+					}
+
+					stack.push(nextVal);
+				} else {
+					nextVal = Math.min(remaining, stack[stack.length - 1]);
+					remaining -= nextVal;
+					stack.push(nextVal);
+				}
+			}
+		}
+		return plan;
+	},
+
+	_generatePlanDesc: function(stack) {
+		var plan = [];
+		var groupSize = 0;
+		var groupCount = 0;
+		for (var i in stack) {
+			if (stack[i] !== groupSize) {
+				if (groupCount &gt; 0) {
+					plan.push({ groupSize: groupSize, groupCount: groupCount });
+				}
+				groupSize = stack[i];
+				groupCount = 1;
+			} else {
+				groupCount++;
+			}
+		}
+		if (groupCount &gt; 0) {
+			plan.push({ groupSize: groupSize, groupCount: groupCount });
+		}
+		return plan;
+	},
+
+	/**
+	 * Generate the all grouped combination of numbers according to the plan.
+	 * On each combination, callback will be called, with an optional this argument.
+	 * The callback returns if the plan is compliant. If yes, the loop will end
+	 * and not try next combinations.
+	 * Note that the argument passed to the callback is an internal array and will change
+	 * in the next round, so the callback should not change it or store a reference of it.
+	 *
+	 * A plan contains several section, each section has several groups which has same size.
+	 * Its form is like [{groupSize: size, groupCount: count}, ...]
+	 *
+	 * Once there're more than 1 group in the section, note that the order of groups doesn't count.
+	 * For example, [[1, 3], [2, 4]] is equivalent to [[2, 4], [1, 3]]
+	 *
+	 * To generate unique combination, instead of generating duplicated combination and dedupe later,
+	 * the following approach is used:
+	 *
+	 * Write down the numbers in each group in ascendant order, and the groups in ascendant order by
+	 * their first elements.
+	 * It's easy to prove that non-ordered cases are duplicated of some of ordered cases, such as
+	 * [1, 3, 2] duplicates with [1, 2, 3]
+	 *
+	 * From this, we can calculate how many numbers MUST be bigger than the current one.
+	 * For example, given a section of {groupSize: 3, groupCount: 3}, the combinaiton is in the following form,
+	 * [[a0, a1, a2], [b0, b1, b2], [c0, c1, c2]]
+	 * Then we have
+	 * a0 &lt; a1 &lt; a2, b0 &lt; b1 &lt; b2, c0 &lt; c1 &lt; c2, and
+	 * a0 &lt; b0 &lt; c0
+	 *
+	 * Thus, there are 8 elements bigger than a0: a1, a2, b0, b1, b2, c0, c1, c2;
+	 * 5 elements bigger than b0: b1, b2, c0, c1, c2, and a1, a2 could be bigger or not
+	 * 2 elements bigger than c0: c1, c2 and a1, a2, b1, b2 could be bigger or not.
+	 * 1 element bigger than a1: a2, and b0, b1, b2, c0, c1, c2 could be bigger or not.
+	 *
+	 * The algorithem is,
+	 * 1. Choose first elements of each group, from an element bigger than previous,
+	 * and reserve bigger numbers for other elements.
+	 * E.g., a0 won't reach max - 7, because there're 8 elements bigger than it.
+	 * 2. Choose rest elements within a group, with reserved numbers also, from last group to first.
+	 * That's because latter group has bigger starting value.
+	 * E.g. c1 starts from c0 + 1 and b1 starts from b0 + 1, and c0 &gt; b0.
+	 * This avoids group b to use bigger numbers and leave number smaller than c0
+	 *
+	 * With a recursive approach, the elements in the section were chosen in the following order:
+	 * a0, b0, c0,    c1, c2, b1, b2, a1, a2
+	 */
+	groupByPlan: function(plan, callback, thisArg) {
+		var available = []; // flags for if the number is availabe to choose
+		var result = []; // storing one combination
+		var elemCount = 0;
+
+		var i; var j; var
+			k;
+		for (i in plan) {
+			elemCount += plan[i].groupSize * plan[i].groupCount;
+		}
+
+		for (i = 0; i &lt; elemCount; i++) {
+			available.push(true);
+		}
+		for (i in plan) {
+			for (j = 0; j &lt; plan[i].groupCount; j++) {
+				var group = [];
+				for (k = 0; k &lt; plan[i].groupSize; k++) {
+					group.push(-1);
+				}
+				result.push(group);
+			}
+		}
+
+		thisArg = thisArg || null;
+
+		var forEachCandidate = function(iGroup, iElem, lower, reservedCount, callback) {
+			for (var upper = elemCount - 1; upper &gt;= 0; upper--) {
+				if (available[upper]) {
+					if (reservedCount === 0) {
+						break;
+					}
+					reservedCount--;
+				}
+			}
+			for (var number = lower; number &lt;= upper; number++) {
+				if (!available[number]) {
+					continue;
+				}
+				available[number] = false;
+				result[iGroup][iElem] = number;
+				if (callback.apply(null, [number])) {
+					return true;
+				}
+				available[number] = true;
+			}
+			return false;
+		};
+
+		var combinationInSection = function(iSection, finishedGroupCnt) {
+			var section = plan[iSection];
+
+			var chooseFirstElement = function(iGroup, lowerNumber) {
+				if (iGroup === section.groupCount) { // all first elements in the section?
+					return chooseRestElements(iGroup - 1, 1, lowerNumber);
+				}
+
+				var biggerNumberCnt = section.groupSize * (section.groupCount - iGroup) - 1;
+
+				return forEachCandidate(finishedGroupCnt + iGroup, 0, lowerNumber, biggerNumberCnt, function(number) {
+					return chooseFirstElement(iGroup + 1, number + 1);
+				});
+			};
+
+			var chooseRestElements = function(iGroup, iElem) {
+				if (iGroup &lt; 0) { // finished current section?
+					return combinationInSection(iSection + 1, finishedGroupCnt + section.groupCount);
+				}
+
+				if (iElem &gt;= section.groupSize) { // finished current group?
+					return chooseRestElements(iGroup - 1, 1);
+				}
+
+				var currentGroup = finishedGroupCnt + iGroup;
+				var biggerNumberCnt = section.groupSize - iElem - 1;
+
+				return forEachCandidate(currentGroup, iElem, result[currentGroup][iElem - 1] + 1, biggerNumberCnt, function(number) {
+					return chooseRestElements(iGroup, iElem + 1);
+				});
+			};
+
+			if (iSection === plan.length) { // finished all sections?
+				return callback.apply(thisArg, [result]);
+			}
+
+			return chooseFirstElement(0, 0);
+		}; // function combinationInSection
+
+		return combinationInSection(0, 0);
+	},
+
+	/**
+	 * Dictionary order permutations, duplicated elements are allowed
+	 */
+	nextPermutation: function(arr) {
+		var i; var j; var k; var
+			tmp;
+		for (i = arr.length - 1; i &gt; 0; i--) {
+			if (arr[i] &gt; arr[i - 1]) {
+				for (j = arr.length - 1; j &gt;= i; j--) {
+					if (arr[j] &gt; arr[i - 1]) {
+						tmp = arr[i - 1];
+						arr[i - 1] = arr[j];
+						arr[j] = tmp;
+						break;
+					}
+				}
+				for (k = i, j = arr.length - 1; k &lt; j; k++, j--) {
+					tmp = arr[k];
+					arr[k] = arr[j];
+					arr[j] = tmp;
+				}
+				return false; // not finished yet
+			}
+		}
+		return true; // finished: for any i, arr[i] &lt;= arr[i-1]
+	},
+
+	combinations: function(totalCount, selectCount, callback, thisArg) {
+		thisArg = thisArg !== undefined ? thisArg : null;
+		var arr = [];
+		var i;
+		for (i = selectCount; i &lt; totalCount; i++) {
+			arr.push(0);
+		}
+		for (i = 0; i &lt; selectCount; i++) {
+			arr.push(1);
+		}
+
+		if (callback.apply(thisArg, [this.findIndices(arr)])) {
+			return true;
+		}
+
+		while (!this.nextPermutation(arr)) {
+			if (callback.apply(thisArg, [this.findIndices(arr)])) {
+				return true;
+			}
+		}
+		return false;
+	},
+
+	findIndices: function(arr) {
+		return arr.reduce(function(acc, cur, idx) {
+			if (cur) {
+				acc.push(idx);
+			}
+			return acc;
+		}, []);
+	},
+
+	type: 'SamLicenseAssignHelper',
+};]]&gt;&lt;/script&gt;&lt;sys_class_name&gt;sys_script_include&lt;/sys_class_name&gt;&lt;sys_created_by&gt;admin&lt;/sys_created_by&gt;&lt;sys_created_on&gt;2022-08-10 15:50:39&lt;/sys_created_on&gt;&lt;sys_id&gt;ffe4a12c47111110c859fee3846d437a&lt;/sys_id&gt;&lt;sys_mod_count&gt;0&lt;/sys_mod_count&gt;&lt;sys_name&gt;SamLicenseAssignHelper&lt;/sys_name&gt;&lt;sys_package display_value="SAM Scripts" source="x_807586_sam_scrip"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_package&gt;&lt;sys_policy&gt;protected&lt;/sys_policy&gt;&lt;sys_scope display_value="SAM Scripts"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_scope&gt;&lt;sys_update_name&gt;sys_script_include_ffe4a12c47111110c859fee3846d437a&lt;/sys_update_name&gt;&lt;sys_updated_by&gt;admin&lt;/sys_updated_by&gt;&lt;sys_updated_on&gt;2022-08-10 15:50:39&lt;/sys_updated_on&gt;&lt;/sys_script_include&gt;&lt;/record_update&gt;</payload>
+        <payload_hash>-626241666</payload_hash>
+        <record_name>SamLicenseAssignHelper</record_name>
+        <reverted_from/>
+        <source>6ea42de847111110c859fee3846d434c</source>
+        <source_table>sys_update_set</source_table>
+        <state>previous</state>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:50:39</sys_created_on>
+        <sys_id>3be4652c47111110c859fee3846d4303</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_recorded_at>182887362110000001</sys_recorded_at>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:50:39</sys_updated_on>
+        <type>Script Include</type>
+        <update_guid>73e4652ce2111110106928d607aa8603</update_guid>
+        <update_guid_history>73e4652ce2111110106928d607aa8603:-626241666</update_guid_history>
+    </sys_update_version>
+    <sys_metadata_delete action="INSERT_OR_UPDATE">
+        <sys_audit_delete/>
+        <sys_class_name>sys_metadata_delete</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:52:26</sys_created_on>
+        <sys_db_object display_value="" name="sys_script_include">sys_script_include</sys_db_object>
+        <sys_id>05c713607dbb4eed802f2fa2cf3d1529</sys_id>
+        <sys_metadata>ffe4a12c47111110c859fee3846d437a</sys_metadata>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamLicenseAssignHelper</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_parent/>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_scope_delete display_value="">0011b6f5266e481c80012473557b6490</sys_scope_delete>
+        <sys_update_name>sys_script_include_ffe4a12c47111110c859fee3846d437a</sys_update_name>
+        <sys_update_version display_value="sys_script_include_ffe4a12c47111110c859fee3846d437a">3be4652c47111110c859fee3846d4303</sys_update_version>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:52:26</sys_updated_on>
+    </sys_metadata_delete>
+</record_update>

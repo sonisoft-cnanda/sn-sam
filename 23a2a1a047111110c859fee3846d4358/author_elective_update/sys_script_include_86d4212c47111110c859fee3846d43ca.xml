@@ -1,0 +1,601 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="DELETE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamDiscoveryModelNormalization</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamDiscoveryModelNormalization</name>
+        <script><![CDATA[var SamDiscoveryModelNormalization = Class.create();
+// eslint-disable-next-line  max-len
+SamDiscoveryModelNormalization.prototype = Object.extendsObject(global.AssetManagementPerDomainAssetProcessSettingBaseJob, {
+	initialize: function() {},
+
+	runJob: function() {
+		this.normalizeDiscoveryModel();
+		this.runCDSHealthCheck();
+	},
+
+	normalizeDiscoveryModel: function() {
+		var sjlGr;
+		var sljSysId;
+		var installGr;
+		var countEngAppUpdate = 0;
+		var countDmPatternRuleUpdateOld = 0;
+		var countDmPatternRuleUpdateNew = 0;
+		try {
+			// Update the job status to in progress
+			sjlGr = new GlideRecord('samp_job_log');
+			sjlGr.setValue('name', 'SAM - Normalize discovery models using content library rules');
+			sljSysId = sjlGr.insert();
+
+			var normalizationEngine = new NormalizationEngine();
+			// Renormalized DMs with normalized/partitally normalized status
+			// which the current rule of the DM is deactivated
+			var listIds = [];
+			var dmArray = [];
+			// find all deactivated rules in package map table
+			var packRule = new GlideRecord('samp_package_map');
+			packRule.addQuery('active', false);
+			packRule.query();
+			while (packRule.next()) {
+				listIds.push(packRule.getUniqueValue());
+			}
+
+			// find all deactivated rules in product map table
+			var prodRule = new GlideRecord('samp_product_map');
+			prodRule.addQuery('active', false);
+			prodRule.query();
+			while (prodRule.next()) {
+				listIds.push(prodRule.getUniqueValue());
+			}
+
+			// find all deactivated rules in pattern rule table
+			var patternRule = new GlideRecord('samp_pattern_normalization_rule');
+			patternRule.addQuery('active', false);
+			patternRule.query();
+			while (patternRule.next()) {
+				listIds.push(patternRule.getUniqueValue());
+			}
+
+			// find the DMs normalized by the deactivated rules, treat these DMs as "New" DMs
+			var dmGr = new GlideRecord('cmdb_sam_sw_discovery_model');
+			dmGr.addNotNullQuery('norm_product');
+			dmGr.addNotNullQuery('norm_publisher');
+			dmGr.addQuery('status', 'normalized').addOrCondition('status', 'partially normalized');
+			dmGr.addQuery('normalization_rule', listIds);
+			dmGr.query();
+			while (dmGr.next()) {
+				dmArray.push(dmGr.getUniqueValue());
+			}
+
+			// clear out install table
+			var clearInstallGr = new GlideMultipleUpdate('cmdb_sam_sw_install');
+			clearInstallGr.addQuery('discovery_model', 'IN', dmArray);
+			SAMPremiumUtils.clearNormFieldsForInstallGr(clearInstallGr);
+			clearInstallGr.execute();
+			// clear out norm fields on eng app tables
+			if (GlidePluginManager.isActive('com.sn_samp_eng_app')) {
+				// clear out eng license table
+				var clearlicenseGr = new GlideMultipleUpdate('samp_eng_app_license');
+				clearlicenseGr.addQuery('eng_software_install.discovery_model', 'IN', dmArray);
+				clearlicenseGr.setValue('norm_product', '');
+				clearlicenseGr.setValue('norm_publisher', '');
+				clearlicenseGr.setValue('is_product_normalized', 'false');
+				clearlicenseGr.execute();
+				// Counting the updates on the Engineering table
+				if (clearlicenseGr.getRowCount()) {
+					countEngAppUpdate += 1;
+				}
+				// clear out eng denial table
+				var clearDenialGr = new GlideMultipleUpdate('samp_eng_app_denial');
+				clearDenialGr.addQuery('discovery_model', 'IN', dmArray);
+				clearDenialGr.setValue('norm_product', '');
+				clearDenialGr.setValue('norm_publisher', '');
+				clearDenialGr.setValue('is_product_normalized', 'false');
+				clearDenialGr.execute();
+			}
+
+			// set the DM status to "new" and clear out discovery model fields realted to normalization
+			var clearDmGr = new GlideMultipleUpdate('cmdb_sam_sw_discovery_model');
+			clearDmGr.addQuery('sys_id', 'IN', dmArray);
+			clearDmGr.setValue('norm_publisher', '');
+			clearDmGr.setValue('norm_product', '');
+			clearDmGr.setValue('norm_type', '');
+			clearDmGr.setValue('norm_version', '');
+			clearDmGr.setValue('norm_edition', '');
+			clearDmGr.setValue('norm_full_version', '');
+			clearDmGr.setValue('norm_platform', 'anything');
+			clearDmGr.setValue('norm_language', '832bec5493212200caef14f1b47ffb56');
+			clearDmGr.setValue('normalize_date', '');
+			clearDmGr.setValue('status', 'new');
+			clearDmGr.execute();
+
+			// standard normalization
+			var gr = new GlideRecord('cmdb_sam_sw_discovery_model');
+			var qc = gr.addNullQuery('status');
+			qc.addOrCondition('status', ['new', 'partially normalized', 'publisher normalized', 'missed']);
+			gr.addQuery('discovery_source', '!=', 'SN File Discovery').addOrCondition('discovery_source', 'NULL');
+			gr.query();
+
+			// Normalize the Discovery Models
+			while (gr.next()) {
+				gr.setWorkflow(false);
+
+				var preNormalizationDMStatus = gr.getValue('status');
+				normalizationEngine.normalizeDiscoveryModelRecord(gr);
+				var postNormalizationDMStatus = gr.getValue('status');
+
+				// Update the Discovery Model
+				gr.update();
+
+				// If normalization status changed and it was partially/normalized update the installs
+				if (preNormalizationDMStatus !== postNormalizationDMStatus
+					&& (postNormalizationDMStatus === 'partially normalized' || postNormalizationDMStatus === 'normalized')
+					&& gr.getValue('norm_type') === 'licensable' && !gr.norm_product.ignore_installs) {
+					var display = SAMPremiumUtils.calculateNormDisplayName(gr);
+					installGr = new GlideRecord('cmdb_sam_sw_install');
+					installGr.addQuery('discovery_model', gr.sys_id);
+					installGr.setWorkflow(false);
+					installGr.setValue('norm_product', gr.norm_product);
+					installGr.setValue('norm_publisher', gr.norm_publisher);
+					installGr.setValue('normalized_display_name', display);
+					installGr.updateMultiple();
+					// stamp norm fields on engineering data
+					if (GlidePluginManager.isActive('com.sn_samp_eng_app')) {
+						// clear out eng license table
+						var licenseGr = new GlideRecord('samp_eng_app_license');
+						licenseGr.addQuery('eng_software_install.discovery_model', gr.sys_id);
+						licenseGr.setWorkfow(false);
+						licenseGr.setValue('norm_product', gr.norm_product);
+						licenseGr.setValue('norm_publisher', gr.norm_publisher);
+						// Field "is_product_normalized" added for reporting performance.
+						// Set to true if product is normalized
+						if (!gs.nil(gr.norm_product)) {
+							licenseGr.setValue('is_product_normalized', true);
+						}
+						licenseGr.updateMultiple();
+						// Counting the updates on Engineering table.
+						if (licenseGr.getRowCount()) {
+							countEngAppUpdate += 1;
+						}
+						// clear out eng denial table
+						var denialGr = new GlideRecord('samp_eng_app_denial');
+						denialGr.addQuery('discovery_model', gr.sys_id);
+						denialGr.setWorkfow(false);
+						denialGr.setValue('norm_product', gr.norm_product);
+						denialGr.setValue('norm_publisher', gr.norm_publisher);
+						// Field "is_product_normalized" added for reporting performance.
+						// Set to true if product is normalized
+						if (!gs.nil(gr.norm_product)) {
+							denialGr.setValue('is_product_normalized', true);
+						}
+						denialGr.updateMultiple();
+					}
+				}
+			}
+			// Count Pattern normalization results before exection
+			if (GlidePluginManager.isActive('com.sn_samp_eng_app')) {
+				// eslint-disable-next-line  max-len
+				countDmPatternRuleUpdateOld = new sn_samp_eng_app.SamEngineeringAppUtility().getDmCountForPatternRules();
+			}
+
+			// Execute the pattern based normalizations
+			normalizationEngine.applyPatternBasedNormalization();
+
+			// Count Pattern normalization results after exection
+			if (GlidePluginManager.isActive('com.sn_samp_eng_app')) {
+				// eslint-disable-next-line  max-len
+				countDmPatternRuleUpdateNew = new sn_samp_eng_app.SamEngineeringAppUtility().getDmCountForPatternRules();
+			}
+
+			// if engineering Application plugin is active , popluate the data for Engineering tables.
+			if (GlidePluginManager.isActive('com.sn_samp_eng_app') && (countEngAppUpdate > 0) && (countDmPatternRuleUpdateOld !== countDmPatternRuleUpdateNew)) {
+				new global.SamEngineeringDataImport().executeUsageDataJob();
+			}
+
+			// Activate the Languages for which normalization occured
+			var ga = new GlideAggregate('cmdb_sam_sw_discovery_model');
+			ga.addNotNullQuery('norm_product');
+			ga.addNotNullQuery('norm_publisher');
+			ga.addQuery('status', 'normalized');
+			ga.groupBy('norm_language');
+			ga.query();
+
+			while (ga.next()) {
+				var langGr = new GlideRecord('samp_language');
+				langGr.addQuery('sys_id', ga.getValue('norm_language'));
+				langGr.addQuery('active', false);
+				langGr.query();
+				if (langGr.next()) {
+					langGr.active = true;
+					langGr.update();
+				}
+			}
+
+			// Update the job status to completed
+			sjlGr = new GlideRecord('samp_job_log');
+			if (sjlGr.get(sljSysId)) {
+				sjlGr.setValue('status', 'completed');
+				sjlGr.update();
+			}
+
+			var isMLNormalizationEnabled = GlidePluginManager.isActive('com.sn_sam_ml_normalization');
+			if (isMLNormalizationEnabled) {
+				var util = new global.MLNormalizationUtil();
+				var isMLNormalizationOptedIn = util.getMLPropertyValue() === 'true';
+				if (isMLNormalizationOptedIn) {
+					// Refine ML predicted discovery models
+					normalizationEngine.refineMLPredictions();
+					// Invoke ML normalization job
+					var jobrec = new GlideRecord('sysauto_script');
+					jobrec.get('name', 'SAM - Normalize discovery models using machine learning');
+					SncTriggerSynchronizer.executeNow(jobrec);
+				}
+			}
+		} catch (error) {
+			gs.logError(error, 'NormalizationEngine');
+			gs.logError(error.stack, 'NormalizationEngine');
+			sjlGr = new GlideRecord('samp_job_log');
+			if (sjlGr.get(sljSysId)) {
+				sjlGr.setValue('status', 'failed');
+				sjlGr.update();
+			}
+		}
+	},
+
+	runCDSHealthCheck: function() {
+		var sjlGr;
+		var sljSysId;
+
+		try {
+			sjlGr = new GlideRecord('samp_job_log');
+			sjlGr.setValue('name', 'SAM - CDS Health Check');
+			sljSysId = sjlGr.insert();
+
+			new SampCDSHealthCheck().process();
+
+			// Update the job status to completed
+			sjlGr = new GlideRecord('samp_job_log');
+			if (sjlGr.get(sljSysId)) {
+				sjlGr.setValue('status', 'completed');
+				sjlGr.update();
+			}
+		} catch (error) {
+			gs.logError(error, 'SampCDSHealthCheck');
+			gs.logError(error.stack, 'SampCDSHealthCheck');
+			sjlGr = new GlideRecord('samp_job_log');
+			if (sjlGr.get(sljSysId)) {
+				sjlGr.setValue('status', 'failed');
+				sjlGr.update();
+			}
+		}
+	},
+	type: 'SamDiscoveryModelNormalization',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:50:15</sys_created_on>
+        <sys_id>86d4212c47111110c859fee3846d43ca</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamDiscoveryModelNormalization</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_86d4212c47111110c859fee3846d43ca</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:50:15</sys_updated_on>
+    </sys_script_include>
+    <sys_update_version action="INSERT_OR_UPDATE">
+        <action>DELETE</action>
+        <application display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</application>
+        <file_path/>
+        <instance_id>4e2646e7dbf513888264f70fbf96195b</instance_id>
+        <instance_name>dev58455</instance_name>
+        <name>sys_script_include_86d4212c47111110c859fee3846d43ca</name>
+        <payload>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;record_update table="sys_script_include"&gt;&lt;sys_script_include action="INSERT_OR_UPDATE"&gt;&lt;access&gt;public&lt;/access&gt;&lt;active&gt;true&lt;/active&gt;&lt;api_name&gt;x_807586_sam_scrip.SamDiscoveryModelNormalization&lt;/api_name&gt;&lt;caller_access/&gt;&lt;client_callable&gt;false&lt;/client_callable&gt;&lt;description/&gt;&lt;name&gt;SamDiscoveryModelNormalization&lt;/name&gt;&lt;script&gt;&lt;![CDATA[var SamDiscoveryModelNormalization = Class.create();
+// eslint-disable-next-line  max-len
+SamDiscoveryModelNormalization.prototype = Object.extendsObject(global.AssetManagementPerDomainAssetProcessSettingBaseJob, {
+	initialize: function() {},
+
+	runJob: function() {
+		this.normalizeDiscoveryModel();
+		this.runCDSHealthCheck();
+	},
+
+	normalizeDiscoveryModel: function() {
+		var sjlGr;
+		var sljSysId;
+		var installGr;
+		var countEngAppUpdate = 0;
+		var countDmPatternRuleUpdateOld = 0;
+		var countDmPatternRuleUpdateNew = 0;
+		try {
+			// Update the job status to in progress
+			sjlGr = new GlideRecord('samp_job_log');
+			sjlGr.setValue('name', 'SAM - Normalize discovery models using content library rules');
+			sljSysId = sjlGr.insert();
+
+			var normalizationEngine = new NormalizationEngine();
+			// Renormalized DMs with normalized/partitally normalized status
+			// which the current rule of the DM is deactivated
+			var listIds = [];
+			var dmArray = [];
+			// find all deactivated rules in package map table
+			var packRule = new GlideRecord('samp_package_map');
+			packRule.addQuery('active', false);
+			packRule.query();
+			while (packRule.next()) {
+				listIds.push(packRule.getUniqueValue());
+			}
+
+			// find all deactivated rules in product map table
+			var prodRule = new GlideRecord('samp_product_map');
+			prodRule.addQuery('active', false);
+			prodRule.query();
+			while (prodRule.next()) {
+				listIds.push(prodRule.getUniqueValue());
+			}
+
+			// find all deactivated rules in pattern rule table
+			var patternRule = new GlideRecord('samp_pattern_normalization_rule');
+			patternRule.addQuery('active', false);
+			patternRule.query();
+			while (patternRule.next()) {
+				listIds.push(patternRule.getUniqueValue());
+			}
+
+			// find the DMs normalized by the deactivated rules, treat these DMs as "New" DMs
+			var dmGr = new GlideRecord('cmdb_sam_sw_discovery_model');
+			dmGr.addNotNullQuery('norm_product');
+			dmGr.addNotNullQuery('norm_publisher');
+			dmGr.addQuery('status', 'normalized').addOrCondition('status', 'partially normalized');
+			dmGr.addQuery('normalization_rule', listIds);
+			dmGr.query();
+			while (dmGr.next()) {
+				dmArray.push(dmGr.getUniqueValue());
+			}
+
+			// clear out install table
+			var clearInstallGr = new GlideMultipleUpdate('cmdb_sam_sw_install');
+			clearInstallGr.addQuery('discovery_model', 'IN', dmArray);
+			SAMPremiumUtils.clearNormFieldsForInstallGr(clearInstallGr);
+			clearInstallGr.execute();
+			// clear out norm fields on eng app tables
+			if (GlidePluginManager.isActive('com.sn_samp_eng_app')) {
+				// clear out eng license table
+				var clearlicenseGr = new GlideMultipleUpdate('samp_eng_app_license');
+				clearlicenseGr.addQuery('eng_software_install.discovery_model', 'IN', dmArray);
+				clearlicenseGr.setValue('norm_product', '');
+				clearlicenseGr.setValue('norm_publisher', '');
+				clearlicenseGr.setValue('is_product_normalized', 'false');
+				clearlicenseGr.execute();
+				// Counting the updates on the Engineering table
+				if (clearlicenseGr.getRowCount()) {
+					countEngAppUpdate += 1;
+				}
+				// clear out eng denial table
+				var clearDenialGr = new GlideMultipleUpdate('samp_eng_app_denial');
+				clearDenialGr.addQuery('discovery_model', 'IN', dmArray);
+				clearDenialGr.setValue('norm_product', '');
+				clearDenialGr.setValue('norm_publisher', '');
+				clearDenialGr.setValue('is_product_normalized', 'false');
+				clearDenialGr.execute();
+			}
+
+			// set the DM status to "new" and clear out discovery model fields realted to normalization
+			var clearDmGr = new GlideMultipleUpdate('cmdb_sam_sw_discovery_model');
+			clearDmGr.addQuery('sys_id', 'IN', dmArray);
+			clearDmGr.setValue('norm_publisher', '');
+			clearDmGr.setValue('norm_product', '');
+			clearDmGr.setValue('norm_type', '');
+			clearDmGr.setValue('norm_version', '');
+			clearDmGr.setValue('norm_edition', '');
+			clearDmGr.setValue('norm_full_version', '');
+			clearDmGr.setValue('norm_platform', 'anything');
+			clearDmGr.setValue('norm_language', '832bec5493212200caef14f1b47ffb56');
+			clearDmGr.setValue('normalize_date', '');
+			clearDmGr.setValue('status', 'new');
+			clearDmGr.execute();
+
+			// standard normalization
+			var gr = new GlideRecord('cmdb_sam_sw_discovery_model');
+			var qc = gr.addNullQuery('status');
+			qc.addOrCondition('status', ['new', 'partially normalized', 'publisher normalized', 'missed']);
+			gr.addQuery('discovery_source', '!=', 'SN File Discovery').addOrCondition('discovery_source', 'NULL');
+			gr.query();
+
+			// Normalize the Discovery Models
+			while (gr.next()) {
+				gr.setWorkflow(false);
+
+				var preNormalizationDMStatus = gr.getValue('status');
+				normalizationEngine.normalizeDiscoveryModelRecord(gr);
+				var postNormalizationDMStatus = gr.getValue('status');
+
+				// Update the Discovery Model
+				gr.update();
+
+				// If normalization status changed and it was partially/normalized update the installs
+				if (preNormalizationDMStatus !== postNormalizationDMStatus
+					&amp;&amp; (postNormalizationDMStatus === 'partially normalized' || postNormalizationDMStatus === 'normalized')
+					&amp;&amp; gr.getValue('norm_type') === 'licensable' &amp;&amp; !gr.norm_product.ignore_installs) {
+					var display = SAMPremiumUtils.calculateNormDisplayName(gr);
+					installGr = new GlideRecord('cmdb_sam_sw_install');
+					installGr.addQuery('discovery_model', gr.sys_id);
+					installGr.setWorkflow(false);
+					installGr.setValue('norm_product', gr.norm_product);
+					installGr.setValue('norm_publisher', gr.norm_publisher);
+					installGr.setValue('normalized_display_name', display);
+					installGr.updateMultiple();
+					// stamp norm fields on engineering data
+					if (GlidePluginManager.isActive('com.sn_samp_eng_app')) {
+						// clear out eng license table
+						var licenseGr = new GlideRecord('samp_eng_app_license');
+						licenseGr.addQuery('eng_software_install.discovery_model', gr.sys_id);
+						licenseGr.setWorkfow(false);
+						licenseGr.setValue('norm_product', gr.norm_product);
+						licenseGr.setValue('norm_publisher', gr.norm_publisher);
+						// Field "is_product_normalized" added for reporting performance.
+						// Set to true if product is normalized
+						if (!gs.nil(gr.norm_product)) {
+							licenseGr.setValue('is_product_normalized', true);
+						}
+						licenseGr.updateMultiple();
+						// Counting the updates on Engineering table.
+						if (licenseGr.getRowCount()) {
+							countEngAppUpdate += 1;
+						}
+						// clear out eng denial table
+						var denialGr = new GlideRecord('samp_eng_app_denial');
+						denialGr.addQuery('discovery_model', gr.sys_id);
+						denialGr.setWorkfow(false);
+						denialGr.setValue('norm_product', gr.norm_product);
+						denialGr.setValue('norm_publisher', gr.norm_publisher);
+						// Field "is_product_normalized" added for reporting performance.
+						// Set to true if product is normalized
+						if (!gs.nil(gr.norm_product)) {
+							denialGr.setValue('is_product_normalized', true);
+						}
+						denialGr.updateMultiple();
+					}
+				}
+			}
+			// Count Pattern normalization results before exection
+			if (GlidePluginManager.isActive('com.sn_samp_eng_app')) {
+				// eslint-disable-next-line  max-len
+				countDmPatternRuleUpdateOld = new sn_samp_eng_app.SamEngineeringAppUtility().getDmCountForPatternRules();
+			}
+
+			// Execute the pattern based normalizations
+			normalizationEngine.applyPatternBasedNormalization();
+
+			// Count Pattern normalization results after exection
+			if (GlidePluginManager.isActive('com.sn_samp_eng_app')) {
+				// eslint-disable-next-line  max-len
+				countDmPatternRuleUpdateNew = new sn_samp_eng_app.SamEngineeringAppUtility().getDmCountForPatternRules();
+			}
+
+			// if engineering Application plugin is active , popluate the data for Engineering tables.
+			if (GlidePluginManager.isActive('com.sn_samp_eng_app') &amp;&amp; (countEngAppUpdate &gt; 0) &amp;&amp; (countDmPatternRuleUpdateOld !== countDmPatternRuleUpdateNew)) {
+				new global.SamEngineeringDataImport().executeUsageDataJob();
+			}
+
+			// Activate the Languages for which normalization occured
+			var ga = new GlideAggregate('cmdb_sam_sw_discovery_model');
+			ga.addNotNullQuery('norm_product');
+			ga.addNotNullQuery('norm_publisher');
+			ga.addQuery('status', 'normalized');
+			ga.groupBy('norm_language');
+			ga.query();
+
+			while (ga.next()) {
+				var langGr = new GlideRecord('samp_language');
+				langGr.addQuery('sys_id', ga.getValue('norm_language'));
+				langGr.addQuery('active', false);
+				langGr.query();
+				if (langGr.next()) {
+					langGr.active = true;
+					langGr.update();
+				}
+			}
+
+			// Update the job status to completed
+			sjlGr = new GlideRecord('samp_job_log');
+			if (sjlGr.get(sljSysId)) {
+				sjlGr.setValue('status', 'completed');
+				sjlGr.update();
+			}
+
+			var isMLNormalizationEnabled = GlidePluginManager.isActive('com.sn_sam_ml_normalization');
+			if (isMLNormalizationEnabled) {
+				var util = new global.MLNormalizationUtil();
+				var isMLNormalizationOptedIn = util.getMLPropertyValue() === 'true';
+				if (isMLNormalizationOptedIn) {
+					// Refine ML predicted discovery models
+					normalizationEngine.refineMLPredictions();
+					// Invoke ML normalization job
+					var jobrec = new GlideRecord('sysauto_script');
+					jobrec.get('name', 'SAM - Normalize discovery models using machine learning');
+					SncTriggerSynchronizer.executeNow(jobrec);
+				}
+			}
+		} catch (error) {
+			gs.logError(error, 'NormalizationEngine');
+			gs.logError(error.stack, 'NormalizationEngine');
+			sjlGr = new GlideRecord('samp_job_log');
+			if (sjlGr.get(sljSysId)) {
+				sjlGr.setValue('status', 'failed');
+				sjlGr.update();
+			}
+		}
+	},
+
+	runCDSHealthCheck: function() {
+		var sjlGr;
+		var sljSysId;
+
+		try {
+			sjlGr = new GlideRecord('samp_job_log');
+			sjlGr.setValue('name', 'SAM - CDS Health Check');
+			sljSysId = sjlGr.insert();
+
+			new SampCDSHealthCheck().process();
+
+			// Update the job status to completed
+			sjlGr = new GlideRecord('samp_job_log');
+			if (sjlGr.get(sljSysId)) {
+				sjlGr.setValue('status', 'completed');
+				sjlGr.update();
+			}
+		} catch (error) {
+			gs.logError(error, 'SampCDSHealthCheck');
+			gs.logError(error.stack, 'SampCDSHealthCheck');
+			sjlGr = new GlideRecord('samp_job_log');
+			if (sjlGr.get(sljSysId)) {
+				sjlGr.setValue('status', 'failed');
+				sjlGr.update();
+			}
+		}
+	},
+	type: 'SamDiscoveryModelNormalization',
+});]]&gt;&lt;/script&gt;&lt;sys_class_name&gt;sys_script_include&lt;/sys_class_name&gt;&lt;sys_created_by&gt;admin&lt;/sys_created_by&gt;&lt;sys_created_on&gt;2022-08-10 15:50:15&lt;/sys_created_on&gt;&lt;sys_id&gt;86d4212c47111110c859fee3846d43ca&lt;/sys_id&gt;&lt;sys_mod_count&gt;0&lt;/sys_mod_count&gt;&lt;sys_name&gt;SamDiscoveryModelNormalization&lt;/sys_name&gt;&lt;sys_package display_value="SAM Scripts" source="x_807586_sam_scrip"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_package&gt;&lt;sys_policy&gt;protected&lt;/sys_policy&gt;&lt;sys_scope display_value="SAM Scripts"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_scope&gt;&lt;sys_update_name&gt;sys_script_include_86d4212c47111110c859fee3846d43ca&lt;/sys_update_name&gt;&lt;sys_updated_by&gt;admin&lt;/sys_updated_by&gt;&lt;sys_updated_on&gt;2022-08-10 15:50:15&lt;/sys_updated_on&gt;&lt;/sys_script_include&gt;&lt;/record_update&gt;</payload>
+        <payload_hash>-2052628404</payload_hash>
+        <record_name>SamDiscoveryModelNormalization</record_name>
+        <reverted_from/>
+        <source>6ea42de847111110c859fee3846d434c</source>
+        <source_table>sys_update_set</source_table>
+        <state>previous</state>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:50:15</sys_created_on>
+        <sys_id>c2d4212c47111110c859fee3846d43cc</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_recorded_at>182887305420000001</sys_recorded_at>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:50:15</sys_updated_on>
+        <type>Script Include</type>
+        <update_guid>0ed4212c4511111033b204c7a7b655cb</update_guid>
+        <update_guid_history>0ed4212c4511111033b204c7a7b655cb:-2052628404</update_guid_history>
+    </sys_update_version>
+    <sys_metadata_delete action="INSERT_OR_UPDATE">
+        <sys_audit_delete/>
+        <sys_class_name>sys_metadata_delete</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:52:24</sys_created_on>
+        <sys_db_object display_value="" name="sys_script_include">sys_script_include</sys_db_object>
+        <sys_id>5f385f2e33c94540a131c6b06ece5900</sys_id>
+        <sys_metadata>86d4212c47111110c859fee3846d43ca</sys_metadata>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamDiscoveryModelNormalization</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_parent/>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_scope_delete display_value="">0011b6f5266e481c80012473557b6490</sys_scope_delete>
+        <sys_update_name>sys_script_include_86d4212c47111110c859fee3846d43ca</sys_update_name>
+        <sys_update_version display_value="sys_script_include_86d4212c47111110c859fee3846d43ca">c2d4212c47111110c859fee3846d43cc</sys_update_version>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:52:24</sys_updated_on>
+    </sys_metadata_delete>
+</record_update>

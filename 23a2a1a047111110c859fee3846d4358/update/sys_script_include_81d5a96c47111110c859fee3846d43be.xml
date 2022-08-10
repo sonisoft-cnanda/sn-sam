@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamServerWithVALicenseCalculator</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamServerWithVALicenseCalculator</name>
+        <script><![CDATA[var SamServerWithVALicenseCalculator = Class.create();
+SamServerWithVALicenseCalculator.prototype = Object.extendsObject(SamServerLicenseCalculator, {
+	initialize: function(metric, metricGroup, coreCompany, product, reconResult, entitlementMapConfig,
+		singleLicenseMetric, calculateRightsNeeded, supportsClustering, licensePhysicalOnly, populateInstallToLRB) {
+		SamServerLicenseCalculator.prototype.initialize.call(this, metric, metricGroup, coreCompany, product,
+			reconResult, entitlementMapConfig, singleLicenseMetric, calculateRightsNeeded, supportsClustering,
+			licensePhysicalOnly, populateInstallToLRB);
+		this.virtualizationAdapter = new SampVirtualizationAdapter();
+		this.currHostClass = null;
+		this.updateHostClassOnVMAllocations();
+	},
+
+	_cleanHostClassOnVMAlloc: function(product) {
+		new GlideQuery(ReconciliationConstants.DEVICE_ALLOCATION_TABLE)
+			.whereNotNull('host_class_for_vm')
+			.where('licensed_by.software_model.product', product)
+			.updateMultiple({ host_class_for_vm: null });
+	},
+
+	_stampHostClassOnAlloc: function(deviceList, hostClass, product) {
+		new GlideQuery(ReconciliationConstants.DEVICE_ALLOCATION_TABLE)
+			.where('allocated_to', 'IN', deviceList)
+			.whereNull('host_class_for_vm')
+			.where('licensed_by.software_model.product', product)
+			.updateMultiple({ host_class_for_vm: hostClass });
+	},
+
+	updateHostClassOnVMAllocations: function() {
+		this._cleanHostClassOnVMAlloc(this.fSoftwareProduct);
+
+		var allocationEncodedQuery = 'alloc_licensed_by.software_model.product=' + this.fSoftwareProduct;
+		allocationEncodedQuery += '^alloc_licensed_by.license_metric=' + this.fMetric;
+		allocationEncodedQuery += '^alloc_licensed_by.rights>0';
+		allocationEncodedQuery += '^alloc_host_class_for_vm=NULL';
+		var hostClassForVMs = this.virtualizationAdapter.getHostClassForVMOnAllocations(allocationEncodedQuery);
+		for (var hostClass in hostClassForVMs) {
+			this._stampHostClassOnAlloc(hostClassForVMs[hostClass], hostClass, this.fSoftwareProduct);
+		}
+	},
+
+	getNextDeviceFromInstallOnPhysical: function() {
+		this.initializePhysicalInstallsGa();
+		while (this.physicalInstallsGa.next()) {
+			var ciGr = new GlideRecord('cmdb_ci_computer');
+			if (!ciGr.get(this.physicalInstallsGa.getValue('installed_on')) || ciGr.virtual) { continue; }
+			// populate current host class in case calculator is using the virtual adapter framework
+			this.currHostClass = ciGr.sys_class_name;
+			return this.physicalInstallsGa.getValue('installed_on');
+		}
+		return null;
+	},
+
+	getNextDeviceFromInstallOnVirtual: function() {
+		if (!this.hostWithVMInstallsFetched) {
+			var installEncodedQuery = this.generateInstallQuery('inst_');
+			installEncodedQuery += '^inst_norm_publisher=' + this.coreCompanyId;
+			installEncodedQuery += '^inst_is_reconciled=false';
+			installEncodedQuery += '^inst_reconciliation_state!='
+          + ReconciliationConstants.RECONCILIATION_STATE.PROCESSED_IN_UNALLOCATED;
+			this.hostSysIdsToHostClass = this.virtualizationAdapter.getPhysicalWithVMInstalls(installEncodedQuery);
+			this.hostSysIds = Object.keys(this.hostSysIdsToHostClass || {});
+			this.currentHostIndex = 0;
+			this.hostWithVMInstallsFetched = true;
+		}
+		if (this.hostSysIds[this.currentHostIndex]) {
+			var currHostSysId = this.hostSysIds[this.currentHostIndex];
+			this.currHostClass = this.hostSysIdsToHostClass[currHostSysId];
+			this.currentHostIndex += 1;
+			return currHostSysId;
+		}
+		return null;
+	},
+
+	updateDeviceInfo: function (deviceInfo, allocatedPass) {
+		var deviceGr = new GlideRecord('cmdb_ci_computer');
+		if (deviceGr.get(deviceInfo.sysId)) {
+			deviceInfo.virtual = deviceGr.virtual;
+			this.currHostClass = deviceGr.sys_class_name;
+		} else {
+			deviceInfo.table = 'cmdb_ci';
+		}
+
+		if (this.supportsClustering) {
+			if (allocatedPass) {
+				var ciClass = SAMPremiumUtils.getClassFromCISysId(deviceInfo.sysId);
+				var indexOfClass = this.virtualizationAdapter.supportedClusterClasses.indexOf(ciClass);
+				if (indexOfClass !== -1) {
+					var clusterClass = this.virtualizationAdapter.supportedClusterClasses[indexOfClass];
+					deviceInfo.table = clusterClass;
+					this.currHostClass = this.virtualizationAdapter.clusterToHostClassMap[clusterClass];
+				}
+			} else {
+				var clusterId = this._getCluster(deviceInfo.sysId);
+				if (clusterId) {
+					deviceInfo.sysId = clusterId;
+					deviceInfo.table = this._getClusterClass();
+				}
+			}
+		}
+	},
+
+	getVirtualInstallsOnHostQuery: function (hostSysId, allocatedPass, isReconciled) {
+		var result = this.virtualizationAdapter.getGlideRecordOnDBView(hostSysId, this.currHostClass);
+		if (!gs.nil(result) && !gs.nil(result.virtualInstallsGr)) {
+			var virtualInstallsGr = result.virtualInstallsGr;
+			var dbViewDetails = result.dbViewDetails;
+			var queryString;
+			if (allocatedPass) {
+				queryString = this.generateAllocatedInstallQuery('inst_');
+			} else {
+				queryString = this.generateInstallQuery('inst_');
+			}
+			virtualInstallsGr.addEncodedQuery(queryString);
+			virtualInstallsGr.addQuery('inst_norm_publisher', this.coreCompanyId);
+			virtualInstallsGr.addQuery('inst_is_reconciled', isReconciled);
+			virtualInstallsGr.addQuery(dbViewDetails.hostViewHostColumn, hostSysId);
+			virtualInstallsGr.addNotNullQuery(dbViewDetails.hostViewVMColumn);
+			return virtualInstallsGr;
+		}
+		return null;
+	},
+
+	_getMemberHostsOfCluster: function (clusterId, processedClusterDevices) {
+		var hosts = this.virtualizationAdapter.getHostsOnCluster(clusterId, null, this.currHostClass);
+		if (processedClusterDevices) {
+			hosts.forEach(function(host) {
+				processedClusterDevices[host] = true;
+			});
+		}
+		return hosts;
+	},
+
+	// TODO: check usages with isVirtual true where it is possible to have currHostClass not defined
+	_getCluster: function (deviceId, isVirtual) {
+		if (isVirtual && gs.nil(this.currHostClass)) {
+			return null;
+		}
+		return this.virtualizationAdapter.getClusterFromHostOrVM(deviceId, isVirtual, this.currHostClass);
+	},
+
+	_isCluster: function (deviceId) {
+		var ciClass = SAMPremiumUtils.getClassFromCISysId(deviceId);
+		return (this.virtualizationAdapter.supportedClusterClasses.indexOf(ciClass) !== -1);
+	},
+
+	_getClusterClass: function() {
+		return this.virtualizationAdapter.hostToClusterClassMap[this.currHostClass];
+	},
+
+	type: 'SamServerWithVALicenseCalculator',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:34</sys_created_on>
+        <sys_id>81d5a96c47111110c859fee3846d43be</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamServerWithVALicenseCalculator</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_81d5a96c47111110c859fee3846d43be</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:34</sys_updated_on>
+    </sys_script_include>
+</record_update>

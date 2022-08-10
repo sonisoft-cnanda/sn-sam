@@ -1,0 +1,440 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampVirtualizationAdapter</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SampVirtualizationAdapter</name>
+        <script><![CDATA[var SampVirtualizationAdapter = Class.create();
+SampVirtualizationAdapter.prototype = {
+	initialize: function() {
+		this.hostToClusterClassMap = {};
+		this.clusterToHostClassMap = {};
+		this.supportedHostClasses = [];
+		this.supportedClusterClasses = [];
+		this.DEFAULT_HOST_CLASS = 'DEFAULT';
+		this._initSupportedHostAndClusterClasses();
+	},
+
+	/* ****************************************************************************************
+	Method to get all physical devices which have installs on their VMs based on the given encoded
+	query.
+	Will return all hosts across different virtualization technologies.
+	Input:
+		installEncodedQuery - an encoded query that has all the filtering conditions like product,
+		publisher, is_reconciled etc. for the install. Please note that the query will be executed
+		on database views, so use 'inst_' prefix for columns in the install table.
+	Output:
+		Object with hostSysIds as keys and host class as the value. For e.g.
+		{
+			'hostsysid1' : 'cmdb_ci_esx_host',
+			'hostsysid2' : 'cmdb_ci_nutanix_host'
+		}
+	***************************************************************************************** */
+	getPhysicalWithVMInstalls: function(installEncodedQuery) {
+		var hostSysIdsToHostClass = {};
+		var dbViewDetailsGr = new GlideRecord(ReconciliationConstants.VA_DBVIEW_DETAILS_TABLE);
+		dbViewDetailsGr.orderBy('order');
+		dbViewDetailsGr.query();
+		while (dbViewDetailsGr.next()) {
+			var dbViewDetails = this._getDBViewDetailsFromGr(dbViewDetailsGr);
+			var virtualInstallGa = new SampAggregate(dbViewDetails.hostDBView);
+			virtualInstallGa.addEncodedQuery(installEncodedQuery);
+			virtualInstallGa.addNotNullQuery(dbViewDetails.hostViewHostColumn);
+			virtualInstallGa.addNotNullQuery(dbViewDetails.hostViewVMColumn);
+			virtualInstallGa.groupBy(dbViewDetails.hostViewHostColumn);
+			virtualInstallGa.groupBy(dbViewDetails.hostViewHostColumn + '.sys_class_name');
+			virtualInstallGa.orderBy(dbViewDetails.hostViewHostColumn);
+			virtualInstallGa.query();
+			while (virtualInstallGa.next()) {
+				var hostSysId = virtualInstallGa.getValue(dbViewDetails.hostViewHostColumn);
+				hostSysIdsToHostClass[hostSysId] = virtualInstallGa.getValue(dbViewDetails.hostViewHostColumn + '.sys_class_name');
+			}
+		}
+		return hostSysIdsToHostClass;
+	},
+
+	/* ****************************************************************************************
+	Method to get all VMs which have installs based on the given encoded query.
+	Will return all VMs across different virtualization technologies.
+	Input:
+		installEncodedQuery - an encoded query that has all the filtering conditions like product,
+		publisher, is_reconciled etc. for the install. Please note that the query will be executed
+		on database views, so use 'inst_' prefix for columns in the install table.
+	Output:
+		Object with vmSysIds as keys and host class as the value. For e.g.
+		{
+			'vmsysid1' : 'cmdb_ci_esx_host',
+			'vmsysid2' : 'cmdb_ci_nutanix_host'
+		}
+	***************************************************************************************** */
+	getVirtualsWithInstalls: function(installEncodedQuery) {
+		var vmSysIdsToHostClass = {};
+		var dbViewDetailsGr = new GlideRecord(ReconciliationConstants.VA_DBVIEW_DETAILS_TABLE);
+		dbViewDetailsGr.orderBy('order');
+		dbViewDetailsGr.query();
+		while (dbViewDetailsGr.next()) {
+			var dbViewDetails = this._getDBViewDetailsFromGr(dbViewDetailsGr);
+			var virtualInstallGa = new SampAggregate(dbViewDetails.hostDBView);
+			virtualInstallGa.addEncodedQuery(installEncodedQuery);
+			virtualInstallGa.addNotNullQuery(dbViewDetails.hostViewHostColumn);
+			virtualInstallGa.addNotNullQuery(dbViewDetails.hostViewVMColumn);
+			virtualInstallGa.groupBy(dbViewDetails.hostViewVMColumn);
+			virtualInstallGa.groupBy(dbViewDetails.hostViewHostColumn);
+			virtualInstallGa.groupBy(dbViewDetails.hostViewHostColumn + '.sys_class_name');
+			virtualInstallGa.orderBy(dbViewDetails.hostViewVMColumn);
+			virtualInstallGa.query();
+			while (virtualInstallGa.next()) {
+				var vmSysId = virtualInstallGa.getValue(dbViewDetails.hostViewVMColumn);
+				vmSysIdsToHostClass[vmSysId] = virtualInstallGa.getValue(dbViewDetails.hostViewHostColumn + '.sys_class_name');
+			}
+		}
+		return vmSysIdsToHostClass;
+	},
+
+	/* ****************************************************************************************
+	This method is to get the GlideRecord or GlideAggregate query initialised for the right
+	database view based on the host class.
+	The comsuming method has the responsibility to add additional filters for the install before
+	executing the query. Please note that the query will be executed on database view, so use
+	'inst_' prefix for columns in the install table.
+	The method will also return db view details record which can be used by the calling method.
+	Note: This method doesn't use SAMPRecord because it expects the query is for specific host/hosts.
+	Input:
+		hostSysId - Will be used to fetch host class name if hostClass not passed
+		hostClass - string
+		useAggregate - to decide whether to use GlideRecord or GlideAggregate
+	Output:
+	{
+		'virtualInstallsGr' : virtualInstallsGr, - partial glidercord query on the corresponding db view
+		'dbViewDetails': dbViewDetails -
+	}
+	***************************************************************************************** */
+	getGlideRecordOnDBView: function(hostSysId, hostClass, useAggregate) {
+		if (gs.nil(hostSysId) && gs.nil(hostClass)) {
+			return null;
+		}
+		var result = {};
+		// do not need to use SAMPRecord since we are querying for specific hosts
+		var GlideAPI = useAggregate ? GlideAggregate : GlideRecord;
+		var _hostClass = !gs.nil(hostClass) ? hostClass : SAMPremiumUtils.getClassFromCISysId(hostSysId);
+		var dbViewDetails = this._getDBViewDetailsByClass(null, _hostClass);
+		if (gs.nil(dbViewDetails)) {
+			return null;
+		}
+		var virtualInstallsGr = new GlideAPI(dbViewDetails.hostDBView);
+		result.virtualInstallsGr = virtualInstallsGr;
+		result.dbViewDetails = dbViewDetails;
+		return result;
+	},
+
+	// passing hostClass is mandatory for virtual devices, recommended for physical devices
+	// return value - custerSysId OR null if not found
+	getClusterFromHostOrVM: function(deviceSysId, isVirtual, hostClass) {
+		if (isVirtual && gs.nil(hostClass)) {
+			return null;
+		}
+
+		var _hostClass = !gs.nil(hostClass) ? hostClass : SAMPremiumUtils.getClassFromCISysId(deviceSysId);
+		var dbViewDetails = this._getDBViewDetailsByClass(null, _hostClass);
+		if (gs.nil(dbViewDetails)) {
+			return null;
+		}
+		var _hostSysId;
+		if (isVirtual) {
+			_hostSysId = this._getHostFromVMAndViewDetails(dbViewDetails, deviceSysId);
+		} else {
+			_hostSysId = deviceSysId;
+		}
+
+		if (gs.nil(_hostSysId)) {
+			return null;
+		}
+
+		return this._getClusterFromHostAndViewDetails(dbViewDetails, _hostSysId);
+	},
+
+	// recommended to either pass clusterClass or hostClass
+	// return value - array of hostsysids OR blank array if no hosts found
+	getHostsOnCluster: function(clusterSysId, clusterClass, hostClass) {
+		var hosts = [];
+		var dbViewDetails = this._getDBViewDetailsForCluster(clusterSysId, clusterClass, hostClass);
+		if (!gs.nil(dbViewDetails)) {
+			hosts = this._getHostsFromClusterAndViewDetails(dbViewDetails, clusterSysId);
+		}
+		return hosts;
+	},
+
+	// passing hostClass is mandatory
+	// return value - hostsysid OR null if not found
+	getHostForVM: function(vmSysId, hostClass) {
+		if (gs.nil(hostClass)) {
+			return null;
+		}
+		var dbViewDetails = this._getDBViewDetailsByClass(null, hostClass);
+		if (gs.nil(dbViewDetails)) {
+			return null;
+		}
+		return this._getHostFromVMAndViewDetails(dbViewDetails, vmSysId);
+	},
+
+	// recommended to either pass clusterClass or hostClass
+	// return value example - {'hostsysid1' : [vmsysid1, vmsysid2], 'hostsysid2' : [vmsysid3, vmsysid4]}
+	getVMsOnCluster: function(clusterSysId, clusterClass, hostClass) {
+		var hostsToVMs = {};
+		var dbViewDetails = this._getDBViewDetailsForCluster(clusterSysId, clusterClass, hostClass);
+		if (!gs.nil(dbViewDetails)) {
+			var hosts = this._getHostsFromClusterAndViewDetails(dbViewDetails, clusterSysId);
+			if (!gs.nil(hosts) && hosts.length > 0) {
+				hostsToVMs = this._getVMsFromHostsAndViewDetails(dbViewDetails, hosts);
+			}
+		}
+		return hostsToVMs;
+	},
+
+	// passing hostClass is recommended
+	// return value - array of vmsysids OR blank array if no vms found
+	getVMsOnHost: function(hostSysId, hostClass) {
+		var _hostClass = !gs.nil(hostClass) ? hostClass : SAMPremiumUtils.getClassFromCISysId(hostSysId);
+		var dbViewDetails = this._getDBViewDetailsByClass(null, _hostClass);
+		var hostsToVMs = {};
+		if (!gs.nil(dbViewDetails)) {
+			hostsToVMs = this._getVMsFromHostsAndViewDetails(dbViewDetails, hostSysId);
+		}
+		return hostsToVMs[hostSysId] || [];
+	},
+
+	// recommended to pass hostClass
+	// return value example - {'hostsysid1' : [vmsysid1, vmsysid2], 'hostsysid2' : [vmsysid3, vmsysid4]}
+	getVMsOnHosts: function(hostSysIds, hostClass) {
+		var hostsToVMs = {};
+		if ((gs.nil(hostSysIds) || hostSysIds.length === 0) && gs.nil(hostClass)) {
+			return hostsToVMs;
+		}
+		var _hostClass = !gs.nil(hostClass) ? hostClass : SAMPremiumUtils.getClassFromCISysId(hostSysIds[0]);
+		var dbViewDetails = this._getDBViewDetailsByClass(null, _hostClass);
+
+		if (!gs.nil(dbViewDetails)) {
+			hostsToVMs = this._getVMsFromHostsAndViewDetails(dbViewDetails, hostSysIds);
+		}
+		return hostsToVMs;
+	},
+
+	_initSupportedHostAndClusterClasses: function() {
+		var dbViewDetailsGr = new GlideRecord(ReconciliationConstants.VA_DBVIEW_DETAILS_TABLE);
+		dbViewDetailsGr.addQuery('host_class', '!=', this.DEFAULT_HOST_CLASS);
+		dbViewDetailsGr.orderBy('order');
+		dbViewDetailsGr.query();
+		while (dbViewDetailsGr.next()) {
+			var hostClass = dbViewDetailsGr.getValue('host_class');
+			var clusterClass = dbViewDetailsGr.getValue('cluster_class');
+			if (!gs.nil(hostClass)) {
+				this.supportedHostClasses.push(hostClass);
+				if (!gs.nil(clusterClass)) {
+					this.supportedClusterClasses.push(clusterClass);
+					this.hostToClusterClassMap[hostClass] = clusterClass;
+					this.clusterToHostClassMap[clusterClass] = hostClass;
+				}
+			}
+		}
+	},
+
+	_getHostFromVMAndViewDetails: function(dbViewDetails, vmSysId) {
+		var hostSysId = null;
+
+		var gqResult = new global.GlideQuery(dbViewDetails.hostDBView)
+			.where(dbViewDetails.hostViewVMColumn, vmSysId)
+			.limit(1)
+			.select(dbViewDetails.hostViewHostColumn)
+			.toArray(1);
+
+		if (gqResult[0] && gqResult[0][dbViewDetails.hostViewHostColumn]) {
+			hostSysId = gqResult[0][dbViewDetails.hostViewHostColumn];
+		}
+
+		return hostSysId;
+	},
+
+	_getClusterFromHostAndViewDetails: function(dbViewDetails, hostSysId) {
+		if (gs.nil(dbViewDetails.clusterDBView)) {
+			return null;
+		}
+		var clusterSysId = null;
+		var gqResult = new global.GlideQuery(dbViewDetails.clusterDBView)
+			.where(dbViewDetails.clusterViewHostColumn, hostSysId)
+			.limit(1)
+			.select(dbViewDetails.clusterViewClusterColumn)
+			.toArray(1);
+
+		if (gqResult[0] && gqResult[0][dbViewDetails.clusterViewClusterColumn]) {
+			clusterSysId = gqResult[0][dbViewDetails.clusterViewClusterColumn];
+		}
+
+		return clusterSysId;
+	},
+
+	_getVMsFromHostsAndViewDetails: function(dbViewDetails, hosts) {
+		var hostsToVMs = {};
+		var _hosts = Array.isArray(hosts) ? hosts : [hosts];
+		new global.GlideQuery(dbViewDetails.hostDBView)
+			.where(dbViewDetails.hostViewHostColumn, 'IN', _hosts)
+			.groupBy(dbViewDetails.hostViewHostColumn)
+			.groupBy(dbViewDetails.hostViewVMColumn)
+			.aggregate('COUNT')
+			.select()
+			.forEach(function(result) {
+				var vm = result.group[dbViewDetails.hostViewVMColumn];
+				var host = result.group[dbViewDetails.hostViewHostColumn];
+				if (!hostsToVMs.hasOwnProperty(host)) {
+					hostsToVMs[host] = [];
+				}
+				hostsToVMs[host].push(vm);
+			});
+		return hostsToVMs;
+	},
+
+	_getHostsFromClusterAndViewDetails: function(dbViewDetails, clusterSysId) {
+		var hosts = [];
+		if (gs.nil(dbViewDetails.clusterDBView)) {
+			return hosts;
+		}
+		new global.GlideQuery(dbViewDetails.clusterDBView)
+			.where(dbViewDetails.clusterViewClusterColumn, clusterSysId)
+			.select(dbViewDetails.clusterViewHostColumn)
+			.forEach(function(result) {
+				hosts.push(result[dbViewDetails.clusterViewHostColumn]);
+			});
+		return hosts;
+	},
+
+	_getDBViewDetailsForCluster: function(clusterSysId, clusterClass, hostClass) {
+		var _clusterClass = clusterClass;
+		if (gs.nil(hostClass) && gs.nil(_clusterClass)) {
+			_clusterClass = SAMPremiumUtils.getClassFromCISysId(clusterSysId);
+			if (gs.nil(_clusterClass)) {
+				return null;
+			}
+		}
+		return this._getDBViewDetailsByClass(_clusterClass, hostClass);
+	},
+
+	_getDBViewDetailsByClass: function(clusterClass, hostClass) {
+		var _hostClass = hostClass;
+		if (gs.nil(clusterClass) && gs.nil(_hostClass)) {
+			return null;
+		}
+
+		if (gs.nil(clusterClass) && this.supportedHostClasses.indexOf(_hostClass.toString()) === -1) {
+			_hostClass = this.DEFAULT_HOST_CLASS;
+		}
+		var dbViewDetails = null;
+		var dbViewDetailsGr = new GlideRecord(ReconciliationConstants.VA_DBVIEW_DETAILS_TABLE);
+		if (!gs.nil(clusterClass)) {
+			dbViewDetailsGr.addQuery('cluster_class', clusterClass);
+		} else {
+			dbViewDetailsGr.addQuery('host_class', _hostClass);
+		}
+		dbViewDetailsGr.query();
+		if (dbViewDetailsGr.next()) {
+			dbViewDetails = this._getDBViewDetailsFromGr(dbViewDetailsGr);
+		}
+		return dbViewDetails;
+	},
+
+	_getDBViewDetailsFromGr: function(dbViewDetailsGr) {
+		var dbViewDetails = {};
+		dbViewDetails.hostClass = dbViewDetailsGr.getValue('host_class');
+		dbViewDetails.clusterClass = dbViewDetailsGr.getValue('cluster_class');
+		dbViewDetails.hostDBView = dbViewDetailsGr.getValue('host_db_view');
+		dbViewDetails.hostViewHostColumn = dbViewDetailsGr.getValue('host_view_host_column_name');
+		dbViewDetails.hostViewVMColumn = dbViewDetailsGr.getValue('host_view_vm_column_name');
+		dbViewDetails.clusterDBView = dbViewDetailsGr.getValue('cluster_db_view');
+		dbViewDetails.clusterViewClusterColumn = dbViewDetailsGr.getValue('cluster_view_cluster_column_name');
+		dbViewDetails.clusterViewHostColumn = dbViewDetailsGr.getValue('cluster_view_host_column_name');
+		dbViewDetails.allocationDBView = dbViewDetailsGr.getValue('allocation_db_view');
+		dbViewDetails.allocationViewHostColumn = dbViewDetailsGr.getValue('allocation_view_host_column_name');
+		dbViewDetails.allocationViewVMColumn = dbViewDetailsGr.getValue('allocation_view_vm_column_name');
+		return dbViewDetails;
+	},
+
+	getHostClassFromVM: function(vmSysId) {
+		var dbViewDetailsGr = new GlideQuery(ReconciliationConstants.VA_DBVIEW_DETAILS_TABLE)
+			.orderBy('order')
+			.toGlideRecord();
+		dbViewDetailsGr.query();
+		while (dbViewDetailsGr.next()) {
+			var dbViewDetails = this._getDBViewDetailsFromGr(dbViewDetailsGr);
+			var gqResult = new global.GlideQuery(dbViewDetails.hostDBView)
+				.where(dbViewDetails.hostViewVMColumn, vmSysId)
+				.limit(1)
+				.select(dbViewDetails.hostViewHostColumn)
+				.toArray(1);
+
+			if (gqResult[0] && gqResult[0][dbViewDetails.hostViewHostColumn]) {
+				var ciRecord = new GlideQuery('cmdb_ci')
+					.where('sys_id', gqResult[0][dbViewDetails.hostViewHostColumn])
+					.selectOne('sys_class_name')
+					.get();
+				return ciRecord.sys_class_name;
+			}
+		}
+		return null;
+	},
+
+	getHostClassForVMOnAllocations: function(allocationEncodedQuery) {
+		var hostClassForAllocatedVMs = {};
+		var dbViewDetailsGr = new GlideRecord(ReconciliationConstants.VA_DBVIEW_DETAILS_TABLE);
+		dbViewDetailsGr.orderBy('order');
+		dbViewDetailsGr.query();
+		while (dbViewDetailsGr.next()) {
+			var dbViewDetails = this._getDBViewDetailsFromGr(dbViewDetailsGr);
+			var allocatedDeviceGa = new GlideAggregate(dbViewDetails.allocationDBView);
+			allocatedDeviceGa.setNoLimit(true);
+			allocatedDeviceGa.addEncodedQuery(allocationEncodedQuery);
+			allocatedDeviceGa.setGroup(true);
+			allocatedDeviceGa.groupBy(dbViewDetails.allocationViewVMColumn);
+			allocatedDeviceGa.groupBy(dbViewDetails.allocationViewHostColumn + '.sys_class_name');
+			allocatedDeviceGa.orderBy(dbViewDetails.allocationViewVMColumn);
+			allocatedDeviceGa.query();
+			while (allocatedDeviceGa.next()) {
+				var hostClass = allocatedDeviceGa.getValue(dbViewDetails.allocationViewHostColumn + '.sys_class_name');
+				var vmColumnName = dbViewDetails.allocationViewVMColumn;
+				if (hostClassForAllocatedVMs.hasOwnProperty(hostClass)) {
+					hostClassForAllocatedVMs[hostClass].push(allocatedDeviceGa.getValue(vmColumnName));
+				} else {
+					hostClassForAllocatedVMs[hostClass] = [];
+					hostClassForAllocatedVMs[hostClass].push(allocatedDeviceGa.getValue(vmColumnName));
+				}
+			}
+		}
+		return hostClassForAllocatedVMs;
+	},
+
+	type: 'SampVirtualizationAdapter',
+};
+
+SampVirtualizationAdapter.getSupportedInstallViews = function() {
+	var dbViews = [];
+	var dbViewDetailsGr = new GlideRecord(ReconciliationConstants.VA_DBVIEW_DETAILS_TABLE);
+	dbViewDetailsGr.query();
+	while (dbViewDetailsGr.next()) {
+		dbViews.push(dbViewDetailsGr.getValue('host_db_view'));
+	}
+	return dbViews;
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:36</sys_created_on>
+        <sys_id>e1d5e96c47111110c859fee3846d4310</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampVirtualizationAdapter</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_e1d5e96c47111110c859fee3846d4310</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:36</sys_updated_on>
+    </sys_script_include>
+</record_update>

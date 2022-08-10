@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamIdentifyBlacklistedSoftware</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamIdentifyBlacklistedSoftware</name>
+        <script><![CDATA[var SamIdentifyBlacklistedSoftware = Class.create();
+SamIdentifyBlacklistedSoftware.prototype = Object.extendsObject(global.AssetManagementPerGlideRecordBaseJob, {
+	initialize: function() {
+	},
+
+	getRecords: function() {
+		return new SampBlacklistEngine().getBlacklistedSoftwareModels();
+	},
+
+	getDomains: function() {
+		return this.getDomainsGeneric();
+	},
+
+	runJobForRecord: function(smGr) {
+		new SampBlacklistEngine().processForBlacklistedSoftwareModel(smGr);
+	},
+
+	type: 'SamIdentifyBlacklistedSoftware',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:41</sys_created_on>
+        <sys_id>8fd52d6c47111110c859fee3846d436e</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamIdentifyBlacklistedSoftware</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_8fd52d6c47111110c859fee3846d436e</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:41</sys_updated_on>
+    </sys_script_include>
+</record_update>

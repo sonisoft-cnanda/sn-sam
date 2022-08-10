@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="DELETE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamLicenseCalculatorFactory</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>License Calculator Factory for the product level license calculators</description>
+        <name>SamLicenseCalculatorFactory</name>
+        <script><![CDATA[var SamLicenseCalculatorFactory = Class.create();
+SamLicenseCalculatorFactory.prototype = {
+	initialize: function() {
+	},
+
+	type: 'SamLicenseCalculatorFactory',
+};
+
+SamLicenseCalculatorFactory.populateCalculators = function () {
+	SamLicenseCalculatorFactory.calculators = {};
+	var registryGr = new GlideRecord('samp_license_calculator_registry');
+	registryGr.query();
+	while (registryGr.next()) {
+		var registrarName = registryGr.getValue('license_calculator_registrar');
+		var registrar = SamLicenseCalculatorFactory.getVariableFromName(registrarName);
+		registrar(SamLicenseCalculatorFactory.calculators);
+	}
+};
+
+SamLicenseCalculatorFactory.getVariableFromName = function (calculatorName) {
+	var calculatorNameArr = calculatorName.split('.');
+	var calculatorClass = global;
+	for (var i = 0; i < calculatorNameArr.length; i++) {
+		calculatorClass = calculatorClass[calculatorNameArr[i]];
+	}
+	return calculatorClass;
+};
+
+SamLicenseCalculatorFactory.build = function(metric, coreCompany, product, reconResult, singleLicenseMetric,
+	calculateRightsNeeded, config) {
+	var calculatorName;
+	var calculatorClass;
+	if (!SamLicenseCalculatorFactory.hasOwnProperty('calculators')) {
+		SamLicenseCalculatorFactory.populateCalculators();
+	}
+	calculatorName = SamLicenseCalculatorFactory.calculators[metric] || 'SamCustomLicenseCalculator';
+	if (typeof calculatorName === 'function') {
+		return calculatorName(coreCompany, product, reconResult, singleLicenseMetric, calculateRightsNeeded, config);
+	}
+	calculatorClass = SamLicenseCalculatorFactory.getVariableFromName(calculatorName);
+	// eslint-disable-next-line new-cap
+	return new calculatorClass(coreCompany, product, reconResult, singleLicenseMetric, calculateRightsNeeded, metric,
+		config);
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:50:43</sys_created_on>
+        <sys_id>70f4252c47111110c859fee3846d43e3</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamLicenseCalculatorFactory</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_70f4252c47111110c859fee3846d43e3</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:50:43</sys_updated_on>
+    </sys_script_include>
+    <sys_update_version action="INSERT_OR_UPDATE">
+        <action>DELETE</action>
+        <application display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</application>
+        <file_path/>
+        <instance_id>4e2646e7dbf513888264f70fbf96195b</instance_id>
+        <instance_name>dev58455</instance_name>
+        <name>sys_script_include_70f4252c47111110c859fee3846d43e3</name>
+        <payload>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;record_update table="sys_script_include"&gt;&lt;sys_script_include action="INSERT_OR_UPDATE"&gt;&lt;access&gt;public&lt;/access&gt;&lt;active&gt;true&lt;/active&gt;&lt;api_name&gt;x_807586_sam_scrip.SamLicenseCalculatorFactory&lt;/api_name&gt;&lt;caller_access/&gt;&lt;client_callable&gt;false&lt;/client_callable&gt;&lt;description&gt;License Calculator Factory for the product level license calculators&lt;/description&gt;&lt;name&gt;SamLicenseCalculatorFactory&lt;/name&gt;&lt;script&gt;&lt;![CDATA[var SamLicenseCalculatorFactory = Class.create();
+SamLicenseCalculatorFactory.prototype = {
+	initialize: function() {
+	},
+
+	type: 'SamLicenseCalculatorFactory',
+};
+
+SamLicenseCalculatorFactory.populateCalculators = function () {
+	SamLicenseCalculatorFactory.calculators = {};
+	var registryGr = new GlideRecord('samp_license_calculator_registry');
+	registryGr.query();
+	while (registryGr.next()) {
+		var registrarName = registryGr.getValue('license_calculator_registrar');
+		var registrar = SamLicenseCalculatorFactory.getVariableFromName(registrarName);
+		registrar(SamLicenseCalculatorFactory.calculators);
+	}
+};
+
+SamLicenseCalculatorFactory.getVariableFromName = function (calculatorName) {
+	var calculatorNameArr = calculatorName.split('.');
+	var calculatorClass = global;
+	for (var i = 0; i &lt; calculatorNameArr.length; i++) {
+		calculatorClass = calculatorClass[calculatorNameArr[i]];
+	}
+	return calculatorClass;
+};
+
+SamLicenseCalculatorFactory.build = function(metric, coreCompany, product, reconResult, singleLicenseMetric,
+	calculateRightsNeeded, config) {
+	var calculatorName;
+	var calculatorClass;
+	if (!SamLicenseCalculatorFactory.hasOwnProperty('calculators')) {
+		SamLicenseCalculatorFactory.populateCalculators();
+	}
+	calculatorName = SamLicenseCalculatorFactory.calculators[metric] || 'SamCustomLicenseCalculator';
+	if (typeof calculatorName === 'function') {
+		return calculatorName(coreCompany, product, reconResult, singleLicenseMetric, calculateRightsNeeded, config);
+	}
+	calculatorClass = SamLicenseCalculatorFactory.getVariableFromName(calculatorName);
+	// eslint-disable-next-line new-cap
+	return new calculatorClass(coreCompany, product, reconResult, singleLicenseMetric, calculateRightsNeeded, metric,
+		config);
+};]]&gt;&lt;/script&gt;&lt;sys_class_name&gt;sys_script_include&lt;/sys_class_name&gt;&lt;sys_created_by&gt;admin&lt;/sys_created_by&gt;&lt;sys_created_on&gt;2022-08-10 15:50:43&lt;/sys_created_on&gt;&lt;sys_id&gt;70f4252c47111110c859fee3846d43e3&lt;/sys_id&gt;&lt;sys_mod_count&gt;0&lt;/sys_mod_count&gt;&lt;sys_name&gt;SamLicenseCalculatorFactory&lt;/sys_name&gt;&lt;sys_package display_value="SAM Scripts" source="x_807586_sam_scrip"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_package&gt;&lt;sys_policy&gt;protected&lt;/sys_policy&gt;&lt;sys_scope display_value="SAM Scripts"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_scope&gt;&lt;sys_update_name&gt;sys_script_include_70f4252c47111110c859fee3846d43e3&lt;/sys_update_name&gt;&lt;sys_updated_by&gt;admin&lt;/sys_updated_by&gt;&lt;sys_updated_on&gt;2022-08-10 15:50:43&lt;/sys_updated_on&gt;&lt;/sys_script_include&gt;&lt;/record_update&gt;</payload>
+        <payload_hash>1588569703</payload_hash>
+        <record_name>SamLicenseCalculatorFactory</record_name>
+        <reverted_from/>
+        <source>6ea42de847111110c859fee3846d434c</source>
+        <source_table>sys_update_set</source_table>
+        <state>previous</state>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:50:43</sys_created_on>
+        <sys_id>7cf4252c47111110c859fee3846d43e4</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_recorded_at>182887374170000001</sys_recorded_at>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:50:43</sys_updated_on>
+        <type>Script Include</type>
+        <update_guid>b4f4252c101111103140581005ab1be4</update_guid>
+        <update_guid_history>b4f4252c101111103140581005ab1be4:1588569703</update_guid_history>
+    </sys_update_version>
+    <sys_metadata_delete action="INSERT_OR_UPDATE">
+        <sys_audit_delete/>
+        <sys_class_name>sys_metadata_delete</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:52:23</sys_created_on>
+        <sys_db_object display_value="" name="sys_script_include">sys_script_include</sys_db_object>
+        <sys_id>0c3aa61824874e8080d7166ac3b2c100</sys_id>
+        <sys_metadata>70f4252c47111110c859fee3846d43e3</sys_metadata>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamLicenseCalculatorFactory</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_parent/>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_scope_delete display_value="">0011b6f5266e481c80012473557b6490</sys_scope_delete>
+        <sys_update_name>sys_script_include_70f4252c47111110c859fee3846d43e3</sys_update_name>
+        <sys_update_version display_value="sys_script_include_70f4252c47111110c859fee3846d43e3">7cf4252c47111110c859fee3846d43e4</sys_update_version>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:52:23</sys_updated_on>
+    </sys_metadata_delete>
+</record_update>

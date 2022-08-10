@@ -1,0 +1,813 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="DELETE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SAMCoreCompanyUtil</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>Utility function to assist the creation of core company records for sam normalization and entitlement engines.</description>
+        <name>SAMCoreCompanyUtil</name>
+        <script><![CDATA[var SAMCoreCompanyUtil = Class.create();
+
+SAMCoreCompanyUtil.prototype = (function() {
+	// Tables
+	var CORE_COMPANY_TABLE = 'core_company';
+	var SAMP_SW_PUBLISHER_TABLE = 'samp_sw_publisher';
+	var SAMP_SW_PRODUCT_TABLE = 'samp_sw_product';
+	// Table Columns
+	var MANUFACTURER_COLUMN = 'manufacturer';
+	var NAME_COLUMN = 'name';
+	var DOMAIN_COLUMN = 'sys_domain';
+
+	// default license meteric
+	var COMMON_LICENCE_METRIC = '6e2a21987f222200fa0d328c4efa915c';
+
+	/*
+	 * Public methods
+	 */
+	return {
+		initialize: function() {
+		},
+
+		// Find a Core Company record for the given sam publisher record sys_id
+		resolveCoreCompanyForSoftwarePublisher: function(samPublisherSysId) {
+			var grPublisher = new GlideRecord(SAMP_SW_PUBLISHER_TABLE);
+			grPublisher.addQuery('sys_id', samPublisherSysId);
+			grPublisher.query();
+
+			if (grPublisher.next()) {
+				// Do nothing if the grPublisher manufacturer is already specified
+				if (grPublisher.getValue(MANUFACTURER_COLUMN) != null) {
+					return grPublisher.getValue(MANUFACTURER_COLUMN);
+				}
+
+				// lookup/update publisher core company
+				var name = grPublisher.getValue(NAME_COLUMN);
+				var domain = grPublisher.getValue(DOMAIN_COLUMN);
+				var companySysId = SNC.CanonicalName.normalizeCompany(name, false, domain);
+				if (companySysId) {
+					grPublisher.setValue(MANUFACTURER_COLUMN, companySysId);
+					grPublisher.setWorkflow(false);
+					grPublisher.update();
+					return companySysId;
+				}
+
+				// create/associate core company to publisher
+				var canonicalName = SNC.CanonicalName.normalizeCompany(name, true, domain);
+				var coreCompany = new GlideRecord(CORE_COMPANY_TABLE);
+				coreCompany.setValue(NAME_COLUMN, canonicalName);
+				if (domain && coreCompany.isValidField(DOMAIN_COLUMN)) {
+					coreCompany.setValue(DOMAIN_COLUMN, domain);
+				}
+				companySysId = coreCompany.insert();
+				if (domain && domain === 'global' && coreCompany.isValidField(DOMAIN_COLUMN)) {
+					coreCompany.initialize();
+					coreCompany.get(companySysId);
+					coreCompany.setValue(DOMAIN_COLUMN, domain);
+					coreCompany.setWorkflow(false);
+					coreCompany.update();
+				}
+				grPublisher.setValue(MANUFACTURER_COLUMN, companySysId);
+				grPublisher.setWorkflow(false);
+				grPublisher.update();
+				return companySysId;
+			}
+			// Invalid sys_id was provided while calling this API
+			throw new Error('No Match found for ' + samPublisherSysId + ' in ' + SAMP_SW_PUBLISHER_TABLE);
+		},
+
+		resolveCoreCompanyForSoftwareProduct: function(samProductId, isCustom) {
+			var gr = new GlideRecord(SAMP_SW_PRODUCT_TABLE);
+			gr.get(samProductId);
+			return this.resolveCoreCompanyForSoftwarePublisher(gr.publisher, isCustom);
+		},
+
+		resolveSoftwarePublisherForCoreCompany: function(coreCompanyId) {
+			var swPublisherGr = new GlideRecord(SAMP_SW_PUBLISHER_TABLE);
+			swPublisherGr.addQuery(MANUFACTURER_COLUMN, coreCompanyId);
+			swPublisherGr.query();
+			if (swPublisherGr.next()) {
+				return swPublisherGr.getUniqueValue();
+			}
+			var coreCompanyGr = new GlideRecord(CORE_COMPANY_TABLE);
+			coreCompanyGr.get(coreCompanyId);
+			swPublisherGr.initialize();
+			swPublisherGr.setValue(NAME_COLUMN, coreCompanyGr.getValue(NAME_COLUMN));
+			swPublisherGr.setValue('webpage', coreCompanyGr.getValue('website'));
+			swPublisherGr.setValue(MANUFACTURER_COLUMN, coreCompanyId);
+			swPublisherGr.setWorkflow(false);
+			swPublisherGr.insert();
+			return swPublisherGr.getUniqueValue();
+		},
+
+		resolveMetricForModelId: function(modelSysId) {
+			// get the pubisher name
+			var gr = new GlideRecord('cmdb_software_product_model');
+			gr.addQuery('sys_id', modelSysId);
+			gr.query();
+			if (gr.next()) {
+				var pubName = gr.manufacturer.name;
+				if (!gs.nil(pubName)) {
+					// get just the first word -- this is here for the likses of VMware, Inc.
+					var nameParts = pubName.split(/[^A-Za-z]/);
+					if (nameParts.length > 1) {
+						pubName = nameParts[0];
+					}
+					var grMetric = new GlideRecord('samp_sw_metric_group');
+					grMetric.addQuery('name', 'CONTAINS', pubName);
+					grMetric.query();
+					if (grMetric.next()) {
+						var REDHAT_METRIC_GROUP = 'dc4fa7c51036d010f877fa6b14fe2621';
+						var pubNameParts = grMetric.name.split(/[^A-Za-z]/);
+						// we only want the first part of the name.  For 'Oracle Systems, Inc.' get 'Oracle'.
+						var pubFirstName = pubNameParts.length > 1 ? pubNameParts[0] : grMetric.name;
+
+						// if metric group is Red Hat or see if the plugin is enabled
+						if ((this.isPluginActive('com.sn_samp_ibm')
+							&& grMetric.getUniqueValue() === REDHAT_METRIC_GROUP)
+							|| (this.isPluginActive(grMetric.getValue('name')) && String(pubFirstName) === String(pubName))) {
+							return grMetric.getValue('sys_id');
+						}
+					}
+
+					if (gr.product.subscription_software && gr.product.ignore_installs) {
+						if (GlidePluginManager.isActive('sn_sam_saas') && gr.unit_of_consumption) {
+							return sn_sam_saas.SAMSaasConstants.METRIC_GROUP_CONSUMPTION;
+						}
+						var grMetricGrp = new GlideRecord('samp_sw_metric_group');
+						grMetricGrp.addQuery('name', 'CONTAINS', 'Subscription');
+						grMetricGrp.query();
+						if (grMetricGrp.next()) {
+							return grMetricGrp.getValue('sys_id');
+						}
+					}
+				}
+			}
+			return COMMON_LICENCE_METRIC;
+		},
+
+		isPluginActive: function(pname) {
+			var gr = new GlideRecord('sys_plugins');
+			gr.addQuery('source', 'CONTAINS', pname);
+			gr.addQuery('source', 'CONTAINS', 'samp');
+			gr.query();
+
+			if (gr.next()) {
+				var pID = gr.getValue('source');
+				if (!gs.nil(pID)) {
+					return (new GlidePluginManager()).isActive(pID);
+				}
+			}
+
+			return false;
+		},
+
+		updateNameReferingCoreCompany: function(coreCompanyId) {
+			var model = new GlideRecord('cmdb_software_product_model');
+			model.addQuery('manufacturer', coreCompanyId);
+			model.query();
+			while (model.next()) {
+				global.ModelUtils.calculateDisplayName(model);
+				new SAMPSWModelUtil().calculateSoftwareModelName(model);
+				model.setWorkflow(false);
+				model.update();
+
+				var license = new GlideRecord('alm_license');
+				license.addQuery('software_model', model.getUniqueValue());
+				license.query();
+				while (license.next()) {
+					new AssetUtils().calculateDisplayName(license);
+					license.setWorkflow(false);
+					license.update();
+				}
+			}
+		},
+
+		updatePublisherManufacturerReferences: function(publisherId, prevManufacturer, curManufacturer) {
+			var rec = new GlideMultipleUpdate('cmdb_software_product_model');
+			rec.addQuery('product.publisher', publisherId);
+			rec.addQuery('manufacturer', prevManufacturer);
+			rec.setValue('manufacturer', curManufacturer);
+			rec.execute();
+
+			rec = new GlideMultipleUpdate('cmdb_sam_sw_discovery_model');
+			rec.addQuery('norm_product.publisher', publisherId);
+			rec.addQuery('norm_publisher', prevManufacturer);
+			rec.setValue('norm_publisher', curManufacturer);
+			rec.execute();
+
+			rec = new GlideMultipleUpdate('cmdb_sam_sw_install');
+			rec.addQuery('norm_product.publisher', publisherId);
+			rec.addQuery('norm_publisher', prevManufacturer);
+			rec.setValue('norm_publisher', curManufacturer);
+			rec.execute();
+
+			rec = new GlideMultipleUpdate('samp_custom_sw_product');
+			rec.addQuery('publisher', publisherId);
+			rec.addQuery('manufacturer', prevManufacturer);
+			rec.setValue('manufacturer', curManufacturer);
+			rec.execute();
+
+			if (GlidePluginManager.isActive('com.snc.samp.core')) {
+				rec = new GlideMultipleUpdate('samp_entitlement_import');
+				rec.addQuery('software_model.product.publisher', publisherId);
+				rec.addQuery('company', prevManufacturer);
+				rec.setValue('company', curManufacturer);
+				rec.execute();
+
+				rec = new GlideMultipleUpdate('samp_pattern_normalization_client_rule');
+				rec.addQuery('norm_publisher', publisherId);
+				rec.addQuery('company', prevManufacturer);
+				rec.setValue('company', curManufacturer);
+				rec.execute();
+
+				rec = new GlideMultipleUpdate('samp_sw_client_access');
+				rec.addQuery('software_model.product.publisher', publisherId);
+				rec.addQuery('company', prevManufacturer);
+				rec.setValue('company', curManufacturer);
+				rec.execute();
+
+				rec = new GlideMultipleUpdate('samp_sw_subscription');
+				rec.addQuery('product.publisher', publisherId);
+				rec.addQuery('publisher', prevManufacturer);
+				rec.setValue('publisher', curManufacturer);
+				rec.execute();
+			}
+
+			if (GlidePluginManager.isActive('com.snc.file_signature_normalization')) {
+				rec = new GlideMultipleUpdate('cmdb_unidentified_file_set');
+				rec.addQuery('norm_product.publisher', publisherId);
+				rec.addQuery('norm_publisher', prevManufacturer);
+				rec.setValue('norm_publisher', curManufacturer);
+				rec.execute();
+			}
+
+			if (GlidePluginManager.isActive('com.sn_samp_eng_app')) {
+				rec = new GlideMultipleUpdate('samp_eng_app_denial');
+				rec.addQuery('norm_product.publisher', publisherId);
+				rec.addQuery('norm_publisher', prevManufacturer);
+				rec.setValue('norm_publisher', curManufacturer);
+				rec.execute();
+
+				rec = new GlideMultipleUpdate('samp_eng_app_license');
+				rec.addQuery('norm_product.publisher', publisherId);
+				rec.addQuery('norm_publisher', prevManufacturer);
+				rec.setValue('norm_publisher', curManufacturer);
+				rec.execute();
+
+				rec = new GlideMultipleUpdate('samp_eng_app_product_usage');
+				rec.addQuery('norm_product.publisher', publisherId);
+				rec.addQuery('norm_publisher', prevManufacturer);
+				rec.setValue('norm_publisher', curManufacturer);
+				rec.execute();
+
+				rec = new GlideMultipleUpdate('samp_eng_app_usage_by_country');
+				rec.addQuery('norm_product.publisher', publisherId);
+				rec.addQuery('norm_publisher', prevManufacturer);
+				rec.setValue('norm_publisher', curManufacturer);
+				rec.execute();
+
+				rec = new GlideMultipleUpdate('samp_eng_app_usage_summary');
+				rec.addQuery('norm_product.publisher', publisherId);
+				rec.addQuery('norm_publisher', prevManufacturer);
+				rec.setValue('norm_publisher', curManufacturer);
+				rec.execute();
+
+				rec = new GlideMultipleUpdate('samp_eng_app_utilization_user_ratio');
+				rec.addQuery('norm_product.publisher', publisherId);
+				rec.addQuery('norm_publisher', prevManufacturer);
+				rec.setValue('norm_publisher', curManufacturer);
+				rec.execute();
+			}
+
+			if (GlidePluginManager.isActive('com.sn_sam_spend')) {
+				rec = new GlideMultipleUpdate('sam_spend_transaction');
+				rec.addQuery('product.publisher', publisherId);
+				rec.addQuery('manufacturer', prevManufacturer);
+				rec.setValue('manufacturer', curManufacturer);
+				rec.execute();
+			}
+
+			this.updateNameReferingCoreCompany(curManufacturer);
+		},
+
+		getTablesReferingCoreCompany: function() {
+			var tables = {
+				samp_sw_publisher: ['manufacturer'],
+				samp_custom_sw_product: ['manufacturer'],
+				cmdb_software_product_model: ['manufacturer'],
+				cmdb_sam_sw_discovery_model: ['norm_publisher'],
+				cmdb_sam_sw_install: ['norm_publisher'],
+				samp_entitlement_result: ['publisher'],
+				samp_license_metric_result: ['publisher'],
+				samp_licenses_required_by: ['publisher'],
+				samp_product_result: ['publisher', 'group_company'],
+				samp_publisher_result: ['publisher'],
+				samp_remediation_result: ['publisher'],
+				samp_software_model_result: ['publisher'],
+			};
+			if (GlidePluginManager.isActive('com.snc.samp.core')) {
+				tables.samp_entitlement_import = ['company', 'vendor'];
+				tables.samp_license_optimization_summary = ['publisher'];
+				tables.samp_license_position_report = ['publisher'];
+				tables.samp_normalization_suggestion = ['norm_publisher', 'suggested_publisher'];
+				tables.samp_pattern_normalization_client_rule = ['company'];
+				tables.samp_sw_client_access = ['company'];
+				tables.samp_sw_install_publisher_normalization_rate = ['norm_publisher'];
+				tables.samp_sw_subscription = ['publisher'];
+			}
+			if (GlidePluginManager.isActive('com.snc.samp')) {
+				tables.samp_sw_reclamation_candidate = ['publisher'];
+			}
+			if (GlidePluginManager.isActive('com.snc.file_signature_normalization')) {
+				tables.cmdb_unidentified_file_set = ['norm_publisher'];
+			}
+			if (GlidePluginManager.isActive('com.sn_samp_eng_app')) {
+				tables.samp_eng_app_denial = ['norm_publisher'];
+				tables.samp_eng_app_license = ['norm_publisher'];
+				tables.samp_eng_app_product_usage = ['norm_publisher'];
+				tables.samp_eng_app_usage_by_country = ['norm_publisher'];
+				tables.samp_eng_app_usage_summary = ['norm_publisher'];
+				tables.samp_eng_app_utilization_user_ratio = ['norm_publisher'];
+			}
+			if (GlidePluginManager.isActive('com.sn_sam_spend')) {
+				tables.sam_spend_transaction = ['manufacturer'];
+			}
+			return tables;
+		},
+
+		associatePublisherWithCoreCompany: function() {
+			var publisher = new GlideRecord(SAMP_SW_PUBLISHER_TABLE);
+			publisher.addNullQuery('manufacturer');
+			publisher.query();
+			while (publisher.next()) {
+				var name = publisher.getValue('name');
+				var domain = publisher.getValue('sys_domain');
+				var manufacturer = SNC.CanonicalName.normalizeCompany(name, false, domain);
+				if (manufacturer) {
+					publisher.manufacturer = manufacturer;
+					publisher.update();
+				}
+			}
+		},
+
+		updateModelEntitlementDisplayName: function() {
+			var model = new GlideRecord('cmdb_software_product_model');
+			model.query();
+			while (model.next()) {
+				var curName = model.getValue('name');
+				var curDisplayName = model.getValue('display_name');
+
+				global.ModelUtils.calculateDisplayName(model);
+				new SAMPSWModelUtil().calculateSoftwareModelName(model);
+				if (curName === model.getValue('name') && curDisplayName === model.getValue('display_name')) {
+					continue;
+				}
+				model.setWorkflow(false);
+				model.update();
+
+				var license = new GlideRecord('alm_license');
+				license.addQuery('software_model', model.getUniqueValue());
+				license.query();
+				while (license.next()) {
+					new AssetUtils().calculateDisplayName(license);
+					license.setWorkflow(false);
+					license.update();
+				}
+			}
+		},
+
+		type: 'SAMCoreCompanyUtil',
+	};
+}());]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:50:13</sys_created_on>
+        <sys_id>ddd4612c47111110c859fee3846d4308</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SAMCoreCompanyUtil</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_ddd4612c47111110c859fee3846d4308</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:50:13</sys_updated_on>
+    </sys_script_include>
+    <sys_update_version action="INSERT_OR_UPDATE">
+        <action>DELETE</action>
+        <application display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</application>
+        <file_path/>
+        <instance_id>4e2646e7dbf513888264f70fbf96195b</instance_id>
+        <instance_name>dev58455</instance_name>
+        <name>sys_script_include_ddd4612c47111110c859fee3846d4308</name>
+        <payload>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;record_update table="sys_script_include"&gt;&lt;sys_script_include action="INSERT_OR_UPDATE"&gt;&lt;access&gt;public&lt;/access&gt;&lt;active&gt;true&lt;/active&gt;&lt;api_name&gt;x_807586_sam_scrip.SAMCoreCompanyUtil&lt;/api_name&gt;&lt;caller_access/&gt;&lt;client_callable&gt;false&lt;/client_callable&gt;&lt;description&gt;Utility function to assist the creation of core company records for sam normalization and entitlement engines.&lt;/description&gt;&lt;name&gt;SAMCoreCompanyUtil&lt;/name&gt;&lt;script&gt;&lt;![CDATA[var SAMCoreCompanyUtil = Class.create();
+
+SAMCoreCompanyUtil.prototype = (function() {
+	// Tables
+	var CORE_COMPANY_TABLE = 'core_company';
+	var SAMP_SW_PUBLISHER_TABLE = 'samp_sw_publisher';
+	var SAMP_SW_PRODUCT_TABLE = 'samp_sw_product';
+	// Table Columns
+	var MANUFACTURER_COLUMN = 'manufacturer';
+	var NAME_COLUMN = 'name';
+	var DOMAIN_COLUMN = 'sys_domain';
+
+	// default license meteric
+	var COMMON_LICENCE_METRIC = '6e2a21987f222200fa0d328c4efa915c';
+
+	/*
+	 * Public methods
+	 */
+	return {
+		initialize: function() {
+		},
+
+		// Find a Core Company record for the given sam publisher record sys_id
+		resolveCoreCompanyForSoftwarePublisher: function(samPublisherSysId) {
+			var grPublisher = new GlideRecord(SAMP_SW_PUBLISHER_TABLE);
+			grPublisher.addQuery('sys_id', samPublisherSysId);
+			grPublisher.query();
+
+			if (grPublisher.next()) {
+				// Do nothing if the grPublisher manufacturer is already specified
+				if (grPublisher.getValue(MANUFACTURER_COLUMN) != null) {
+					return grPublisher.getValue(MANUFACTURER_COLUMN);
+				}
+
+				// lookup/update publisher core company
+				var name = grPublisher.getValue(NAME_COLUMN);
+				var domain = grPublisher.getValue(DOMAIN_COLUMN);
+				var companySysId = SNC.CanonicalName.normalizeCompany(name, false, domain);
+				if (companySysId) {
+					grPublisher.setValue(MANUFACTURER_COLUMN, companySysId);
+					grPublisher.setWorkflow(false);
+					grPublisher.update();
+					return companySysId;
+				}
+
+				// create/associate core company to publisher
+				var canonicalName = SNC.CanonicalName.normalizeCompany(name, true, domain);
+				var coreCompany = new GlideRecord(CORE_COMPANY_TABLE);
+				coreCompany.setValue(NAME_COLUMN, canonicalName);
+				if (domain &amp;&amp; coreCompany.isValidField(DOMAIN_COLUMN)) {
+					coreCompany.setValue(DOMAIN_COLUMN, domain);
+				}
+				companySysId = coreCompany.insert();
+				if (domain &amp;&amp; domain === 'global' &amp;&amp; coreCompany.isValidField(DOMAIN_COLUMN)) {
+					coreCompany.initialize();
+					coreCompany.get(companySysId);
+					coreCompany.setValue(DOMAIN_COLUMN, domain);
+					coreCompany.setWorkflow(false);
+					coreCompany.update();
+				}
+				grPublisher.setValue(MANUFACTURER_COLUMN, companySysId);
+				grPublisher.setWorkflow(false);
+				grPublisher.update();
+				return companySysId;
+			}
+			// Invalid sys_id was provided while calling this API
+			throw new Error('No Match found for ' + samPublisherSysId + ' in ' + SAMP_SW_PUBLISHER_TABLE);
+		},
+
+		resolveCoreCompanyForSoftwareProduct: function(samProductId, isCustom) {
+			var gr = new GlideRecord(SAMP_SW_PRODUCT_TABLE);
+			gr.get(samProductId);
+			return this.resolveCoreCompanyForSoftwarePublisher(gr.publisher, isCustom);
+		},
+
+		resolveSoftwarePublisherForCoreCompany: function(coreCompanyId) {
+			var swPublisherGr = new GlideRecord(SAMP_SW_PUBLISHER_TABLE);
+			swPublisherGr.addQuery(MANUFACTURER_COLUMN, coreCompanyId);
+			swPublisherGr.query();
+			if (swPublisherGr.next()) {
+				return swPublisherGr.getUniqueValue();
+			}
+			var coreCompanyGr = new GlideRecord(CORE_COMPANY_TABLE);
+			coreCompanyGr.get(coreCompanyId);
+			swPublisherGr.initialize();
+			swPublisherGr.setValue(NAME_COLUMN, coreCompanyGr.getValue(NAME_COLUMN));
+			swPublisherGr.setValue('webpage', coreCompanyGr.getValue('website'));
+			swPublisherGr.setValue(MANUFACTURER_COLUMN, coreCompanyId);
+			swPublisherGr.setWorkflow(false);
+			swPublisherGr.insert();
+			return swPublisherGr.getUniqueValue();
+		},
+
+		resolveMetricForModelId: function(modelSysId) {
+			// get the pubisher name
+			var gr = new GlideRecord('cmdb_software_product_model');
+			gr.addQuery('sys_id', modelSysId);
+			gr.query();
+			if (gr.next()) {
+				var pubName = gr.manufacturer.name;
+				if (!gs.nil(pubName)) {
+					// get just the first word -- this is here for the likses of VMware, Inc.
+					var nameParts = pubName.split(/[^A-Za-z]/);
+					if (nameParts.length &gt; 1) {
+						pubName = nameParts[0];
+					}
+					var grMetric = new GlideRecord('samp_sw_metric_group');
+					grMetric.addQuery('name', 'CONTAINS', pubName);
+					grMetric.query();
+					if (grMetric.next()) {
+						var REDHAT_METRIC_GROUP = 'dc4fa7c51036d010f877fa6b14fe2621';
+						var pubNameParts = grMetric.name.split(/[^A-Za-z]/);
+						// we only want the first part of the name.  For 'Oracle Systems, Inc.' get 'Oracle'.
+						var pubFirstName = pubNameParts.length &gt; 1 ? pubNameParts[0] : grMetric.name;
+
+						// if metric group is Red Hat or see if the plugin is enabled
+						if ((this.isPluginActive('com.sn_samp_ibm')
+							&amp;&amp; grMetric.getUniqueValue() === REDHAT_METRIC_GROUP)
+							|| (this.isPluginActive(grMetric.getValue('name')) &amp;&amp; String(pubFirstName) === String(pubName))) {
+							return grMetric.getValue('sys_id');
+						}
+					}
+
+					if (gr.product.subscription_software &amp;&amp; gr.product.ignore_installs) {
+						if (GlidePluginManager.isActive('sn_sam_saas') &amp;&amp; gr.unit_of_consumption) {
+							return sn_sam_saas.SAMSaasConstants.METRIC_GROUP_CONSUMPTION;
+						}
+						var grMetricGrp = new GlideRecord('samp_sw_metric_group');
+						grMetricGrp.addQuery('name', 'CONTAINS', 'Subscription');
+						grMetricGrp.query();
+						if (grMetricGrp.next()) {
+							return grMetricGrp.getValue('sys_id');
+						}
+					}
+				}
+			}
+			return COMMON_LICENCE_METRIC;
+		},
+
+		isPluginActive: function(pname) {
+			var gr = new GlideRecord('sys_plugins');
+			gr.addQuery('source', 'CONTAINS', pname);
+			gr.addQuery('source', 'CONTAINS', 'samp');
+			gr.query();
+
+			if (gr.next()) {
+				var pID = gr.getValue('source');
+				if (!gs.nil(pID)) {
+					return (new GlidePluginManager()).isActive(pID);
+				}
+			}
+
+			return false;
+		},
+
+		updateNameReferingCoreCompany: function(coreCompanyId) {
+			var model = new GlideRecord('cmdb_software_product_model');
+			model.addQuery('manufacturer', coreCompanyId);
+			model.query();
+			while (model.next()) {
+				global.ModelUtils.calculateDisplayName(model);
+				new SAMPSWModelUtil().calculateSoftwareModelName(model);
+				model.setWorkflow(false);
+				model.update();
+
+				var license = new GlideRecord('alm_license');
+				license.addQuery('software_model', model.getUniqueValue());
+				license.query();
+				while (license.next()) {
+					new AssetUtils().calculateDisplayName(license);
+					license.setWorkflow(false);
+					license.update();
+				}
+			}
+		},
+
+		updatePublisherManufacturerReferences: function(publisherId, prevManufacturer, curManufacturer) {
+			var rec = new GlideMultipleUpdate('cmdb_software_product_model');
+			rec.addQuery('product.publisher', publisherId);
+			rec.addQuery('manufacturer', prevManufacturer);
+			rec.setValue('manufacturer', curManufacturer);
+			rec.execute();
+
+			rec = new GlideMultipleUpdate('cmdb_sam_sw_discovery_model');
+			rec.addQuery('norm_product.publisher', publisherId);
+			rec.addQuery('norm_publisher', prevManufacturer);
+			rec.setValue('norm_publisher', curManufacturer);
+			rec.execute();
+
+			rec = new GlideMultipleUpdate('cmdb_sam_sw_install');
+			rec.addQuery('norm_product.publisher', publisherId);
+			rec.addQuery('norm_publisher', prevManufacturer);
+			rec.setValue('norm_publisher', curManufacturer);
+			rec.execute();
+
+			rec = new GlideMultipleUpdate('samp_custom_sw_product');
+			rec.addQuery('publisher', publisherId);
+			rec.addQuery('manufacturer', prevManufacturer);
+			rec.setValue('manufacturer', curManufacturer);
+			rec.execute();
+
+			if (GlidePluginManager.isActive('com.snc.samp.core')) {
+				rec = new GlideMultipleUpdate('samp_entitlement_import');
+				rec.addQuery('software_model.product.publisher', publisherId);
+				rec.addQuery('company', prevManufacturer);
+				rec.setValue('company', curManufacturer);
+				rec.execute();
+
+				rec = new GlideMultipleUpdate('samp_pattern_normalization_client_rule');
+				rec.addQuery('norm_publisher', publisherId);
+				rec.addQuery('company', prevManufacturer);
+				rec.setValue('company', curManufacturer);
+				rec.execute();
+
+				rec = new GlideMultipleUpdate('samp_sw_client_access');
+				rec.addQuery('software_model.product.publisher', publisherId);
+				rec.addQuery('company', prevManufacturer);
+				rec.setValue('company', curManufacturer);
+				rec.execute();
+
+				rec = new GlideMultipleUpdate('samp_sw_subscription');
+				rec.addQuery('product.publisher', publisherId);
+				rec.addQuery('publisher', prevManufacturer);
+				rec.setValue('publisher', curManufacturer);
+				rec.execute();
+			}
+
+			if (GlidePluginManager.isActive('com.snc.file_signature_normalization')) {
+				rec = new GlideMultipleUpdate('cmdb_unidentified_file_set');
+				rec.addQuery('norm_product.publisher', publisherId);
+				rec.addQuery('norm_publisher', prevManufacturer);
+				rec.setValue('norm_publisher', curManufacturer);
+				rec.execute();
+			}
+
+			if (GlidePluginManager.isActive('com.sn_samp_eng_app')) {
+				rec = new GlideMultipleUpdate('samp_eng_app_denial');
+				rec.addQuery('norm_product.publisher', publisherId);
+				rec.addQuery('norm_publisher', prevManufacturer);
+				rec.setValue('norm_publisher', curManufacturer);
+				rec.execute();
+
+				rec = new GlideMultipleUpdate('samp_eng_app_license');
+				rec.addQuery('norm_product.publisher', publisherId);
+				rec.addQuery('norm_publisher', prevManufacturer);
+				rec.setValue('norm_publisher', curManufacturer);
+				rec.execute();
+
+				rec = new GlideMultipleUpdate('samp_eng_app_product_usage');
+				rec.addQuery('norm_product.publisher', publisherId);
+				rec.addQuery('norm_publisher', prevManufacturer);
+				rec.setValue('norm_publisher', curManufacturer);
+				rec.execute();
+
+				rec = new GlideMultipleUpdate('samp_eng_app_usage_by_country');
+				rec.addQuery('norm_product.publisher', publisherId);
+				rec.addQuery('norm_publisher', prevManufacturer);
+				rec.setValue('norm_publisher', curManufacturer);
+				rec.execute();
+
+				rec = new GlideMultipleUpdate('samp_eng_app_usage_summary');
+				rec.addQuery('norm_product.publisher', publisherId);
+				rec.addQuery('norm_publisher', prevManufacturer);
+				rec.setValue('norm_publisher', curManufacturer);
+				rec.execute();
+
+				rec = new GlideMultipleUpdate('samp_eng_app_utilization_user_ratio');
+				rec.addQuery('norm_product.publisher', publisherId);
+				rec.addQuery('norm_publisher', prevManufacturer);
+				rec.setValue('norm_publisher', curManufacturer);
+				rec.execute();
+			}
+
+			if (GlidePluginManager.isActive('com.sn_sam_spend')) {
+				rec = new GlideMultipleUpdate('sam_spend_transaction');
+				rec.addQuery('product.publisher', publisherId);
+				rec.addQuery('manufacturer', prevManufacturer);
+				rec.setValue('manufacturer', curManufacturer);
+				rec.execute();
+			}
+
+			this.updateNameReferingCoreCompany(curManufacturer);
+		},
+
+		getTablesReferingCoreCompany: function() {
+			var tables = {
+				samp_sw_publisher: ['manufacturer'],
+				samp_custom_sw_product: ['manufacturer'],
+				cmdb_software_product_model: ['manufacturer'],
+				cmdb_sam_sw_discovery_model: ['norm_publisher'],
+				cmdb_sam_sw_install: ['norm_publisher'],
+				samp_entitlement_result: ['publisher'],
+				samp_license_metric_result: ['publisher'],
+				samp_licenses_required_by: ['publisher'],
+				samp_product_result: ['publisher', 'group_company'],
+				samp_publisher_result: ['publisher'],
+				samp_remediation_result: ['publisher'],
+				samp_software_model_result: ['publisher'],
+			};
+			if (GlidePluginManager.isActive('com.snc.samp.core')) {
+				tables.samp_entitlement_import = ['company', 'vendor'];
+				tables.samp_license_optimization_summary = ['publisher'];
+				tables.samp_license_position_report = ['publisher'];
+				tables.samp_normalization_suggestion = ['norm_publisher', 'suggested_publisher'];
+				tables.samp_pattern_normalization_client_rule = ['company'];
+				tables.samp_sw_client_access = ['company'];
+				tables.samp_sw_install_publisher_normalization_rate = ['norm_publisher'];
+				tables.samp_sw_subscription = ['publisher'];
+			}
+			if (GlidePluginManager.isActive('com.snc.samp')) {
+				tables.samp_sw_reclamation_candidate = ['publisher'];
+			}
+			if (GlidePluginManager.isActive('com.snc.file_signature_normalization')) {
+				tables.cmdb_unidentified_file_set = ['norm_publisher'];
+			}
+			if (GlidePluginManager.isActive('com.sn_samp_eng_app')) {
+				tables.samp_eng_app_denial = ['norm_publisher'];
+				tables.samp_eng_app_license = ['norm_publisher'];
+				tables.samp_eng_app_product_usage = ['norm_publisher'];
+				tables.samp_eng_app_usage_by_country = ['norm_publisher'];
+				tables.samp_eng_app_usage_summary = ['norm_publisher'];
+				tables.samp_eng_app_utilization_user_ratio = ['norm_publisher'];
+			}
+			if (GlidePluginManager.isActive('com.sn_sam_spend')) {
+				tables.sam_spend_transaction = ['manufacturer'];
+			}
+			return tables;
+		},
+
+		associatePublisherWithCoreCompany: function() {
+			var publisher = new GlideRecord(SAMP_SW_PUBLISHER_TABLE);
+			publisher.addNullQuery('manufacturer');
+			publisher.query();
+			while (publisher.next()) {
+				var name = publisher.getValue('name');
+				var domain = publisher.getValue('sys_domain');
+				var manufacturer = SNC.CanonicalName.normalizeCompany(name, false, domain);
+				if (manufacturer) {
+					publisher.manufacturer = manufacturer;
+					publisher.update();
+				}
+			}
+		},
+
+		updateModelEntitlementDisplayName: function() {
+			var model = new GlideRecord('cmdb_software_product_model');
+			model.query();
+			while (model.next()) {
+				var curName = model.getValue('name');
+				var curDisplayName = model.getValue('display_name');
+
+				global.ModelUtils.calculateDisplayName(model);
+				new SAMPSWModelUtil().calculateSoftwareModelName(model);
+				if (curName === model.getValue('name') &amp;&amp; curDisplayName === model.getValue('display_name')) {
+					continue;
+				}
+				model.setWorkflow(false);
+				model.update();
+
+				var license = new GlideRecord('alm_license');
+				license.addQuery('software_model', model.getUniqueValue());
+				license.query();
+				while (license.next()) {
+					new AssetUtils().calculateDisplayName(license);
+					license.setWorkflow(false);
+					license.update();
+				}
+			}
+		},
+
+		type: 'SAMCoreCompanyUtil',
+	};
+}());]]&gt;&lt;/script&gt;&lt;sys_class_name&gt;sys_script_include&lt;/sys_class_name&gt;&lt;sys_created_by&gt;admin&lt;/sys_created_by&gt;&lt;sys_created_on&gt;2022-08-10 15:50:13&lt;/sys_created_on&gt;&lt;sys_id&gt;ddd4612c47111110c859fee3846d4308&lt;/sys_id&gt;&lt;sys_mod_count&gt;0&lt;/sys_mod_count&gt;&lt;sys_name&gt;SAMCoreCompanyUtil&lt;/sys_name&gt;&lt;sys_package display_value="SAM Scripts" source="x_807586_sam_scrip"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_package&gt;&lt;sys_policy&gt;protected&lt;/sys_policy&gt;&lt;sys_scope display_value="SAM Scripts"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_scope&gt;&lt;sys_update_name&gt;sys_script_include_ddd4612c47111110c859fee3846d4308&lt;/sys_update_name&gt;&lt;sys_updated_by&gt;admin&lt;/sys_updated_by&gt;&lt;sys_updated_on&gt;2022-08-10 15:50:13&lt;/sys_updated_on&gt;&lt;/sys_script_include&gt;&lt;/record_update&gt;</payload>
+        <payload_hash>1061936380</payload_hash>
+        <record_name>SAMCoreCompanyUtil</record_name>
+        <reverted_from/>
+        <source>6ea42de847111110c859fee3846d434c</source>
+        <source_table>sys_update_set</source_table>
+        <state>previous</state>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:50:13</sys_created_on>
+        <sys_id>1dd4612c47111110c859fee3846d430a</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_recorded_at>1828872fc970000001</sys_recorded_at>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:50:13</sys_updated_on>
+        <type>Script Include</type>
+        <update_guid>55d4612c1d1111105f12bb4a31b68c0a</update_guid>
+        <update_guid_history>55d4612c1d1111105f12bb4a31b68c0a:1061936380</update_guid_history>
+    </sys_update_version>
+    <sys_metadata_delete action="INSERT_OR_UPDATE">
+        <sys_audit_delete/>
+        <sys_class_name>sys_metadata_delete</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:52:26</sys_created_on>
+        <sys_db_object display_value="" name="sys_script_include">sys_script_include</sys_db_object>
+        <sys_id>14683838b6fe4a948216d9db356a6231</sys_id>
+        <sys_metadata>ddd4612c47111110c859fee3846d4308</sys_metadata>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SAMCoreCompanyUtil</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_parent/>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_scope_delete display_value="">0011b6f5266e481c80012473557b6490</sys_scope_delete>
+        <sys_update_name>sys_script_include_ddd4612c47111110c859fee3846d4308</sys_update_name>
+        <sys_update_version display_value="sys_script_include_ddd4612c47111110c859fee3846d4308">1dd4612c47111110c859fee3846d430a</sys_update_version>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:52:26</sys_updated_on>
+    </sys_metadata_delete>
+</record_update>

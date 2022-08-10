@@ -1,0 +1,206 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamSetClientSchedulePullTime</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamSetClientSchedulePullTime</name>
+        <script><![CDATA[var SamSetClientSchedulePullTime = Class.create();
+var CONTENT_SYNC_JOB_ID = '26f6310bdb8773004fbf75868c961988';
+
+SamSetClientSchedulePullTime.prototype = {
+	CDS_DOWNLOAD_STATUS_JOB_ID: 'd1eff296e7502300ba990558d2f6a9ad',
+
+	initialize: function() {
+		this.CDSTablesToDownload = [];
+		this.offsetTimes = [];
+		this.fRandomizeCDSClientScheduleTables = new global.RandomizeCDSClientScheduleTables();
+	},
+
+	shouldRandomizeContentJob: function() {
+		var jobEntry = new GlideQuery('sysauto_script')
+			.where('sys_id', CONTENT_SYNC_JOB_ID)
+			.where('active', false)
+			.limit(1)
+			.select('sys_id')
+			.toArray(1);
+
+		return jobEntry.length > 0;
+	},
+
+	process: function() {
+		if (this.setCDSDownloadJobRunTime() || this.shouldRandomizeContentJob()) {
+			this.setContentSyncJobRunTime(CONTENT_SYNC_JOB_ID, 120);
+		}
+		if (GlidePluginManager.isActive('com.snc.samp')) {
+			// Set Runtime of CDS HealthCheck to run after content has been pulled
+			this.setCDSDownloadHealthStatusJobRunTime();
+		}
+	},
+
+	setOffsetTimesAndTablesToDownload: function() {
+		if (GlidePluginManager.isActive('com.snc.sams')) {
+			var samsCDSTablesToDownload = ['samp_content_version', 'samp_sw_publisher',
+				'samp_sw_product_classification', 'samp_sw_product', 'samp_language',
+				'samp_oracle_option_set'];
+			var samsoffsetTimes = [3, 5, 5, 5, 5];
+
+			// In case if samp is enabled, we are scheduling samp_sw_product_category
+			// ahead of product as product has dependency on samp_sw_product_category.
+			if (GlidePluginManager.isActive('com.snc.samp')) {
+				samsCDSTablesToDownload = [
+					'samp_content_version',
+					'samp_sw_publisher',
+					'samp_sw_product_category',
+					'samp_sw_product_classification',
+					'samp_sw_product',
+					'samp_language',
+					'samp_oracle_option_set',
+					'samp_pattern_normalization_rule',
+					'samp_processor_map',
+				];
+				samsoffsetTimes = [3, 5, 5, 5, 5, 5, 5, 5];
+			}
+
+			this.CDSTablesToDownload.push.apply(this.CDSTablesToDownload, samsCDSTablesToDownload);
+			this.offsetTimes.push.apply(this.offsetTimes, samsoffsetTimes);
+		}
+
+		if (GlidePluginManager.isActive('com.snc.samp')) {
+			var sampCDSTablesToDownload = [
+				'samp_sw_package',
+				'samp_sw_entitlement_definition',
+				'samp_product_map',
+				'samp_package_map',
+				'samp_sw_product_definition',
+				'samp_sw_product_process',
+				'samp_m2m_suite_entitlement_def',
+				'sam_sw_product_lifecycle',
+				'samp_price_list',
+				'samp_named_user_type',
+				'samp_dmap_downgrade_model',
+				'samp_cloud_host_configuration',
+			];
+			var sampoffsetTimes = [10, 40, 5, 15, 35, 10, 2, 5, 2, 3, 10, 15];
+			this.CDSTablesToDownload.push.apply(this.CDSTablesToDownload, sampCDSTablesToDownload);
+			this.offsetTimes.push.apply(this.offsetTimes, sampoffsetTimes);
+		}
+
+		if (GlidePluginManager.isActive('com.snc.file_signature_normalization')) {
+			this.CDSTablesToDownload.push.apply(
+				this.CDSTablesToDownload,
+				['samp_file_name', 'samp_file_map', 'samp_file_set']
+			);
+			this.offsetTimes.push.apply(this.offsetTimes, [10, 25, 20]);
+		}
+
+		if (GlidePluginManager.isActive('sn_sam_saas')) {
+			this.CDSTablesToDownload.push.apply(
+				this.CDSTablesToDownload,
+				['samp_sw_subscription_integration', 'samp_sw_subscription_product_definition']
+			);
+			this.offsetTimes.push.apply(this.offsetTimes, [5, 5]);
+		}
+
+		if (GlidePluginManager.isActive('com.sn_samp_sap')) {
+			this.CDSTablesToDownload.push.apply(
+				this.CDSTablesToDownload,
+				['samp_sap_license_metric']
+			);
+			this.offsetTimes.push.apply(this.offsetTimes, [10]);
+		}
+
+		if (GlidePluginManager.isActive('com.sn_samp_ibm_licensing')) {
+			this.CDSTablesToDownload.push.apply(
+				this.CDSTablesToDownload,
+				['ibm_sw_product_catalog', 'ibm_sw_component_mapping',
+					'ibm_country_to_region_mapping', 'ibm_pvu_map']
+			);
+			this.offsetTimes.push.apply(this.offsetTimes, [5, 5, 5, 5]);
+		}
+	},
+
+	setCDSDownloadJobRunTime: function() {
+		this.setOffsetTimesAndTablesToDownload();
+
+		var clientSchedule = new GlideRecord('cds_client_schedule');
+		clientSchedule.addQuery('table.table', this.CDSTablesToDownload);
+		clientSchedule.addQuery('active', false);
+		clientSchedule.setLimit(1);
+		clientSchedule.query();
+		if (!clientSchedule.hasNext()) {
+			return;
+		}
+		this.fRandomizeCDSClientScheduleTables.process(this.CDSTablesToDownload, this.offsetTimes);
+	},
+
+	setCDSDownloadHealthStatusJobRunTime: function() {
+		var sysautoGr = new GlideRecord('sysauto_script');
+		sysautoGr.get(this.CDS_DOWNLOAD_STATUS_JOB_ID);
+		sysautoGr.query();
+		if (sysautoGr.next()) {
+			this.fRandomizeCDSClientScheduleTables.setDateAndTime(
+				sysautoGr,
+				40,
+				this.CDSTablesToDownload[this.CDSTablesToDownload.length - 1]
+			);
+			sysautoGr.setValue('active', true);
+			sysautoGr.update();
+		}
+	},
+
+	_generateRunTime: function(newRunTimeHrs, newRunTimeMin, newRunTimeSec) {
+		return newRunTimeHrs + ':' + newRunTimeMin + ':' + newRunTimeSec;
+	},
+
+	setContentSyncJobRunTime: function(jobId, offset) {
+		var prevClientScheduleTable = new GlideRecord('cds_client_schedule');
+		prevClientScheduleTable.addQuery('table.table', this.CDSTablesToDownload[this.CDSTablesToDownload.length - 1]);
+		prevClientScheduleTable.query();
+		if (prevClientScheduleTable.next()) {
+			var prevRunTime = prevClientScheduleTable.getValue('run_time');
+			var prevDayOfWeek = prevClientScheduleTable.getValue('run_dayofweek');
+			var dayTimeSplit = prevRunTime.split(' ');
+			var runTime = dayTimeSplit[1].split(':');
+			var newRunTimeHours = Number(runTime[0]);
+			var newRunTimeMinutes = Number(runTime[1]) + parseInt(offset, 10);
+			if (newRunTimeMinutes >= 60) {
+				newRunTimeHours += parseInt(newRunTimeMinutes / 60, 10);
+				newRunTimeMinutes %= 60;
+			}
+			if (newRunTimeHours >= 24) {
+				prevDayOfWeek = parseInt(prevDayOfWeek, 10) + parseInt(newRunTimeHours / 24, 10);
+				newRunTimeHours %= 24;
+				if (prevDayOfWeek >= 8) {
+					prevDayOfWeek -= 7;
+				}
+			}
+			var finalRunTime = this._generateRunTime(newRunTimeHours, newRunTimeMinutes, Number(runTime[2]));
+
+			new GlideQuery('sysauto_script')
+				.where('sys_id', jobId)
+				.update({
+					run_type: 'weekly', run_time: finalRunTime, run_dayofweek: prevDayOfWeek + '', active: true,
+				});
+		}
+	},
+
+	type: 'SamSetClientSchedulePullTime',
+};
+]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:38</sys_created_on>
+        <sys_id>5ad5e96c47111110c859fee3846d43ce</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamSetClientSchedulePullTime</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_5ad5e96c47111110c859fee3846d43ce</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:38</sys_updated_on>
+    </sys_script_include>
+</record_update>

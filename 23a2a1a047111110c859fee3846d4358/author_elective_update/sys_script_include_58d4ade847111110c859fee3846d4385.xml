@@ -1,0 +1,1219 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="DELETE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamCommonClientLicenseCalculator</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamCommonClientLicenseCalculator</name>
+        <script><![CDATA[var SamCommonClientLicenseCalculator = Class.create();
+SamCommonClientLicenseCalculator.prototype = Object.extendsObject(SamLicenseCalculator, {
+	initialize: function (metric, coreCompany, product, reconResult, singleLicenseMetric, calculateRightsNeeded) {
+		var entitlementConfig = {
+			parent: 'swModel',
+			children: 'downgradeModels',
+			mode: ReconciliationConstants.ENTITLEMENT_MAP_MODE.NO_GROUPING,
+		};
+		SamLicenseCalculator.prototype.initialize.call(this, metric, ReconciliationConstants.COMMON_METRIC_GROUP,
+			coreCompany, product, reconResult, entitlementConfig, singleLicenseMetric, calculateRightsNeeded);
+
+		this.suiteInstalls = {};
+		if (metric === LicenseMetric.PER_USER || metric === LicenseMetric.PER_NAMED_USER) {
+			this.allocationCol = 'assigned_to';
+			this.installCol = 'assigned_to';
+			this.table = 'sys_user';
+		} else {
+			this.allocationCol = 'allocated_to';
+			this.installCol = 'installed_on';
+			this.table = 'cmdb_ci_hardware';
+		}
+		this.currConsumer = '';
+	},
+
+	runAllocatedPass: function() {
+		var consumersInBatch = [];
+		var installsInBatch = {};
+		var i;
+
+		var allocatedConsumerGr = this.getConsumersWithAllocation();
+		while (allocatedConsumerGr.next()) {
+			consumersInBatch.push(allocatedConsumerGr.getValue(this.allocationCol));
+			if (consumersInBatch.length >= ReconciliationConstants.BATCHSIZE) {
+				// Start to consume rights
+				installsInBatch = this.getInstallsOfConsumerInBatch(consumersInBatch);
+				for (i = 0; i < consumersInBatch.length; i++) {
+					this.installs = installsInBatch[consumersInBatch[i]] || {};
+					this.runAllocatedPassForConsumer(consumersInBatch[i]);
+				}
+
+				// Clean up batch
+				consumersInBatch = [];
+				installsInBatch = {};
+			}
+		}
+
+		// flush the batch
+		installsInBatch = this.getInstallsOfConsumerInBatch(consumersInBatch);
+		for (i = 0; i < consumersInBatch.length; i++) {
+			this.installs = installsInBatch[consumersInBatch[i]] || {};
+			this.runAllocatedPassForConsumer(consumersInBatch[i]);
+		}
+	},
+
+	runAllocatedPassForConsumer: function(consumer) {
+		var entitlementSetsAlloc;
+		var entitlementMapAlloc;
+		var rightsUsage = {};
+		var consumerInfo = {
+			sysId: consumer,
+			virtual: null,
+			table: this.table,
+		};
+		this.currConsumer = consumer;
+
+		entitlementSetsAlloc = this.getAllocatedEntitlementSet(this.currConsumer);
+		this.initRightsUsage(rightsUsage, entitlementSetsAlloc);
+		this.debug('Allocated pass', 'Consumer: ' + consumer, 'Installs: ' + JSON.stringify(this.installs));
+
+		if (Object.keys(this.installs).length !== 0) {
+			entitlementMapAlloc = this.generateEntitlementMap(entitlementSetsAlloc);
+			this.debug('Allocated pass', 'Consumer: ' + consumer,
+				'Allocated entitlement sets: ' + JSON.stringify(entitlementSetsAlloc));
+			this.debug('Allocated pass', 'Consumer: ' + consumer,
+				'Unallocated entitlement sets: ' + JSON.stringify(this.entitlementSets));
+
+			this.consumeRights(rightsUsage, entitlementSetsAlloc, entitlementMapAlloc);
+			this.debug('Allocated Pass', 'Consumer: ' + consumer,
+				'Allocated entitlement map: ' + JSON.stringify(entitlementMapAlloc.map));
+			this.debug('Allocated Pass', 'Consumer: ' + consumer,
+				'Unallocated entitlement map: ' + JSON.stringify(this.entitlementMap.map));
+			this.debug('Allocated pass', 'Consumer: ' + consumer, 'Rights usage: ' + JSON.stringify(rightsUsage));
+
+			this.updateDowngradeRightsUsage(rightsUsage);
+			this.markInstallsAfterAssignment(rightsUsage);
+		}
+		this.generateRightsUsedByForConsumer(rightsUsage, consumerInfo);
+	},
+
+	// consumerTable: Per user uses sys_user for installs with assigned_to
+	// and cmdb_ci_computer for installs without assigned_to
+	runUnallocatedPassForConsumer: function(consumer, consumerTable) {
+		var rightsUsage = {};
+		var consumerInfo = {
+			sysId: consumer,
+			virtual: null,
+			table: consumerTable,
+		};
+		this.currConsumer = consumer;
+		this.debug('Unallocated pass', 'Consumer: ' + consumer, 'Installs: ' + JSON.stringify(this.installs));
+		this.debug('Unallocated pass', 'Consumer: ' + consumer,
+			'Unallocated entitlement sets: ' + JSON.stringify(this.entitlementSets));
+
+		var rightsNeeded = this.consumeRights(rightsUsage);
+		this.debug('Unallocated Pass', 'Consumer: ' + consumer,
+			'Entitlement map: ' + JSON.stringify(this.entitlementMap.map));
+
+		if (Object.keys(rightsUsage).length !== 0) {
+			this.updateDowngradeRightsUsage(rightsUsage);
+			this.generateRightsUsedByForConsumer(rightsUsage, consumerInfo);
+			this.markInstallsAfterAssignment(rightsUsage);
+			this.debug('Unallocated pass', 'Consumer: ' + consumer, 'Rights usage: ' + JSON.stringify(rightsUsage));
+		}
+
+		if (Object.keys(rightsNeeded).length !== 0) {
+			this.generateRightsNeededByForConsumer(rightsNeeded, consumerInfo);
+			this.markUnlicensedInstallsAfterAssignment(rightsNeeded);
+			this.debug('Unallocated pass', 'Consumer: ' + consumer, 'Rights needed: ' + JSON.stringify(rightsNeeded));
+		}
+	},
+
+	generateRightsUsedBy: function(entitlementSet, consumerInfo, lmrUsage, cachedDevice) {
+		if (this.fisSAMPActive) { this._generateRightsUsedExplanationObject(lmrUsage, consumerInfo); }
+		SamLicenseCalculator.prototype.generateRightsUsedBy.call(this,
+			entitlementSet, consumerInfo, lmrUsage, cachedDevice);
+	},
+
+	generateRightsNeededBy: function(entitlementSet, consumerInfo, rightsNeededByEntSet) {
+		if (this.fisSAMPActive) {
+			this._generateExplanationObject(consumerInfo,
+				rightsNeededByEntSet.rights, rightsNeededByEntSet.unlicensedInstalls.length);
+		}
+		SamLicenseCalculator.prototype.generateRightsNeededBy.call(this,
+			entitlementSet, consumerInfo, rightsNeededByEntSet);
+	},
+
+	_generateRightsUsedExplanationObject: function(lmr, consumerInfo) {
+		var rights = lmr.allocatedInUse + lmr.allocatedNotInUse + lmr.notAllocatedInUse;
+		var installCount = this._getInstallCountFromObject(lmr.licensedInstallsAlloc)
+			+ this._getInstallCountFromObject(lmr.licensedInstallsUnalloc);
+
+		this._generateExplanationObject(consumerInfo, rights, installCount);
+	},
+
+	_getInstallCountFromObject: function(obj) {
+		var count = 0;
+		Object.keys(obj).forEach(function(key) {
+			count += obj[key].installs.length;
+		});
+		return count;
+	},
+
+	_generateExplanationObject: function(consumerInfo, rights, installCount) {
+		consumerInfo.explanation = [{
+			licensable_installs: installCount,
+			licenses_required: rights,
+			exceeded_attributes: (rights > 1 || installCount > 1) ? ReconciliationConstants.MAX_INSTALL_PER_RIGHT : '',
+		}];
+
+		var reqByCol = consumerInfo.table === ReconciliationConstants.CMDB_CI_HARDWARE_TABLE
+			? 'required_by_device' : 'required_by_user';
+		consumerInfo.explanation[0][reqByCol] = consumerInfo.sysId;
+	},
+
+	// Not using this.installCol, since in Per User, we could query installs on device
+	getInstallsOfConsumerInBatch: function(consumers, col) {
+		var installCol = col || this.installCol;
+		var installs = {};
+		var consumer;
+		var swModel;
+		var device;
+		this.suiteInstalls = {};
+		var installsGr = new SampRecord(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+		installsGr.addEncodedQuery(this.generateInstallQuery(''));
+		installsGr.addQuery('norm_publisher', this.coreCompanyId);
+		installsGr.addQuery(installCol, 'IN', consumers);
+		installsGr.addQuery('is_reconciled', false);
+		installsGr.query();
+
+		while (installsGr.next()) {
+			consumer = installsGr.getValue(installCol);
+			installs[consumer] = installs[consumer] || {};
+			if (installsGr.getValue('norm_product') === this.fSoftwareProduct) {
+				swModel = installsGr.getValue('software_model');
+				(installs[consumer][swModel] = installs[consumer][swModel] || []).push(installsGr.getUniqueValue());
+			} else { // Suites
+				device = installsGr.getValue('installed_on');
+				swModel = installsGr.getValue('inferred_suite');
+				this.suiteInstalls[consumer] = this.suiteInstalls[consumer] || {};
+				this.suiteInstalls[consumer][swModel] = this.suiteInstalls[consumer][swModel] || {};
+				(this.suiteInstalls[consumer][swModel][device] = this.suiteInstalls[consumer][swModel][device] || [])
+					.push(installsGr.getUniqueValue());
+				installs[consumer][swModel] = installs[consumer][swModel] || [];
+				if (installs[consumer][swModel].indexOf(device) === -1) {
+					installs[consumer][swModel].push(device);
+				}
+			}
+		}
+		return installs;
+	},
+
+	initRightsUsage: function(rightsUsage, entitlementSets) {
+		for (var entitlementSet in entitlementSets) {
+			rightsUsage[entitlementSet] = {
+				allocatedInUse: 0,
+				allocatedNotInUse: entitlementSets[entitlementSet].rights,
+				notAllocatedInUse: 0,
+				installs: [],
+				licensedInstallsAlloc: {},
+				licensedInstallsUnalloc: {},
+			};
+		}
+	},
+
+	consumeRights: function(rightsUsage, entitlementSetsAlloc, entitlementMapAlloc) {
+		var swModelCombo;
+		var swModelComboStr;
+		var entitlementSet;
+		var swModel;
+		var installs;
+		var numberOfInstalls;
+		var maxInstallPerRight;
+		var i;
+		var j;
+		var rightsNeeded = {};
+		var weakPathResult;
+		var strongPathResult;
+		var resultAlloc;
+		var resultUnalloc;
+		var allocatedPass = (entitlementSetsAlloc !== undefined);
+		var weakPath = function (list, callback, thisArg) {
+			for (i = 0; i < list.length; i++) {
+				if (callback.apply(thisArg, [list[i], i, list])) {
+					break;
+				}
+			}
+		};
+		var strongPath = function (list, callback, thisArg) {
+			for (i = list.length - 1; i >= 0; i--) {
+				if (callback.apply(thisArg, [list[i], i, list])) {
+					break;
+				}
+			}
+		};
+
+		// Allocated Pass
+		if (allocatedPass) {
+			weakPathResult = this.tryPath(this.installs, entitlementSetsAlloc, entitlementMapAlloc, weakPath);
+			strongPathResult = this.tryPath(this.installs, entitlementSetsAlloc, entitlementMapAlloc, strongPath);
+			resultAlloc = this.selectPath(weakPathResult, strongPathResult);
+			this.processAllocatedResults(resultAlloc, rightsUsage);
+		} else {
+			resultAlloc = {
+				compliant: false,
+				licensedInstallsAlloc: {},
+				unlicensedInstalls: this.installs,
+			};
+		}
+
+		// Unallocated Pass
+		if (!resultAlloc.compliant) {
+			weakPathResult = this.tryPath(resultAlloc.unlicensedInstalls, this.entitlementSets, this.entitlementMap,
+				weakPath);
+			strongPathResult = this.tryPath(resultAlloc.unlicensedInstalls, this.entitlementSets, this.entitlementMap,
+				strongPath);
+			resultUnalloc = this.selectPath(weakPathResult, strongPathResult);
+			this.processUnallocatedResults(resultUnalloc, rightsUsage);
+
+			// Calculate rights needed
+			if (!resultUnalloc.compliant && !allocatedPass && this.calculateRightsNeeded) {
+				var swModelComboGroup = this.findRelated(Object.keys(resultUnalloc.unlicensedInstalls).sort());
+				for (i = 0; i < swModelComboGroup.length; i++) {
+					installs = [];
+					numberOfInstalls = 0;
+					swModelCombo = swModelComboGroup[i];
+					swModelComboStr = swModelCombo.join(',');
+					entitlementSet = this.entitlementMap.cheapest[swModelComboStr];
+					swModel = this.entitlementSets[entitlementSet].swModel;
+					maxInstallPerRight = this.getMaxInstallPerRight(swModel);
+					for (j = 0; j < swModelCombo.length; j++) {
+						var unlicensedInstalls = resultUnalloc.unlicensedInstalls[swModelCombo[j]];
+						numberOfInstalls += unlicensedInstalls.length;
+						installs.push.apply(installs, this.restoreSuiteInstalls(unlicensedInstalls, swModelCombo[j]));
+					}
+					rightsNeeded[entitlementSet] = {
+						rights: Math.max(1, Math.ceil(numberOfInstalls / maxInstallPerRight)),
+						swModelCombo: swModelComboStr,
+						unlicensedInstalls: installs,
+					};
+				}
+			}
+		}
+
+		return rightsNeeded;
+	},
+
+	cloneInstall: function(installs) {
+		var installCopy = {};
+		for (var model in installs) {
+			installCopy[model] = installs[model].slice();
+		}
+		return installCopy;
+	},
+
+	cloneEntitlementSets: function(entitlementSets) {
+		var entSetsCopy = {};
+		for (var entSet in entitlementSets) {
+			entSetsCopy[entSet] = {
+				swModel: entitlementSets[entSet].swModel,
+				rights: entitlementSets[entSet].rights,
+			};
+		}
+		return entSetsCopy;
+	},
+
+	tryPath: function(origInstalls, origEntitlementSets, entitlementMap, path) {
+		var model;
+		var entModel;
+		var installsOfModel;
+		var maxInstallPerRight;
+		var entitlement;
+		var entId;
+		var rightsNeeded;
+		var coverageRemaining;
+		var installs = this.cloneInstall(origInstalls);
+		var entitlementSets = this.cloneEntitlementSets(origEntitlementSets);
+		var results = {
+			compliant: true,
+			numberOfLicensedInstalls: 0,
+			usedRightsCnt: 0,
+			usedRights: {},
+			licensedInstalls: {},
+			unlicensedInstalls: installs,
+		};
+
+		// Sort install models in descendent order by downgrade rank
+		var that = this;
+		var installModels = Object.keys(installs).sort(function(a, b) {
+			return that.downgradeRank[b] - that.downgradeRank[a];
+		});
+
+		var entsInUse = {}; // key: sys id of entitlement set; value: number of remaining coverage
+
+		var grantLicense = function (entSet, swModel, count, list, rights) {
+			results.numberOfLicensedInstalls += count;
+			var entUsed = results.licensedInstalls[entSet] || {};
+			results.licensedInstalls[entSet] = entUsed;
+			var licensedInstalls = entUsed[swModel] || { installs: [], rights: 0 };
+			entUsed[swModel] = licensedInstalls;
+			licensedInstalls.rights += rights;
+			licensedInstalls.installs.push.apply(licensedInstalls.installs, list.slice(0, count));
+			list.splice(0, count);
+		};
+
+		var coverInstall = function (ent) {
+			entitlement = entitlementSets[ent];
+			entModel = entitlementSets[ent].swModel;
+			maxInstallPerRight = this.getMaxInstallPerRight(entModel);
+			rightsNeeded = Math.max(1, Math.ceil(installsOfModel.length / maxInstallPerRight));
+			if (entitlement.rights >= rightsNeeded) {
+				entitlement.rights -= rightsNeeded;
+				results.usedRightsCnt += rightsNeeded;
+				results.usedRights[ent] = results.usedRights.hasOwnProperty(ent)
+					? results.usedRights[ent] + rightsNeeded
+					: rightsNeeded;
+				coverageRemaining = rightsNeeded * maxInstallPerRight - installsOfModel.length;
+				grantLicense(ent, model, installsOfModel.length, installsOfModel, rightsNeeded);
+				if (coverageRemaining > 0) {
+					entsInUse[ent] = coverageRemaining;
+				}
+				return true; // break the loop
+			}
+
+			// can't cover all
+			if (entitlement.rights > 0) {
+				results.usedRightsCnt += entitlement.rights;
+				results.usedRights[ent] = results.usedRights.hasOwnProperty(ent)
+					? results.usedRights[ent] + entitlement.rights
+					: entitlement.rights;
+				grantLicense(ent, model, entitlement.rights * maxInstallPerRight, installsOfModel,
+					entitlement.rights);
+				entitlement.rights = 0;
+			}
+			return false;
+		};
+
+		for (var i = 0; i < installModels.length; i++) {
+			model = installModels[i];
+			installsOfModel = installs[model];
+
+			// From partially used entitlement
+			var unfinished = Object.keys(entsInUse);
+			for (var j = 0; j < unfinished.length; j++) {
+				if (entitlementMap.get(model)) {
+					entId = unfinished[j];
+					if (entitlementMap.get(model).indexOf(entId) >= 0) { // can the entitlement be applied to the model?
+						if (entsInUse[entId] > installsOfModel.length) { // cover all installs?
+							grantLicense(entId, model, installsOfModel.length, installsOfModel, 1);
+							entsInUse[entId] -= installsOfModel.length;
+							break;
+						} else {
+							grantLicense(entId, model, entsInUse[entId], installsOfModel, 1);
+							delete entsInUse[entId];
+						}
+					}
+				}
+			}
+
+			// all covered?
+			if (installsOfModel.length === 0) {
+				delete installs[model];
+				continue;
+			}
+
+			// From new entitlement
+			if (entitlementMap.get(model)) {
+				path(entitlementMap.get(model), coverInstall, this);
+			}
+
+			if (installsOfModel.length > 0) {
+				results.compliant = false;
+			} else {
+				delete installs[model];
+			}
+		}
+
+		return results;
+	},
+
+	selectPath: function(weak, strong) {
+		if (weak.compliant !== strong.compliant) {
+			return strong.compliant ? strong : weak;
+		}
+
+		if (weak.compliant) {
+			return strong.usedRightsCnt < weak.usedRightsCnt ? strong : weak;
+		}
+
+		return strong.numberOfLicensedInstalls > weak.numberOfLicensedInstalls ? strong : weak;
+	},
+
+	processAllocatedResults: function(resultAlloc, rightsUsage) {
+		var usedRights = resultAlloc.usedRights;
+		var licensedInstalls = resultAlloc.licensedInstalls;
+		for (var entSet in usedRights) {
+			rightsUsage[entSet].allocatedInUse += usedRights[entSet];
+			rightsUsage[entSet].allocatedNotInUse -= usedRights[entSet];
+			rightsUsage[entSet].installs = Object.keys(licensedInstalls[entSet]);
+			this.restoreSuiteInstallsForEntSet(licensedInstalls[entSet]);
+			rightsUsage[entSet].licensedInstallsAlloc = licensedInstalls[entSet];
+			this.entitlementSets[entSet].allocatedInUse += usedRights[entSet];
+			this.entitlementSets[entSet].allocatedNotInUse -= usedRights[entSet];
+		}
+	},
+
+	processUnallocatedResults: function(resultUnalloc, rightsUsage) {
+		var usedRights = resultUnalloc.usedRights;
+		var licensedInstallsUnalloc = resultUnalloc.licensedInstalls;
+		for (var entSet in usedRights) {
+			if (!rightsUsage.hasOwnProperty(entSet)) {
+				rightsUsage[entSet] = {
+					allocatedInUse: 0,
+					allocatedNotInUse: 0,
+					notAllocatedInUse: 0,
+					installs: [],
+					licensedInstallsAlloc: {},
+					licensedInstallsUnalloc: {},
+				};
+			}
+			rightsUsage[entSet].notAllocatedInUse += usedRights[entSet];
+			this.entitlementSets[entSet].notAllocatedInUse += usedRights[entSet];
+			this.entitlementSets[entSet].rights -= usedRights[entSet];
+			var installs = licensedInstallsUnalloc.hasOwnProperty(entSet)
+				? Object.keys(licensedInstallsUnalloc[entSet])
+				: [];
+			if (rightsUsage[entSet].installs.length === 0) {
+				rightsUsage[entSet].installs = installs;
+			} else {
+				for (var i = 0; i < installs.length; i++) {
+					if (rightsUsage[entSet].installs.indexOf(installs[i]) === -1) {
+						rightsUsage[entSet].installs.push(installs[i]);
+					}
+				}
+			}
+			// Put the actual installs back if suites
+			this.restoreSuiteInstallsForEntSet(licensedInstallsUnalloc[entSet]);
+			rightsUsage[entSet].licensedInstallsUnalloc = licensedInstallsUnalloc[entSet];
+		}
+	},
+
+	// Put the actual installs back to rightsUsage to replace the device
+	restoreSuiteInstallsForEntSet: function(rightsUsageForEntSet) {
+		for (var model in rightsUsageForEntSet) {
+			rightsUsageForEntSet[model].installs = this.restoreSuiteInstalls(rightsUsageForEntSet[model].installs,
+				model);
+		}
+	},
+
+	restoreSuiteInstalls: function(installs, model) {
+		var actualInstalls = [];
+		for (var i = 0; i < installs.length; i++) {
+			// if the install is a device, it means it's a suite
+			if (this.suiteInstalls.hasOwnProperty(this.currConsumer)
+				&& this.suiteInstalls[this.currConsumer].hasOwnProperty(model)
+				&& this.suiteInstalls[this.currConsumer][model].hasOwnProperty(installs[i])) {
+				actualInstalls.push.apply(actualInstalls, this.suiteInstalls[this.currConsumer][model][installs[i]]);
+			} else { // not suite
+				actualInstalls.push(installs[i]);
+			}
+		}
+		return actualInstalls;
+	},
+
+	updateDowngradeRightsUsage: function(rightsUsage) {
+		var usage;
+		var licensedInstallsAlloc;
+		var licensedInstallsUnalloc;
+		var downgradeUsage;
+		var swModel;
+		for (var entitlementSet in rightsUsage) {
+			usage = rightsUsage[entitlementSet];
+			licensedInstallsAlloc = usage.licensedInstallsAlloc;
+			licensedInstallsUnalloc = usage.licensedInstallsUnalloc;
+			for (swModel in licensedInstallsAlloc) {
+				if ((this.entitlementSets[entitlementSet].downgradeModels || '').indexOf(swModel) !== -1) {
+					downgradeUsage = this.downgradeRightsUsage[entitlementSet][swModel];
+					downgradeUsage.allocatedInUse += licensedInstallsAlloc[swModel].rights;
+					downgradeUsage.allocatedNotInUse += usage.allocatedNotInUse;
+				}
+			}
+			for (swModel in licensedInstallsUnalloc) {
+				if ((this.entitlementSets[entitlementSet].downgradeModels || '').indexOf(swModel) !== -1) {
+					downgradeUsage = this.downgradeRightsUsage[entitlementSet][swModel];
+					downgradeUsage.notAllocatedInUse += licensedInstallsUnalloc[swModel].rights;
+				}
+			}
+		}
+	},
+
+	markInstallsAfterAssignment: function(rightsUsage) {
+		for (var entSet in rightsUsage) {
+			this.markInstallsforEntitlement(entSet, rightsUsage[entSet].licensedInstallsAlloc, true);
+			this.markInstallsforEntitlement(entSet, rightsUsage[entSet].licensedInstallsUnalloc, false);
+		}
+	},
+
+	markInstallsforEntitlement: function(entSet, licensedInstalls, isAllocated) {
+		var installs = [];
+		for (var model in licensedInstalls) {
+			installs.push.apply(installs, licensedInstalls[model].installs);
+		}
+		var entitlementSet = isAllocated ? '1' + entSet : '0' + entSet;
+		this.licensedEntities[entitlementSet] = this.licensedEntities[entitlementSet] || [];
+		this.licensedEntities[entitlementSet].push.apply(this.licensedEntities[entitlementSet], installs);
+		if (this.licensedEntities[entitlementSet].length >= ReconciliationConstants.BATCHSIZE) {
+			this.markLicensedEntities(entitlementSet);
+			this.licensedEntities[entitlementSet] = [];
+		}
+	},
+
+	markUnlicensedInstallsAfterAssignment: function(rightsNeeded) {
+		var entitlementSet;
+		var installs;
+		for (entitlementSet in rightsNeeded) {
+			installs = rightsNeeded[entitlementSet].unlicensedInstalls;
+			this.unlicensedEntities[entitlementSet] = this.unlicensedEntities[entitlementSet] || [];
+			this.unlicensedEntities[entitlementSet].push.apply(this.unlicensedEntities[entitlementSet], installs);
+			if (this.unlicensedEntities[entitlementSet].length >= ReconciliationConstants.BATCHSIZE) {
+				this.markUnlicensedEntities(entitlementSet);
+				this.unlicensedEntities[entitlementSet] = [];
+			}
+		}
+	},
+
+	type: 'SamCommonClientLicenseCalculator',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:50:08</sys_created_on>
+        <sys_id>58d4ade847111110c859fee3846d4385</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamCommonClientLicenseCalculator</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_58d4ade847111110c859fee3846d4385</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:50:08</sys_updated_on>
+    </sys_script_include>
+    <sys_update_version action="INSERT_OR_UPDATE">
+        <action>DELETE</action>
+        <application display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</application>
+        <file_path/>
+        <instance_id>4e2646e7dbf513888264f70fbf96195b</instance_id>
+        <instance_name>dev58455</instance_name>
+        <name>sys_script_include_58d4ade847111110c859fee3846d4385</name>
+        <payload>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;record_update table="sys_script_include"&gt;&lt;sys_script_include action="INSERT_OR_UPDATE"&gt;&lt;access&gt;public&lt;/access&gt;&lt;active&gt;true&lt;/active&gt;&lt;api_name&gt;x_807586_sam_scrip.SamCommonClientLicenseCalculator&lt;/api_name&gt;&lt;caller_access/&gt;&lt;client_callable&gt;false&lt;/client_callable&gt;&lt;description/&gt;&lt;name&gt;SamCommonClientLicenseCalculator&lt;/name&gt;&lt;script&gt;&lt;![CDATA[var SamCommonClientLicenseCalculator = Class.create();
+SamCommonClientLicenseCalculator.prototype = Object.extendsObject(SamLicenseCalculator, {
+	initialize: function (metric, coreCompany, product, reconResult, singleLicenseMetric, calculateRightsNeeded) {
+		var entitlementConfig = {
+			parent: 'swModel',
+			children: 'downgradeModels',
+			mode: ReconciliationConstants.ENTITLEMENT_MAP_MODE.NO_GROUPING,
+		};
+		SamLicenseCalculator.prototype.initialize.call(this, metric, ReconciliationConstants.COMMON_METRIC_GROUP,
+			coreCompany, product, reconResult, entitlementConfig, singleLicenseMetric, calculateRightsNeeded);
+
+		this.suiteInstalls = {};
+		if (metric === LicenseMetric.PER_USER || metric === LicenseMetric.PER_NAMED_USER) {
+			this.allocationCol = 'assigned_to';
+			this.installCol = 'assigned_to';
+			this.table = 'sys_user';
+		} else {
+			this.allocationCol = 'allocated_to';
+			this.installCol = 'installed_on';
+			this.table = 'cmdb_ci_hardware';
+		}
+		this.currConsumer = '';
+	},
+
+	runAllocatedPass: function() {
+		var consumersInBatch = [];
+		var installsInBatch = {};
+		var i;
+
+		var allocatedConsumerGr = this.getConsumersWithAllocation();
+		while (allocatedConsumerGr.next()) {
+			consumersInBatch.push(allocatedConsumerGr.getValue(this.allocationCol));
+			if (consumersInBatch.length &gt;= ReconciliationConstants.BATCHSIZE) {
+				// Start to consume rights
+				installsInBatch = this.getInstallsOfConsumerInBatch(consumersInBatch);
+				for (i = 0; i &lt; consumersInBatch.length; i++) {
+					this.installs = installsInBatch[consumersInBatch[i]] || {};
+					this.runAllocatedPassForConsumer(consumersInBatch[i]);
+				}
+
+				// Clean up batch
+				consumersInBatch = [];
+				installsInBatch = {};
+			}
+		}
+
+		// flush the batch
+		installsInBatch = this.getInstallsOfConsumerInBatch(consumersInBatch);
+		for (i = 0; i &lt; consumersInBatch.length; i++) {
+			this.installs = installsInBatch[consumersInBatch[i]] || {};
+			this.runAllocatedPassForConsumer(consumersInBatch[i]);
+		}
+	},
+
+	runAllocatedPassForConsumer: function(consumer) {
+		var entitlementSetsAlloc;
+		var entitlementMapAlloc;
+		var rightsUsage = {};
+		var consumerInfo = {
+			sysId: consumer,
+			virtual: null,
+			table: this.table,
+		};
+		this.currConsumer = consumer;
+
+		entitlementSetsAlloc = this.getAllocatedEntitlementSet(this.currConsumer);
+		this.initRightsUsage(rightsUsage, entitlementSetsAlloc);
+		this.debug('Allocated pass', 'Consumer: ' + consumer, 'Installs: ' + JSON.stringify(this.installs));
+
+		if (Object.keys(this.installs).length !== 0) {
+			entitlementMapAlloc = this.generateEntitlementMap(entitlementSetsAlloc);
+			this.debug('Allocated pass', 'Consumer: ' + consumer,
+				'Allocated entitlement sets: ' + JSON.stringify(entitlementSetsAlloc));
+			this.debug('Allocated pass', 'Consumer: ' + consumer,
+				'Unallocated entitlement sets: ' + JSON.stringify(this.entitlementSets));
+
+			this.consumeRights(rightsUsage, entitlementSetsAlloc, entitlementMapAlloc);
+			this.debug('Allocated Pass', 'Consumer: ' + consumer,
+				'Allocated entitlement map: ' + JSON.stringify(entitlementMapAlloc.map));
+			this.debug('Allocated Pass', 'Consumer: ' + consumer,
+				'Unallocated entitlement map: ' + JSON.stringify(this.entitlementMap.map));
+			this.debug('Allocated pass', 'Consumer: ' + consumer, 'Rights usage: ' + JSON.stringify(rightsUsage));
+
+			this.updateDowngradeRightsUsage(rightsUsage);
+			this.markInstallsAfterAssignment(rightsUsage);
+		}
+		this.generateRightsUsedByForConsumer(rightsUsage, consumerInfo);
+	},
+
+	// consumerTable: Per user uses sys_user for installs with assigned_to
+	// and cmdb_ci_computer for installs without assigned_to
+	runUnallocatedPassForConsumer: function(consumer, consumerTable) {
+		var rightsUsage = {};
+		var consumerInfo = {
+			sysId: consumer,
+			virtual: null,
+			table: consumerTable,
+		};
+		this.currConsumer = consumer;
+		this.debug('Unallocated pass', 'Consumer: ' + consumer, 'Installs: ' + JSON.stringify(this.installs));
+		this.debug('Unallocated pass', 'Consumer: ' + consumer,
+			'Unallocated entitlement sets: ' + JSON.stringify(this.entitlementSets));
+
+		var rightsNeeded = this.consumeRights(rightsUsage);
+		this.debug('Unallocated Pass', 'Consumer: ' + consumer,
+			'Entitlement map: ' + JSON.stringify(this.entitlementMap.map));
+
+		if (Object.keys(rightsUsage).length !== 0) {
+			this.updateDowngradeRightsUsage(rightsUsage);
+			this.generateRightsUsedByForConsumer(rightsUsage, consumerInfo);
+			this.markInstallsAfterAssignment(rightsUsage);
+			this.debug('Unallocated pass', 'Consumer: ' + consumer, 'Rights usage: ' + JSON.stringify(rightsUsage));
+		}
+
+		if (Object.keys(rightsNeeded).length !== 0) {
+			this.generateRightsNeededByForConsumer(rightsNeeded, consumerInfo);
+			this.markUnlicensedInstallsAfterAssignment(rightsNeeded);
+			this.debug('Unallocated pass', 'Consumer: ' + consumer, 'Rights needed: ' + JSON.stringify(rightsNeeded));
+		}
+	},
+
+	generateRightsUsedBy: function(entitlementSet, consumerInfo, lmrUsage, cachedDevice) {
+		if (this.fisSAMPActive) { this._generateRightsUsedExplanationObject(lmrUsage, consumerInfo); }
+		SamLicenseCalculator.prototype.generateRightsUsedBy.call(this,
+			entitlementSet, consumerInfo, lmrUsage, cachedDevice);
+	},
+
+	generateRightsNeededBy: function(entitlementSet, consumerInfo, rightsNeededByEntSet) {
+		if (this.fisSAMPActive) {
+			this._generateExplanationObject(consumerInfo,
+				rightsNeededByEntSet.rights, rightsNeededByEntSet.unlicensedInstalls.length);
+		}
+		SamLicenseCalculator.prototype.generateRightsNeededBy.call(this,
+			entitlementSet, consumerInfo, rightsNeededByEntSet);
+	},
+
+	_generateRightsUsedExplanationObject: function(lmr, consumerInfo) {
+		var rights = lmr.allocatedInUse + lmr.allocatedNotInUse + lmr.notAllocatedInUse;
+		var installCount = this._getInstallCountFromObject(lmr.licensedInstallsAlloc)
+			+ this._getInstallCountFromObject(lmr.licensedInstallsUnalloc);
+
+		this._generateExplanationObject(consumerInfo, rights, installCount);
+	},
+
+	_getInstallCountFromObject: function(obj) {
+		var count = 0;
+		Object.keys(obj).forEach(function(key) {
+			count += obj[key].installs.length;
+		});
+		return count;
+	},
+
+	_generateExplanationObject: function(consumerInfo, rights, installCount) {
+		consumerInfo.explanation = [{
+			licensable_installs: installCount,
+			licenses_required: rights,
+			exceeded_attributes: (rights &gt; 1 || installCount &gt; 1) ? ReconciliationConstants.MAX_INSTALL_PER_RIGHT : '',
+		}];
+
+		var reqByCol = consumerInfo.table === ReconciliationConstants.CMDB_CI_HARDWARE_TABLE
+			? 'required_by_device' : 'required_by_user';
+		consumerInfo.explanation[0][reqByCol] = consumerInfo.sysId;
+	},
+
+	// Not using this.installCol, since in Per User, we could query installs on device
+	getInstallsOfConsumerInBatch: function(consumers, col) {
+		var installCol = col || this.installCol;
+		var installs = {};
+		var consumer;
+		var swModel;
+		var device;
+		this.suiteInstalls = {};
+		var installsGr = new SampRecord(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+		installsGr.addEncodedQuery(this.generateInstallQuery(''));
+		installsGr.addQuery('norm_publisher', this.coreCompanyId);
+		installsGr.addQuery(installCol, 'IN', consumers);
+		installsGr.addQuery('is_reconciled', false);
+		installsGr.query();
+
+		while (installsGr.next()) {
+			consumer = installsGr.getValue(installCol);
+			installs[consumer] = installs[consumer] || {};
+			if (installsGr.getValue('norm_product') === this.fSoftwareProduct) {
+				swModel = installsGr.getValue('software_model');
+				(installs[consumer][swModel] = installs[consumer][swModel] || []).push(installsGr.getUniqueValue());
+			} else { // Suites
+				device = installsGr.getValue('installed_on');
+				swModel = installsGr.getValue('inferred_suite');
+				this.suiteInstalls[consumer] = this.suiteInstalls[consumer] || {};
+				this.suiteInstalls[consumer][swModel] = this.suiteInstalls[consumer][swModel] || {};
+				(this.suiteInstalls[consumer][swModel][device] = this.suiteInstalls[consumer][swModel][device] || [])
+					.push(installsGr.getUniqueValue());
+				installs[consumer][swModel] = installs[consumer][swModel] || [];
+				if (installs[consumer][swModel].indexOf(device) === -1) {
+					installs[consumer][swModel].push(device);
+				}
+			}
+		}
+		return installs;
+	},
+
+	initRightsUsage: function(rightsUsage, entitlementSets) {
+		for (var entitlementSet in entitlementSets) {
+			rightsUsage[entitlementSet] = {
+				allocatedInUse: 0,
+				allocatedNotInUse: entitlementSets[entitlementSet].rights,
+				notAllocatedInUse: 0,
+				installs: [],
+				licensedInstallsAlloc: {},
+				licensedInstallsUnalloc: {},
+			};
+		}
+	},
+
+	consumeRights: function(rightsUsage, entitlementSetsAlloc, entitlementMapAlloc) {
+		var swModelCombo;
+		var swModelComboStr;
+		var entitlementSet;
+		var swModel;
+		var installs;
+		var numberOfInstalls;
+		var maxInstallPerRight;
+		var i;
+		var j;
+		var rightsNeeded = {};
+		var weakPathResult;
+		var strongPathResult;
+		var resultAlloc;
+		var resultUnalloc;
+		var allocatedPass = (entitlementSetsAlloc !== undefined);
+		var weakPath = function (list, callback, thisArg) {
+			for (i = 0; i &lt; list.length; i++) {
+				if (callback.apply(thisArg, [list[i], i, list])) {
+					break;
+				}
+			}
+		};
+		var strongPath = function (list, callback, thisArg) {
+			for (i = list.length - 1; i &gt;= 0; i--) {
+				if (callback.apply(thisArg, [list[i], i, list])) {
+					break;
+				}
+			}
+		};
+
+		// Allocated Pass
+		if (allocatedPass) {
+			weakPathResult = this.tryPath(this.installs, entitlementSetsAlloc, entitlementMapAlloc, weakPath);
+			strongPathResult = this.tryPath(this.installs, entitlementSetsAlloc, entitlementMapAlloc, strongPath);
+			resultAlloc = this.selectPath(weakPathResult, strongPathResult);
+			this.processAllocatedResults(resultAlloc, rightsUsage);
+		} else {
+			resultAlloc = {
+				compliant: false,
+				licensedInstallsAlloc: {},
+				unlicensedInstalls: this.installs,
+			};
+		}
+
+		// Unallocated Pass
+		if (!resultAlloc.compliant) {
+			weakPathResult = this.tryPath(resultAlloc.unlicensedInstalls, this.entitlementSets, this.entitlementMap,
+				weakPath);
+			strongPathResult = this.tryPath(resultAlloc.unlicensedInstalls, this.entitlementSets, this.entitlementMap,
+				strongPath);
+			resultUnalloc = this.selectPath(weakPathResult, strongPathResult);
+			this.processUnallocatedResults(resultUnalloc, rightsUsage);
+
+			// Calculate rights needed
+			if (!resultUnalloc.compliant &amp;&amp; !allocatedPass &amp;&amp; this.calculateRightsNeeded) {
+				var swModelComboGroup = this.findRelated(Object.keys(resultUnalloc.unlicensedInstalls).sort());
+				for (i = 0; i &lt; swModelComboGroup.length; i++) {
+					installs = [];
+					numberOfInstalls = 0;
+					swModelCombo = swModelComboGroup[i];
+					swModelComboStr = swModelCombo.join(',');
+					entitlementSet = this.entitlementMap.cheapest[swModelComboStr];
+					swModel = this.entitlementSets[entitlementSet].swModel;
+					maxInstallPerRight = this.getMaxInstallPerRight(swModel);
+					for (j = 0; j &lt; swModelCombo.length; j++) {
+						var unlicensedInstalls = resultUnalloc.unlicensedInstalls[swModelCombo[j]];
+						numberOfInstalls += unlicensedInstalls.length;
+						installs.push.apply(installs, this.restoreSuiteInstalls(unlicensedInstalls, swModelCombo[j]));
+					}
+					rightsNeeded[entitlementSet] = {
+						rights: Math.max(1, Math.ceil(numberOfInstalls / maxInstallPerRight)),
+						swModelCombo: swModelComboStr,
+						unlicensedInstalls: installs,
+					};
+				}
+			}
+		}
+
+		return rightsNeeded;
+	},
+
+	cloneInstall: function(installs) {
+		var installCopy = {};
+		for (var model in installs) {
+			installCopy[model] = installs[model].slice();
+		}
+		return installCopy;
+	},
+
+	cloneEntitlementSets: function(entitlementSets) {
+		var entSetsCopy = {};
+		for (var entSet in entitlementSets) {
+			entSetsCopy[entSet] = {
+				swModel: entitlementSets[entSet].swModel,
+				rights: entitlementSets[entSet].rights,
+			};
+		}
+		return entSetsCopy;
+	},
+
+	tryPath: function(origInstalls, origEntitlementSets, entitlementMap, path) {
+		var model;
+		var entModel;
+		var installsOfModel;
+		var maxInstallPerRight;
+		var entitlement;
+		var entId;
+		var rightsNeeded;
+		var coverageRemaining;
+		var installs = this.cloneInstall(origInstalls);
+		var entitlementSets = this.cloneEntitlementSets(origEntitlementSets);
+		var results = {
+			compliant: true,
+			numberOfLicensedInstalls: 0,
+			usedRightsCnt: 0,
+			usedRights: {},
+			licensedInstalls: {},
+			unlicensedInstalls: installs,
+		};
+
+		// Sort install models in descendent order by downgrade rank
+		var that = this;
+		var installModels = Object.keys(installs).sort(function(a, b) {
+			return that.downgradeRank[b] - that.downgradeRank[a];
+		});
+
+		var entsInUse = {}; // key: sys id of entitlement set; value: number of remaining coverage
+
+		var grantLicense = function (entSet, swModel, count, list, rights) {
+			results.numberOfLicensedInstalls += count;
+			var entUsed = results.licensedInstalls[entSet] || {};
+			results.licensedInstalls[entSet] = entUsed;
+			var licensedInstalls = entUsed[swModel] || { installs: [], rights: 0 };
+			entUsed[swModel] = licensedInstalls;
+			licensedInstalls.rights += rights;
+			licensedInstalls.installs.push.apply(licensedInstalls.installs, list.slice(0, count));
+			list.splice(0, count);
+		};
+
+		var coverInstall = function (ent) {
+			entitlement = entitlementSets[ent];
+			entModel = entitlementSets[ent].swModel;
+			maxInstallPerRight = this.getMaxInstallPerRight(entModel);
+			rightsNeeded = Math.max(1, Math.ceil(installsOfModel.length / maxInstallPerRight));
+			if (entitlement.rights &gt;= rightsNeeded) {
+				entitlement.rights -= rightsNeeded;
+				results.usedRightsCnt += rightsNeeded;
+				results.usedRights[ent] = results.usedRights.hasOwnProperty(ent)
+					? results.usedRights[ent] + rightsNeeded
+					: rightsNeeded;
+				coverageRemaining = rightsNeeded * maxInstallPerRight - installsOfModel.length;
+				grantLicense(ent, model, installsOfModel.length, installsOfModel, rightsNeeded);
+				if (coverageRemaining &gt; 0) {
+					entsInUse[ent] = coverageRemaining;
+				}
+				return true; // break the loop
+			}
+
+			// can't cover all
+			if (entitlement.rights &gt; 0) {
+				results.usedRightsCnt += entitlement.rights;
+				results.usedRights[ent] = results.usedRights.hasOwnProperty(ent)
+					? results.usedRights[ent] + entitlement.rights
+					: entitlement.rights;
+				grantLicense(ent, model, entitlement.rights * maxInstallPerRight, installsOfModel,
+					entitlement.rights);
+				entitlement.rights = 0;
+			}
+			return false;
+		};
+
+		for (var i = 0; i &lt; installModels.length; i++) {
+			model = installModels[i];
+			installsOfModel = installs[model];
+
+			// From partially used entitlement
+			var unfinished = Object.keys(entsInUse);
+			for (var j = 0; j &lt; unfinished.length; j++) {
+				if (entitlementMap.get(model)) {
+					entId = unfinished[j];
+					if (entitlementMap.get(model).indexOf(entId) &gt;= 0) { // can the entitlement be applied to the model?
+						if (entsInUse[entId] &gt; installsOfModel.length) { // cover all installs?
+							grantLicense(entId, model, installsOfModel.length, installsOfModel, 1);
+							entsInUse[entId] -= installsOfModel.length;
+							break;
+						} else {
+							grantLicense(entId, model, entsInUse[entId], installsOfModel, 1);
+							delete entsInUse[entId];
+						}
+					}
+				}
+			}
+
+			// all covered?
+			if (installsOfModel.length === 0) {
+				delete installs[model];
+				continue;
+			}
+
+			// From new entitlement
+			if (entitlementMap.get(model)) {
+				path(entitlementMap.get(model), coverInstall, this);
+			}
+
+			if (installsOfModel.length &gt; 0) {
+				results.compliant = false;
+			} else {
+				delete installs[model];
+			}
+		}
+
+		return results;
+	},
+
+	selectPath: function(weak, strong) {
+		if (weak.compliant !== strong.compliant) {
+			return strong.compliant ? strong : weak;
+		}
+
+		if (weak.compliant) {
+			return strong.usedRightsCnt &lt; weak.usedRightsCnt ? strong : weak;
+		}
+
+		return strong.numberOfLicensedInstalls &gt; weak.numberOfLicensedInstalls ? strong : weak;
+	},
+
+	processAllocatedResults: function(resultAlloc, rightsUsage) {
+		var usedRights = resultAlloc.usedRights;
+		var licensedInstalls = resultAlloc.licensedInstalls;
+		for (var entSet in usedRights) {
+			rightsUsage[entSet].allocatedInUse += usedRights[entSet];
+			rightsUsage[entSet].allocatedNotInUse -= usedRights[entSet];
+			rightsUsage[entSet].installs = Object.keys(licensedInstalls[entSet]);
+			this.restoreSuiteInstallsForEntSet(licensedInstalls[entSet]);
+			rightsUsage[entSet].licensedInstallsAlloc = licensedInstalls[entSet];
+			this.entitlementSets[entSet].allocatedInUse += usedRights[entSet];
+			this.entitlementSets[entSet].allocatedNotInUse -= usedRights[entSet];
+		}
+	},
+
+	processUnallocatedResults: function(resultUnalloc, rightsUsage) {
+		var usedRights = resultUnalloc.usedRights;
+		var licensedInstallsUnalloc = resultUnalloc.licensedInstalls;
+		for (var entSet in usedRights) {
+			if (!rightsUsage.hasOwnProperty(entSet)) {
+				rightsUsage[entSet] = {
+					allocatedInUse: 0,
+					allocatedNotInUse: 0,
+					notAllocatedInUse: 0,
+					installs: [],
+					licensedInstallsAlloc: {},
+					licensedInstallsUnalloc: {},
+				};
+			}
+			rightsUsage[entSet].notAllocatedInUse += usedRights[entSet];
+			this.entitlementSets[entSet].notAllocatedInUse += usedRights[entSet];
+			this.entitlementSets[entSet].rights -= usedRights[entSet];
+			var installs = licensedInstallsUnalloc.hasOwnProperty(entSet)
+				? Object.keys(licensedInstallsUnalloc[entSet])
+				: [];
+			if (rightsUsage[entSet].installs.length === 0) {
+				rightsUsage[entSet].installs = installs;
+			} else {
+				for (var i = 0; i &lt; installs.length; i++) {
+					if (rightsUsage[entSet].installs.indexOf(installs[i]) === -1) {
+						rightsUsage[entSet].installs.push(installs[i]);
+					}
+				}
+			}
+			// Put the actual installs back if suites
+			this.restoreSuiteInstallsForEntSet(licensedInstallsUnalloc[entSet]);
+			rightsUsage[entSet].licensedInstallsUnalloc = licensedInstallsUnalloc[entSet];
+		}
+	},
+
+	// Put the actual installs back to rightsUsage to replace the device
+	restoreSuiteInstallsForEntSet: function(rightsUsageForEntSet) {
+		for (var model in rightsUsageForEntSet) {
+			rightsUsageForEntSet[model].installs = this.restoreSuiteInstalls(rightsUsageForEntSet[model].installs,
+				model);
+		}
+	},
+
+	restoreSuiteInstalls: function(installs, model) {
+		var actualInstalls = [];
+		for (var i = 0; i &lt; installs.length; i++) {
+			// if the install is a device, it means it's a suite
+			if (this.suiteInstalls.hasOwnProperty(this.currConsumer)
+				&amp;&amp; this.suiteInstalls[this.currConsumer].hasOwnProperty(model)
+				&amp;&amp; this.suiteInstalls[this.currConsumer][model].hasOwnProperty(installs[i])) {
+				actualInstalls.push.apply(actualInstalls, this.suiteInstalls[this.currConsumer][model][installs[i]]);
+			} else { // not suite
+				actualInstalls.push(installs[i]);
+			}
+		}
+		return actualInstalls;
+	},
+
+	updateDowngradeRightsUsage: function(rightsUsage) {
+		var usage;
+		var licensedInstallsAlloc;
+		var licensedInstallsUnalloc;
+		var downgradeUsage;
+		var swModel;
+		for (var entitlementSet in rightsUsage) {
+			usage = rightsUsage[entitlementSet];
+			licensedInstallsAlloc = usage.licensedInstallsAlloc;
+			licensedInstallsUnalloc = usage.licensedInstallsUnalloc;
+			for (swModel in licensedInstallsAlloc) {
+				if ((this.entitlementSets[entitlementSet].downgradeModels || '').indexOf(swModel) !== -1) {
+					downgradeUsage = this.downgradeRightsUsage[entitlementSet][swModel];
+					downgradeUsage.allocatedInUse += licensedInstallsAlloc[swModel].rights;
+					downgradeUsage.allocatedNotInUse += usage.allocatedNotInUse;
+				}
+			}
+			for (swModel in licensedInstallsUnalloc) {
+				if ((this.entitlementSets[entitlementSet].downgradeModels || '').indexOf(swModel) !== -1) {
+					downgradeUsage = this.downgradeRightsUsage[entitlementSet][swModel];
+					downgradeUsage.notAllocatedInUse += licensedInstallsUnalloc[swModel].rights;
+				}
+			}
+		}
+	},
+
+	markInstallsAfterAssignment: function(rightsUsage) {
+		for (var entSet in rightsUsage) {
+			this.markInstallsforEntitlement(entSet, rightsUsage[entSet].licensedInstallsAlloc, true);
+			this.markInstallsforEntitlement(entSet, rightsUsage[entSet].licensedInstallsUnalloc, false);
+		}
+	},
+
+	markInstallsforEntitlement: function(entSet, licensedInstalls, isAllocated) {
+		var installs = [];
+		for (var model in licensedInstalls) {
+			installs.push.apply(installs, licensedInstalls[model].installs);
+		}
+		var entitlementSet = isAllocated ? '1' + entSet : '0' + entSet;
+		this.licensedEntities[entitlementSet] = this.licensedEntities[entitlementSet] || [];
+		this.licensedEntities[entitlementSet].push.apply(this.licensedEntities[entitlementSet], installs);
+		if (this.licensedEntities[entitlementSet].length &gt;= ReconciliationConstants.BATCHSIZE) {
+			this.markLicensedEntities(entitlementSet);
+			this.licensedEntities[entitlementSet] = [];
+		}
+	},
+
+	markUnlicensedInstallsAfterAssignment: function(rightsNeeded) {
+		var entitlementSet;
+		var installs;
+		for (entitlementSet in rightsNeeded) {
+			installs = rightsNeeded[entitlementSet].unlicensedInstalls;
+			this.unlicensedEntities[entitlementSet] = this.unlicensedEntities[entitlementSet] || [];
+			this.unlicensedEntities[entitlementSet].push.apply(this.unlicensedEntities[entitlementSet], installs);
+			if (this.unlicensedEntities[entitlementSet].length &gt;= ReconciliationConstants.BATCHSIZE) {
+				this.markUnlicensedEntities(entitlementSet);
+				this.unlicensedEntities[entitlementSet] = [];
+			}
+		}
+	},
+
+	type: 'SamCommonClientLicenseCalculator',
+});]]&gt;&lt;/script&gt;&lt;sys_class_name&gt;sys_script_include&lt;/sys_class_name&gt;&lt;sys_created_by&gt;admin&lt;/sys_created_by&gt;&lt;sys_created_on&gt;2022-08-10 15:50:08&lt;/sys_created_on&gt;&lt;sys_id&gt;58d4ade847111110c859fee3846d4385&lt;/sys_id&gt;&lt;sys_mod_count&gt;0&lt;/sys_mod_count&gt;&lt;sys_name&gt;SamCommonClientLicenseCalculator&lt;/sys_name&gt;&lt;sys_package display_value="SAM Scripts" source="x_807586_sam_scrip"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_package&gt;&lt;sys_policy&gt;protected&lt;/sys_policy&gt;&lt;sys_scope display_value="SAM Scripts"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_scope&gt;&lt;sys_update_name&gt;sys_script_include_58d4ade847111110c859fee3846d4385&lt;/sys_update_name&gt;&lt;sys_updated_by&gt;admin&lt;/sys_updated_by&gt;&lt;sys_updated_on&gt;2022-08-10 15:50:08&lt;/sys_updated_on&gt;&lt;/sys_script_include&gt;&lt;/record_update&gt;</payload>
+        <payload_hash>-1668575446</payload_hash>
+        <record_name>SamCommonClientLicenseCalculator</record_name>
+        <reverted_from/>
+        <source>6ea42de847111110c859fee3846d434c</source>
+        <source_table>sys_update_set</source_table>
+        <state>previous</state>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:50:08</sys_created_on>
+        <sys_id>94d4ade847111110c859fee3846d4387</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_recorded_at>1828872e96c0000001</sys_recorded_at>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:50:08</sys_updated_on>
+        <type>Script Include</type>
+        <update_guid>dcd4ade80611111069e092543e088186</update_guid>
+        <update_guid_history>dcd4ade80611111069e092543e088186:-1668575446</update_guid_history>
+    </sys_update_version>
+    <sys_metadata_delete action="INSERT_OR_UPDATE">
+        <sys_audit_delete/>
+        <sys_class_name>sys_metadata_delete</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:52:23</sys_created_on>
+        <sys_db_object display_value="" name="sys_script_include">sys_script_include</sys_db_object>
+        <sys_id>6623e4d58f94419b982e33aa9321edf9</sys_id>
+        <sys_metadata>58d4ade847111110c859fee3846d4385</sys_metadata>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamCommonClientLicenseCalculator</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_parent/>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_scope_delete display_value="">0011b6f5266e481c80012473557b6490</sys_scope_delete>
+        <sys_update_name>sys_script_include_58d4ade847111110c859fee3846d4385</sys_update_name>
+        <sys_update_version display_value="sys_script_include_58d4ade847111110c859fee3846d4385">94d4ade847111110c859fee3846d4387</sys_update_version>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:52:23</sys_updated_on>
+    </sys_metadata_delete>
+</record_update>

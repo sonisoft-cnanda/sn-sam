@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamFindNormalizationSuggestions</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamFindNormalizationSuggestions</name>
+        <script><![CDATA[var SamFindNormalizationSuggestions = Class.create();
+SamFindNormalizationSuggestions.prototype = Object.extendsObject(AssetManagementPerDomainAssetProcessSettingBaseJob, {
+	initialize: function() {
+	},
+
+	runJob: function() {
+		// Create a job status
+		var sjlGr = new GlideRecord('samp_job_log');
+		sjlGr.setValue('name', 'SAM - Find Normalization Suggestions');
+		sjlGr.insert();
+		try {
+			new global.NormalizationEngine().scheduledNormalization();
+			sjlGr.setValue('status', 'completed');
+		} catch (err) {
+			sjlGr.setValue('status', 'fail');
+		}
+		sjlGr.update();
+	},
+
+	type: 'SamFindNormalizationSuggestions',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:41</sys_created_on>
+        <sys_id>03d52d6c47111110c859fee3846d4347</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamFindNormalizationSuggestions</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_03d52d6c47111110c859fee3846d4347</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:41</sys_updated_on>
+    </sys_script_include>
+</record_update>

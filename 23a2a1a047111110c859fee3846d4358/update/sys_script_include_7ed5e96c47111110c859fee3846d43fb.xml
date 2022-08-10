@@ -1,0 +1,273 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampCentralDataServiceDownloadStatus</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SampCentralDataServiceDownloadStatus</name>
+        <script><![CDATA[var SampCentralDataServiceDownloadStatus = Class.create();
+SampCentralDataServiceDownloadStatus.prototype = {
+
+	initialize: function() {
+		this.repoURL = gs.getProperty('glide.cmdb.canonical.url');
+		this.user = gs.getProperty('instance_id');
+		this.password = this._getPassword();
+		this.download = gs.getProperty('glide.cmdb.canonical.download', 'true');
+	},
+
+	process: function() {
+		var clientSchedule = new GlideRecord('cds_client_schedule');
+
+		var cdsScheduleTables = [
+			'samp_content_version',
+			'samp_sw_publisher',
+			'samp_sw_product',
+			'samp_sw_package',
+			'samp_sw_entitlement_definition',
+			'samp_product_map',
+			'samp_package_map',
+			'samp_sw_product_definition',
+			'samp_sw_product_process',
+			'samp_m2m_suite_entitlement_def',
+			'sam_sw_product_lifecycle',
+			'samp_price_list',
+			'samp_named_user_type',
+			'samp_file_name',
+			'samp_file_map',
+			'samp_file_set',
+			'samp_dmap_downgrade_model',
+			'samp_sw_product_category',
+			'samp_sw_subscription_integration',
+			'samp_sw_subscription_product_definition',
+			'samp_cloud_host_configuration',
+			'samp_sw_product_classification',
+			'samp_language',
+			'samp_oracle_option_set',
+			'samp_pattern_normalization_rule',
+			'samp_processor_map',
+		];
+
+		if (GlidePluginManager.isActive('com.sn_samp_sap')) {
+			cdsScheduleTables.push('samp_sap_license_metric');
+		}
+
+		if (GlidePluginManager.isActive('com.sn_samp_ibm_licensing')) {
+			cdsScheduleTables.push('ibm_sw_product_catalog');
+			cdsScheduleTables.push('ibm_sw_component_mapping');
+			cdsScheduleTables.push('ibm_country_to_region_mapping');
+			cdsScheduleTables.push('ibm_pvu_map');
+		}
+
+		clientSchedule.addQuery('table.table', cdsScheduleTables);
+		clientSchedule.query();
+		while (clientSchedule.next()) {
+			var tableName = clientSchedule.table.table;
+			var serverCount = this.getServerCount(tableName);
+			var clientCount = this.getClientCount(tableName);
+			var lastUpdatedOn = this.getLastUpdatedOn(clientSchedule.sys_id);
+			var nextAction = this.getNextAction(clientSchedule.sys_id);
+
+			this.insertOrUpdateTable(tableName, serverCount, clientCount, lastUpdatedOn, nextAction);
+		}
+	},
+
+	insertOrUpdateTable: function(tableName, serverCount, clientCount, lastUpdatedOn, nextAction) {
+		var cdsScheduleView = new GlideRecord('samp_cds_schedule_view');
+		cdsScheduleView.addQuery('name', tableName);
+		cdsScheduleView.query();
+		if (!cdsScheduleView.next()) {
+			cdsScheduleView.initialize();
+			cdsScheduleView.setValue('name', tableName);
+			cdsScheduleView.setValue('current_count', clientCount);
+			cdsScheduleView.setValue('expected_count', serverCount);
+			cdsScheduleView.setValue('last_updated_on', lastUpdatedOn);
+			cdsScheduleView.setValue('next_action', nextAction);
+			cdsScheduleView.setWorkflow(false);
+			cdsScheduleView.insert();
+		} else {
+			cdsScheduleView.setValue('current_count', clientCount);
+			cdsScheduleView.setValue('expected_count', serverCount);
+			cdsScheduleView.setValue('last_updated_on', lastUpdatedOn);
+			cdsScheduleView.setValue('next_action', nextAction);
+			cdsScheduleView.setWorkflow(false);
+			cdsScheduleView.update();
+		}
+	},
+
+	// Next Action
+	getNextAction: function(sysId) {
+		var sysTriggerTable = new GlideRecord('sys_trigger');
+		sysTriggerTable.addQuery('job_context', 'CONTAINS', sysId);
+		sysTriggerTable.setLimit(1);
+		sysTriggerTable.query();
+		var nextPull = '';
+		if (sysTriggerTable.next()) {
+			nextPull = sysTriggerTable.next_action;
+		}
+		return nextPull;
+	},
+
+	// Last Updated On
+	getLastUpdatedOn: function(sysId) {
+		var cdsScheduleTable = new GlideRecord('cds_client_schedule');
+		cdsScheduleTable.get(sysId);
+		return cdsScheduleTable.last_updated_on;
+	},
+
+	// Client Count
+	getClientCount: function(table) {
+		var contentAndExtendedTablePair = {
+			// Content Tables: Extended Tables
+			samp_sw_publisher: 'samp_custom_sw_publisher',
+			samp_sw_product: 'samp_custom_sw_product',
+			samp_sw_entitlement_definition: 'samp_custom_sw_entitlement_definition',
+			samp_product_map: 'samp_custom_product_map',
+			samp_sw_product_definition: 'samp_custom_sw_product_definition',
+			samp_sw_product_process: 'samp_custom_product_process',
+			samp_named_user_type: 'samp_custom_named_user_type',
+			samp_file_name: 'samp_custom_file_name',
+			samp_sw_subscription_integration: 'samp_sw_custom_subscription_integration',
+			samp_sw_subscription_product_definition: 'samp_sw_custom_subscription_product_definition',
+		};
+
+		var parentGr = new GlideAggregate(table);
+		parentGr.addAggregate('COUNT');
+		parentGr.setGroup(false);
+		parentGr.query();
+
+		var count = 0;
+		if (parentGr.next()) {
+			var parentCount = parentGr.getAggregate('COUNT');
+			var childTable = contentAndExtendedTablePair[table];
+			if (childTable) {
+				var childGr = new GlideAggregate(childTable);
+				childGr.addAggregate('COUNT');
+				childGr.setGroup(false);
+				childGr.query();
+				childGr.next();
+				var childCount = childGr.getAggregate('COUNT');
+				count = parentCount - childCount;
+			} else {
+				count = parentCount;
+			}
+		}
+
+		return count;
+	},
+
+	// Server Count
+	getServerCount: function(table) {
+		if (!this._shouldDownload()) {
+			this.tracker.fail(gs.getMessage('Normalization Sync is disabled'));
+			return undefined;
+		}
+
+		// Check the client registry
+		var gr = new GlideRecord('cds_client_registry');
+		gr.addQuery('table', table);
+		gr.setLimit(1);
+		gr.query();
+		if (gr.next()) {
+			var expectedCount = this.getTotalRecordCount(gr);
+			return expectedCount;
+		}
+
+		return undefined;
+	},
+
+	_getPassword: function() {
+		var password = gs.getProperty('sn_data_services.credential');
+		return GlideStringUtil.notNil(password) ? password : gs.getProperty('sn_apprepo.credential');
+	},
+
+	_getScheduleRecord: function(tableSysId) {
+		var clientSchedule = new GlideRecord('cds_client_schedule');
+		clientSchedule.addQuery('table', tableSysId);
+		clientSchedule.query();
+		return clientSchedule;
+	},
+
+	getTotalRecordCount: function(clientRegistryRecord) {
+		if (!this._shouldDownload()) {
+			this.tracker.fail(gs.getMessage('Normalization Sync is disabled'));
+			return undefined;
+		}
+		return this._retrieveCount(clientRegistryRecord.getValue('server_table'));
+	},
+
+	_retrieveCount: function(serverTable) {
+		var query = '?sysparm_count=true';
+		var url = this.repoURL;
+		var endpoint = url + 'api/now/stats/' + serverTable + query;
+		gs.log('Server endpoint is : ' + endpoint);
+		var request = this._buildRequest(endpoint, 'GET');
+		try {
+			var response = request.execute();
+			if (response.getStatusCode().toString() !== '200') {
+				this.tracker.fail(
+					gs.getMessage(
+						'Failed retrieving data from repository {0}',
+						response.getStatusCode()
+					)
+				);
+				gs.log('Failed retrieving data from repository. ' + response.getStatusCode());
+				gs.log(response.getErrorMessage());
+				return undefined;
+			}
+
+			var parser = new JSONParser();
+			var result = parser.parse(response.getBody()).result;
+
+			var serverCount = result.stats.count;
+			if (isNaN(serverCount) || serverCount === null || serverCount === undefined) {
+				throw new Error('Could not get total count from the response header');
+			}
+
+			return serverCount;
+		} catch (ex) {
+			this.tracker.fail(gs.getMessage('Error retrieving data from repository. {0}', ex));
+			gs.log('Error retrieving data from repository ' + ex);
+		}
+
+		return undefined;
+	},
+
+	_buildRequest: function(endpoint, methodType) {
+		var auth = 'sn_data_services.Dataservices ' + this.user + ' ' + this.password;
+
+		var request = new sn_ws.RESTMessageV2();
+		request.setEndpoint(endpoint);
+		request.setHttpMethod(methodType);
+		request.setRequestHeader('Accept', 'application/json');
+		request.setRequestHeader('Authorization', auth);
+		request.setRequestHeader('Accept-Encoding', 'gzip');
+		return request;
+	},
+
+	_shouldDownload: function() {
+		if (this.download === 'false') {
+			gs.log('Canonicalization download is disabled');
+			return false;
+		}
+
+		return true;
+	},
+
+	type: 'SampCentralDataServiceDownloadStatus',
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:41</sys_created_on>
+        <sys_id>7ed5e96c47111110c859fee3846d43fb</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampCentralDataServiceDownloadStatus</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_7ed5e96c47111110c859fee3846d43fb</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:41</sys_updated_on>
+    </sys_script_include>
+</record_update>

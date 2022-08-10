@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampNotSupportedByolReclamationCandidates</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>BYOL : Not Supported Reclamation Candidates </description>
+        <name>SampNotSupportedByolReclamationCandidates</name>
+        <script><![CDATA[var SampNotSupportedByolReclamationCandidates = Class.create();
+SampNotSupportedByolReclamationCandidates.prototype = {
+
+	initialize: function() {},
+
+	createReclamationCandidatesForBYOL: function() {
+		var ASSIGNMENT_GROUP_DEFAULT = '9ee15afd677222007d59cbb35685efec';
+		var installGr = new GlideRecord('cmdb_sam_sw_install');
+		installGr.addActiveQuery();
+		installGr.addNotNullQuery('norm_product');
+		installGr.addQuery('cloud_provider', ReconciliationConstants.AWS_DATACENTER_CI_TABLE);
+		installGr.addQuery('cloud_host_type', 'shared');
+		installGr.addQuery('norm_product', ReconciliationConstants.MSFT_WINDOWS_SERVER_SYS_ID);
+		installGr.addQuery('cloud_license_type', ReconciliationConstants.LICENSE_TYPE_BYOL);
+		installGr.query();
+		while (installGr.next()) {
+			var reclamationCandidateGr = new GlideRecord('samp_sw_reclamation_candidate');
+			reclamationCandidateGr.addQuery('software_install', installGr.getUniqueValue());
+			reclamationCandidateGr.setLimit(1);
+			reclamationCandidateGr.query();
+			if (!reclamationCandidateGr.next()) {
+				reclamationCandidateGr.initialize();
+				reclamationCandidateGr.software_install = installGr.getUniqueValue();
+				reclamationCandidateGr.assignment_group = ASSIGNMENT_GROUP_DEFAULT;
+				reclamationCandidateGr.days_before_reclamation = 10;
+				reclamationCandidateGr.product = installGr.getValue('norm_product');
+				reclamationCandidateGr.user = installGr.getValue('assigned_to');
+				reclamationCandidateGr.publisher = installGr.getValue('norm_publisher');
+				reclamationCandidateGr.notify_user = true;
+				reclamationCandidateGr.setValue('cmdb_ci', installGr.installed_on);
+				reclamationCandidateGr.setValue('justification', 'unlicensed_cloud_install');
+				if (gs.nil(reclamationCandidateGr.user)) {
+					reclamationCandidateGr.state = 10;
+				} else {
+					reclamationCandidateGr.state = 11;
+				}
+				reclamationCandidateGr.insert();
+			}
+		}
+	},
+
+	type: 'SampNotSupportedByolReclamationCandidates',
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:39</sys_created_on>
+        <sys_id>16d5e96c47111110c859fee3846d43f4</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampNotSupportedByolReclamationCandidates</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_16d5e96c47111110c859fee3846d43f4</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:39</sys_updated_on>
+    </sys_script_include>
+</record_update>

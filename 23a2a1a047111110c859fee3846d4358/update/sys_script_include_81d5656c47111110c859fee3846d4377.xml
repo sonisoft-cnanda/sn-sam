@@ -1,0 +1,1370 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampRemediationAction</api_name>
+        <caller_access/>
+        <client_callable>true</client_callable>
+        <description>SampRemediationAction</description>
+        <name>SampRemediationAction</name>
+        <script><![CDATA[var SampRemediationAction = Class.create();
+SampRemediationAction.prototype = Object.extendsObject(AbstractAjaxProcessor, {
+	LICENSE_METRIC_MS_PER_CORE: 'ef64c370534323005d74ddeeff7b1238',
+	LICENSE_METRIC_MS_PER_CORE_WITH_CAL: '22796ca493322200f2ef14f1b47ffb28',
+
+	createAllAllocations: function(remediationOptionGr) {
+		var rightsUsedByGr = SampRemediationAction.getRightsUsedBy(
+			remediationOptionGr.license_metric,
+			remediationOptionGr.software_model_result,
+			'not_allocated_in_use'
+		);
+
+		var totalAllocationsMade = 0;
+		var sampProcessAllocationObj = new SampProcessAllocations();
+		var numOfCreateAllocationsFound = 0;
+		var numOfAllocationsAvailable = this.getAvailableAllocations(
+			remediationOptionGr.software_model_result.software_model,
+			remediationOptionGr.license_metric
+		);
+
+		// count them only if have LM per user or per named user with no assigned to
+		var rightsUsedByInstallsWithNoAssignedTo = 0;
+
+		// count the total Non_transferrable rights for Microsoft Per Core/Per Core(with CAL)
+
+		while (rightsUsedByGr.next()) {
+			// Make sure for per user or per named user LM,
+			// create allocation only if we have installs with assigned to
+			if (!SampRemediationAction.isCreateUserAllocationActionable(rightsUsedByGr)) {
+				rightsUsedByInstallsWithNoAssignedTo += 1;
+				continue;
+			}
+			if (!sampProcessAllocationObj.isCreateAllocationNeeded(rightsUsedByGr)) {
+				numOfCreateAllocationsFound += rightsUsedByGr.not_allocated_in_use;
+			} else {
+				if (parseInt(rightsUsedByGr.getValue('not_allocated_in_use'), 10) > numOfAllocationsAvailable) { break; }
+
+				var numOfAllocationsMade = sampProcessAllocationObj.processRightsUsedBy(rightsUsedByGr);
+				totalAllocationsMade += numOfAllocationsMade;
+				numOfAllocationsAvailable -= numOfAllocationsMade;
+			}
+			rightsUsedByGr.action_taken = true;
+			rightsUsedByGr.update();
+			this.updateLicensesRequiredByAction(rightsUsedByGr);
+		}
+
+		var actionableRightsRemaining = remediationOptionGr.actionable_rights
+			- totalAllocationsMade - numOfCreateAllocationsFound;
+
+		var rightsWithNoAllocationAvailable = actionableRightsRemaining - rightsUsedByInstallsWithNoAssignedTo;
+
+		this.updateRightsNotAllocated(
+			remediationOptionGr.software_model_result,
+			remediationOptionGr.license_metric,
+			ReconciliationConstants.CREATE_ALLOCATIONS,
+			(totalAllocationsMade + numOfCreateAllocationsFound)
+		);
+
+		var message = '';
+		if (parseInt(actionableRightsRemaining, 10) === 0) {
+			if (numOfCreateAllocationsFound > 0) {
+				message += gs.getMessage('{0} Allocations created successfully. {1} Allocations already exist for the user or device. ',
+					[totalAllocationsMade.toString(), numOfCreateAllocationsFound.toString()]);
+			} else {
+				message += gs.getMessage('All Allocations were successfully created. ');
+			}
+		} else {
+			if (totalAllocationsMade > 0) {
+				message = gs.getMessage('{0} Allocations created successfully.',
+					totalAllocationsMade.toString());
+			}
+
+			if (numOfCreateAllocationsFound > 0) {
+				message += gs.getMessage('{0} Allocations already exist for the user or device.',
+					numOfCreateAllocationsFound.toString());
+			}
+
+			if (rightsUsedByInstallsWithNoAssignedTo > 0) {
+				if (remediationOptionGr.license_metric.toString()
+					=== LicenseMetric.USER_SUBSCRIPTION) {
+					message += gs.getMessage('{0} allocations could not be created because the user does not exist in your ServiceNow instance. To create these allocations, create new users and then run reconciliation again. The allocations will be created the next time the daily subscription job is run.',
+						rightsUsedByInstallsWithNoAssignedTo.toString());
+				} else if (remediationOptionGr.license_metric.toString()
+					=== LicenseMetric.NAMED_USER_FOR_SAP) {
+					message += gs.getMessage('{0} Allocations could not be created because a system user could not be determined for the discovered SAP users.',
+						rightsUsedByInstallsWithNoAssignedTo.toString());
+				} else {
+					message += gs.getMessage('{0} Allocations could not be created because certain software installations do not have an assigned user.',
+						rightsUsedByInstallsWithNoAssignedTo.toString());
+				}
+			}
+
+			if (rightsWithNoAllocationAvailable > 0) {
+				message += gs.getMessage('{0} Allocations cannot be created because there are not enough allocations available.',
+					rightsWithNoAllocationAvailable.toString());
+			}
+		}
+		message += gs.getMessage(' Updates will be reflected in the results after the next run of reconciliation.');
+		gs.addInfoMessage(message);
+	},
+
+	updateLicensesRequiredByAction: function(rightsByGr) {
+		if (this.lrbGr) {
+			this.lrbGr.setValue('action_taken', true);
+			this.lrbGr.update();
+			return;
+		}
+
+		var grLic = new GlideRecord(ReconciliationConstants.LICENSES_REQUIRED_BY_TABLE);
+		grLic.addQuery('action_taken', 'false');
+
+		if (rightsByGr.getTableName() === ReconciliationConstants.ENTITLEMENT_RESULT_TABLE) {
+			grLic.addQuery('required_by', rightsByGr.getValue('used_by'));
+			grLic.addQuery('license_metric_result', rightsByGr.getValue('license_metric_result'));
+			grLic.addQuery('licensing_status', 'licensed');
+			grLic.addQuery('dual_use_rights_applied', '!=', 'yes');
+		} else {
+			grLic.addQuery('required_by', rightsByGr.getValue('needed_by'));
+			grLic.addQuery('remediation_option', rightsByGr.getValue('remediation_option'));
+			grLic.addQuery('licensing_status', 'not_licensed');
+			grLic.addQuery('cloud_provider', rightsByGr.getValue('cloud_provider'));
+		}
+
+		grLic.query();
+		if (grLic.next()) {
+			grLic.setValue('action_taken', true);
+			grLic.update();
+		}
+	},
+
+	createAllocation: function(rightsUsedByGr) {
+		if (rightsUsedByGr.action_taken) {
+			gs.addErrorMessage(gs.getMessage('Allocations already exist for this user or device. Duplicate Allocations cannot be created.'));
+			return;
+		}
+
+		// Make sure for per user or per named user LM, create allocation only if we have installs with assigned to
+		if (!SampRemediationAction.isCreateUserAllocationActionable(rightsUsedByGr)) {
+			if (rightsUsedByGr.license_metric_result.license_metric.toString()
+				=== LicenseMetric.USER_SUBSCRIPTION) {
+				gs.addErrorMessage(gs.getMessage('User allocations could not be created because the user does not exist in your ServiceNow instance. To create the allocation, create a new user and then run reconciliation again. The allocation will be created the next time the daily subscription job is run.'));
+			} else if (rightsUsedByGr.license_metric_result.license_metric.toString()
+				=== LicenseMetric.NAMED_USER_FOR_SAP) {
+				gs.addErrorMessage(gs.getMessage('User allocation could not be created because a system user could not be determined for the discovered SAP users.'));
+			} else {
+				gs.addErrorMessage(gs.getMessage('User allocations could not be created. Certain software installations do not have an assigned user.'));
+			}
+			return;
+		}
+
+		var sampProcessAllocationObj = new SampProcessAllocations();
+
+		if (!sampProcessAllocationObj.isCreateAllocationNeeded(rightsUsedByGr)) {
+			this.updateRightsNotAllocated(
+				rightsUsedByGr.license_metric_result.software_model_result,
+				rightsUsedByGr.license_metric_result.license_metric,
+				ReconciliationConstants.CREATE_ALLOCATIONS,
+				rightsUsedByGr.not_allocated_in_use
+			);
+			rightsUsedByGr.action_taken = true;
+			rightsUsedByGr.update();
+			this.updateLicensesRequiredByAction(rightsUsedByGr);
+			gs.addInfoMessage(gs.getMessage('Allocations already exist for this user or device. Duplicate Allocations cannot be created.'));
+			return;
+		}
+
+		if (this.getAvailableAllocations(rightsUsedByGr.license_metric_result.software_model,
+			rightsUsedByGr.license_metric_result.license_metric) < parseInt(rightsUsedByGr.getValue('not_allocated_in_use'), 10)) {
+			gs.addErrorMessage(gs.getMessage('Not Enough Available Allocations.'));
+			return;
+		}
+
+		var numOfAllocationsMade = sampProcessAllocationObj.processRightsUsedBy(rightsUsedByGr);
+		if (numOfAllocationsMade > 0) {
+			this.updateRightsNotAllocated(
+				rightsUsedByGr.license_metric_result.software_model_result,
+				rightsUsedByGr.license_metric_result.license_metric,
+				ReconciliationConstants.CREATE_ALLOCATIONS,
+				numOfAllocationsMade
+			);
+			rightsUsedByGr.action_taken = true;
+			rightsUsedByGr.update();
+			this.updateLicensesRequiredByAction(rightsUsedByGr);
+
+			gs.addInfoMessage(gs.getMessage('Allocations were successfully created. Updates will be reflected in the results after the next run of reconciliation.'));
+		}
+	},
+
+	remediationOptionForLicensedLRB: function(lrbGr, api) {
+		var rubGr = new GlideRecord(ReconciliationConstants.ENTITLEMENT_RESULT_TABLE);
+		rubGr.addQuery('used_by', lrbGr.getValue('required_by'));
+		rubGr.addQuery('license_metric_result', lrbGr.getValue('license_metric_result'));
+		rubGr.addQuery('dual_use_rights_applied', '!=', 'yes');
+		rubGr.query();
+		if (rubGr.next()) {
+			this.lrbGr = lrbGr;
+			this[api](rubGr);
+		}
+	},
+
+	removeAllocation: function(rightsUsedByGr) {
+		if (rightsUsedByGr.action_taken) {
+			gs.addErrorMessage(gs.getMessage('Allocations already removed for this user or device.'));
+			return;
+		}
+		var sampProcessAllocationObj = new SampProcessAllocations();
+
+		if (!sampProcessAllocationObj.isRemoveAllocationNeeded(rightsUsedByGr)) {
+			this.updateRightsNotInUse(
+				rightsUsedByGr.license_metric_result.software_model_result,
+				rightsUsedByGr.license_metric_result.license_metric,
+				ReconciliationConstants.REMOVE_ALLOCATIONS,
+				rightsUsedByGr.allocated_not_in_use
+			);
+			rightsUsedByGr.action_taken = true;
+			rightsUsedByGr.update();
+			this.updateLicensesRequiredByAction(rightsUsedByGr);
+			gs.addInfoMessage(gs.getMessage('Allocations already removed for this user or device.'));
+			return;
+		}
+
+		var numOfAllocationsRemoved = sampProcessAllocationObj.removeAllocationsForRightsUsedBy(rightsUsedByGr);
+		if (numOfAllocationsRemoved > 0) {
+			this.updateRightsNotInUse(
+				rightsUsedByGr.license_metric_result.software_model_result,
+				rightsUsedByGr.license_metric_result.license_metric,
+				ReconciliationConstants.REMOVE_ALLOCATIONS,
+				numOfAllocationsRemoved
+			);
+			rightsUsedByGr.action_taken = true;
+			rightsUsedByGr.update();
+			this.updateLicensesRequiredByAction(rightsUsedByGr);
+			gs.addInfoMessage(gs.getMessage('Allocations were successfully removed. Updates will be reflected in the results after the next run of reconciliation.'));
+		}
+	},
+
+	createReclamationCandidate: function(rightsUsedByGr) {
+		if (rightsUsedByGr.action_taken) {
+			return;
+		}
+		var processReclamationObj = new SampProcessReclamation();
+		var installsCount = processReclamationObj.processRightsUsedBy(rightsUsedByGr);
+
+		this.updateReclaimableRights(
+			rightsUsedByGr.license_metric_result.software_model_result,
+			rightsUsedByGr.license_metric_result.license_metric,
+			ReconciliationConstants.REMOVE_UNALLOCATED_INSTALLS,
+			rightsUsedByGr.not_allocated_in_use
+		);
+		rightsUsedByGr.action_taken = true;
+		rightsUsedByGr.update();
+		this.updateLicensesRequiredByAction(rightsUsedByGr);
+
+		var message = '';
+		if (installsCount.installs_reclaimed > 0) {
+			message = gs.getMessage('{0} Reclamation Candidates were successfully created.',
+				(installsCount.installs_reclaimed).toString());
+		}
+		if (installsCount.installs_found_reclaimed > 0) {
+			message += gs.getMessage('{0} Reclamation Candidates already exist.',
+				(installsCount.installs_found_reclaimed).toString());
+		}
+		if (installsCount.installs_allocated > 0) {
+			message += gs.getMessage('{0} Installs are allocated so reclamation candidates were not created.',
+				(installsCount.installs_allocated).toString());
+		}
+		message += gs.getMessage('Updates will be reflected in the results once the reclamation workflows have completed.');
+
+		gs.addInfoMessage(message);
+	},
+
+	createUnlicensedReclamationCandidate: function(rightsNeededByGr) {
+		if (rightsNeededByGr.action_taken) {
+			return;
+		}
+		var numOfReclamationsCreated = new SampProcessReclamation().processRightsNeededBy(rightsNeededByGr);
+		if (numOfReclamationsCreated > 0) {
+			this.updateUnlicensedRights(
+				rightsNeededByGr.remediation_option.software_model_result,
+				ReconciliationConstants.REMOVE_UNLICENSED_INSTALLS,
+				rightsNeededByGr.rights_needed
+			);
+			rightsNeededByGr.action_taken = true;
+			rightsNeededByGr.update();
+			this.updateLicensesRequiredByAction(rightsNeededByGr);
+			gs.addInfoMessage(gs.getMessage('Reclamation Candidates were successfully created. Updates will be reflected in the results once the reclamation workflows have completed.'));
+		}
+	},
+
+	removeAllAllocations: function(remediationOptionGr) {
+		var removeAllocationsGr = SampRemediationAction.getRightsUsedBy(
+			remediationOptionGr.license_metric,
+			remediationOptionGr.software_model_result,
+			'allocated_not_in_use'
+		);
+		var totalAllocationsRemoved = 0;
+
+		var sampProcessAllocationObj = new SampProcessAllocations();
+
+		var numOfRemovedAllocationsFound = 0;
+
+		while (removeAllocationsGr.next()) {
+			if (!sampProcessAllocationObj.isRemoveAllocationNeeded(removeAllocationsGr)) {
+				numOfRemovedAllocationsFound += removeAllocationsGr.allocated_not_in_use;
+			} else {
+				totalAllocationsRemoved += sampProcessAllocationObj
+					.removeAllocationsForRightsUsedBy(removeAllocationsGr);
+			}
+			removeAllocationsGr.action_taken = true;
+			removeAllocationsGr.update();
+			this.updateLicensesRequiredByAction(removeAllocationsGr);
+		}
+
+		// if total allocations removed plus allocations already found removed are equal to actionable rights
+		// then set the status
+		if ((totalAllocationsRemoved + numOfRemovedAllocationsFound) === parseInt(
+			remediationOptionGr.actionable_rights, 10
+		)) {
+			// set the status complete for remove allocations
+			remediationOptionGr.actionable_rights = 0;
+			remediationOptionGr.status = ReconciliationConstants.REMEDIATION_STATUS_COMPLETE;
+			remediationOptionGr.update();
+
+			if (numOfRemovedAllocationsFound > 0) {
+				gs.addInfoMessage(gs.getMessage('{0} Allocations removed successfully. {1} Allocations already removed for the user or device. Updates will be reflected in the results after the next run of reconciliation.',
+					[totalAllocationsRemoved, numOfRemovedAllocationsFound]));
+			} else {
+				gs.addInfoMessage(gs.getMessage('All Allocations were successfully removed. Updates will be reflected in the results after the next run of reconciliation.'));
+			}
+		}
+	},
+
+	createAllReclamationCandidates: function(remediationOptionGr) {
+		if (remediationOptionGr.remediation_action.toString() === 'remove_unallocated_installs') {
+			this.createAllUnallocatedReclamationCandidates(remediationOptionGr);
+		} else {
+			this.createAllUnlicensedReclamationCandidates(remediationOptionGr);
+		}
+	},
+
+	createAllUnallocatedReclamationCandidates: function(remediationOptionGr) {
+		var createReclamationGr = SampRemediationAction.getRightsUsedBy(
+			remediationOptionGr.license_metric,
+			remediationOptionGr.software_model_result,
+			'not_allocated_in_use'
+		);
+		var sampProcessReclamationObj = new SampProcessReclamation();
+
+		var totalReclaimableRightsUsed = 0;
+
+		var installsReclaimed = 0;
+		var installsFoundReclaimed = 0;
+		var installsAllocated = 0;
+
+		while (createReclamationGr.next()) {
+			var installsCount = sampProcessReclamationObj.processRightsUsedBy(createReclamationGr);
+			installsReclaimed += installsCount.installs_reclaimed;
+			installsFoundReclaimed += installsCount.installs_found_reclaimed;
+			installsAllocated += installsCount.installs_allocated;
+
+			totalReclaimableRightsUsed += createReclamationGr.not_allocated_in_use;
+
+			createReclamationGr.action_taken = true;
+			createReclamationGr.update();
+			this.updateLicensesRequiredByAction(createReclamationGr);
+		}
+
+		// if total reclamations created are equal to actionable rights then set the status
+		if (totalReclaimableRightsUsed === parseInt(remediationOptionGr.actionable_rights, 10)) {
+			// set the status in progress for create reclamations
+			remediationOptionGr.actionable_rights = 0;
+			remediationOptionGr.status = ReconciliationConstants.REMEDIATION_STATUS_IN_PROGRESS;
+			remediationOptionGr.update();
+
+			// set the status void for create allocations
+			this.updateRemediationOptionStatus(remediationOptionGr.software_model_result,
+				remediationOptionGr.license_metric,
+				ReconciliationConstants.REMEDIATION_STATUS_VOID,
+				ReconciliationConstants.CREATE_ALLOCATIONS,
+				0);
+
+			var message = '';
+			if (installsReclaimed > 0) {
+				message = gs.getMessage('{0} Reclamation Candidates were successfully created.',
+					installsReclaimed.toString());
+			}
+			if (installsFoundReclaimed > 0) {
+				message += gs.getMessage('{0} Reclamation Candidates already exist.',
+					installsFoundReclaimed.toString());
+			}
+			if (installsAllocated > 0) {
+				message += gs.getMessage('{0} Installs are allocated so reclamation candidates were not created.',
+					installsAllocated.toString());
+			}
+			message += gs.getMessage('Updates will be reflected in the results once the reclamation workflows have completed.');
+			gs.addInfoMessage(message);
+		}
+	},
+
+	createAllUnlicensedReclamationCandidates: function(remediationOptionGr) {
+		var createReclamationGr = SampRemediationAction.getRightsNeededByForUnlicensedRights(
+			remediationOptionGr
+		);
+
+		var sampProcessReclamationObj = new SampProcessReclamation();
+
+		var totalUnlicensedRightsUsed = 0;
+
+		var installsReclaimed = 0;
+		var installsFoundReclaimed = 0;
+
+		while (createReclamationGr.next()) {
+			var installsCount = sampProcessReclamationObj
+				.processRightsNeededBy(createReclamationGr, remediationOptionGr);
+			installsReclaimed += installsCount.installs_reclaimed;
+			installsFoundReclaimed += installsCount.installs_found_reclaimed;
+
+			totalUnlicensedRightsUsed += createReclamationGr.rights_needed;
+
+			createReclamationGr.action_taken = true;
+			createReclamationGr.update();
+			this.updateLicensesRequiredByAction(createReclamationGr);
+		}
+
+		// if total unlicensed rights processed are equal to actionable rights then set the status
+		if (totalUnlicensedRightsUsed === parseInt(remediationOptionGr.actionable_rights, 10)) {
+			// Set the status complete for create reclamations
+			remediationOptionGr.actionable_rights = 0;
+			remediationOptionGr.status = ReconciliationConstants.REMEDIATION_STATUS_IN_PROGRESS;
+			remediationOptionGr.update();
+
+			// set the status void for remove unlicensed / optimize based on the action
+			if ((remediationOptionGr.remediation_action.toString()
+				=== ReconciliationConstants.OPTIMIZE_VCPUS)) {
+				// Update all associated rights needed by action taken to true
+				SampRemediationAction.setAllRightsNeededByActionTaken(remediationOptionGr, false);
+
+				var rightsNeeded = SampRemediationAction
+					.getPerProcessorUnlicensedRights(remediationOptionGr.software_model_result);
+
+				SampRemediationAction.voidPerProcessorRemediationActions(remediationOptionGr.software_model_result,
+					totalUnlicensedRightsUsed, ReconciliationConstants.PURCHASE_RIGHTS, rightsNeeded);
+				SampRemediationAction.voidPerProcessorRemediationActions(remediationOptionGr.software_model_result,
+					totalUnlicensedRightsUsed, ReconciliationConstants.REMOVE_UNLICENSED_INSTALLS, rightsNeeded);
+			} else if ((remediationOptionGr.remediation_action.toString()
+					=== ReconciliationConstants.REMOVE_UNLICENSED_CLOUD_INSTALLS)) {
+				// 				Update rights Needed only for unlicensed cloud entities.
+				SampRemediationAction.setAllRightsNeededByActionTaken(remediationOptionGr, true);
+			} else {
+				SampRemediationAction.updateOtherPurchaseRights(
+					SampRemediationAction.NOT_APPLICABLE_METRICS,
+					remediationOptionGr.software_model_result,
+					ReconciliationConstants.PURCHASE_RIGHTS
+				);
+
+				// set the status void for remove unlicensed / optimize based on the action
+				if ((remediationOptionGr.remediation_action.toString()
+					=== ReconciliationConstants.REMOVE_UNLICENSED_INSTALLS)) {
+					SampRemediationAction.voidOtherRemediationActions(remediationOptionGr.software_model_result,
+						ReconciliationConstants.OPTIMIZE_VCPUS);
+				}
+
+				// Update all associated rights needed by action taken to true
+				SampRemediationAction.setAllRightsNeededByActionTaken(remediationOptionGr, false);
+			}
+
+			var message = '';
+			if (installsReclaimed > 0) {
+				message = gs.getMessage('{0} Reclamation Candidates were successfully created.',
+					installsReclaimed.toString());
+			}
+			if (installsFoundReclaimed > 0) {
+				message += gs.getMessage('{0} Reclamation Candidates already exist.',
+					installsFoundReclaimed.toString());
+			}
+
+			message += gs.getMessage('Updates will be reflected in the results once the reclamation workflows have completed.');
+			gs.addInfoMessage(message);
+		}
+	},
+
+	createPurchaseOrder: function(remediationOptionGr, existingPoSysId) {
+		// checks if software model publisher is a vendor
+		var vendor = '';
+		if (remediationOptionGr.software_model_result.software_model.manufacturer.vendor) {
+			vendor = remediationOptionGr.software_model_result.software_model.manufacturer + '';
+		}
+
+		var po = new GlideRecord('proc_po');
+		if (po.get(existingPoSysId)) {
+			po.vendor = vendor;
+			po.update();
+		} else {
+			po = new GlideRecord('proc_po');
+			po.vendor = vendor;
+			po.insert();
+		}
+
+		// Creating POI
+		var poi = new GlideRecord('proc_po_item');
+		poi.purchase_order = po.sys_id;
+		poi.model = remediationOptionGr.software_model_result.software_model;
+		poi.vendor = vendor;
+		poi.license_metric = remediationOptionGr.license_metric;
+
+		// set the default Metric Group for this POI
+		var COMMON_LICENCE_METRIC = '6e2a21987f222200fa0d328c4efa915c';
+
+		// use software model to get related metric group sys id.
+		var metricGroupSysID = new SAMCoreCompanyUtil().resolveMetricForModelId(
+			remediationOptionGr.software_model_result.software_model.toString()
+		);
+
+		var licenseMetricGr = new GlideRecord('samp_sw_license_metric');
+		if (licenseMetricGr.get(remediationOptionGr.license_metric)) {
+			var allMetricGroup = licenseMetricGr.metric_group.split(',');
+			if (metricGroupSysID !== COMMON_LICENCE_METRIC && allMetricGroup.indexOf(metricGroupSysID) !== -1) {
+				poi.setValue('metric_group', metricGroupSysID);
+			} else if (allMetricGroup.indexOf(COMMON_LICENCE_METRIC) !== -1) {
+				poi.setValue('metric_group', COMMON_LICENCE_METRIC);
+			} else if (allMetricGroup.length > 0) {
+				poi.setValue('metric_group', allMetricGroup[0]);
+			}
+		}
+
+		// set the default value to fields Rights per license pack and
+		// Number of packs for Microsoft Per Core/Per Core(with CAL) POL
+		var actionableRights = parseInt(remediationOptionGr.getValue('actionable_rights'), 10);
+		if (remediationOptionGr.getValue('license_metric') === this.LICENSE_METRIC_MS_PER_CORE
+			|| remediationOptionGr.getValue('license_metric') === this.LICENSE_METRIC_MS_PER_CORE_WITH_CAL) {
+			poi.setValue('rights_per_license_pack', 1);
+			poi.setValue('number_of_packs', actionableRights);
+		}
+		poi.setValue('ordered_quantity', actionableRights);
+
+		poi.insert();
+
+		// Setting PO in the Remediation Option
+		remediationOptionGr.purchase_order = po.sys_id;
+		// Setting Status to Complete
+		remediationOptionGr.status = ReconciliationConstants.REMEDIATION_STATUS_COMPLETE;
+		remediationOptionGr.actionable_rights = 0;
+		remediationOptionGr.update();
+
+		SampRemediationAction
+			.setAllRightsNeededByActionTakenBySysId(remediationOptionGr.getUniqueValue());
+
+		// Void other Purchase rights if metric is not User/Devie CAL
+		if (SampRemediationAction.NOT_APPLICABLE_METRICS.indexOf(remediationOptionGr.getValue('license_metric'))
+			=== -1) {
+			var notApplicableMetrics = SampRemediationAction.NOT_APPLICABLE_METRICS.slice();
+			notApplicableMetrics.push(remediationOptionGr.license_metric);
+			// Void all other purchase rights
+			SampRemediationAction.updateOtherPurchaseRights(
+				notApplicableMetrics,
+				remediationOptionGr.software_model_result,
+				ReconciliationConstants.PURCHASE_RIGHTS
+			);
+
+			/* Void Remove Unlicensed Installs remediation option for below cases:
+				* 1. If it is not in progress
+				* 2. If there are no other active Purchase Rights
+				*/
+			var roGA = new GlideAggregate(ReconciliationConstants.REMEDIATION_OPTION_TABLE);
+			roGA.addQuery('software_model_result', remediationOptionGr.software_model_result);
+			roGA.addQuery('remediation_action', ReconciliationConstants.PURCHASE_RIGHTS);
+			roGA.addQuery('license_metric', remediationOptionGr.getValue('license_metric'));
+			roGA.addQuery('status', [ReconciliationConstants.REMEDIATION_STATUS_NEW,
+				ReconciliationConstants.REMEDIATION_STATUS_IN_PROGRESS]);
+			roGA.addAggregate('COUNT');
+			roGA.query();
+
+			if (roGA.next() && roGA.getAggregate('COUNT') === '0') {
+				var unlicensedRemediationOptionGr = new GlideRecord('samp_remediation_option');
+				unlicensedRemediationOptionGr.addQuery('software_model_result',
+					remediationOptionGr.software_model_result);
+				unlicensedRemediationOptionGr.addQuery('remediation_action',
+					ReconciliationConstants.REMOVE_UNLICENSED_INSTALLS)
+					.addOrCondition('remediation_action', ReconciliationConstants.OPTIMIZE_VCPUS);
+				unlicensedRemediationOptionGr.query();
+				if (unlicensedRemediationOptionGr.next()) {
+					if (unlicensedRemediationOptionGr.getValue('status')
+						!== ReconciliationConstants.REMEDIATION_STATUS_IN_PROGRESS) {
+						unlicensedRemediationOptionGr.setValue('status',
+							ReconciliationConstants.REMEDIATION_STATUS_VOID);
+					}
+
+					unlicensedRemediationOptionGr.setValue('actionable_rights', 0);
+					unlicensedRemediationOptionGr.update();
+				}
+
+				// Set all associated rights needed by action taken
+				SampRemediationAction.setAllRightsNeededByActionTaken(remediationOptionGr, false);
+			}
+		}
+
+		return po;
+	},
+
+	getExistingPO: function(softwareModelResult) {
+		var ga = new GlideAggregate('proc_po_item');
+		ga.addQuery('model', softwareModelResult);
+		ga.addQuery('status', 'requested');
+		ga.addAggregate('SUM', 'ordered_quantity');
+		ga.groupBy('purchase_order');
+		ga.query();
+		if (ga.next()) {
+			return [ga.getValue('purchase_order'), ga.getAggregate('SUM', 'ordered_quantity')];
+		}
+		return ['', 0];
+	},
+
+	getRemediationOptionGr: function(softwareModelResult, licenseMetric, remediationAction) {
+		var remediationOptionGr = new GlideRecord('samp_remediation_option');
+		remediationOptionGr.addQuery('software_model_result', softwareModelResult);
+		remediationOptionGr.addQuery('license_metric', licenseMetric);
+		remediationOptionGr.addQuery('remediation_action', remediationAction);
+		remediationOptionGr.query();
+		return remediationOptionGr;
+	},
+
+	updateRemediationOptionStatus: function(softwareModelResult, licenseMetric,
+		status, remediationAction, value) {
+		var remediationOptionGr = this.getRemediationOptionGr(
+			softwareModelResult,
+			licenseMetric,
+			remediationAction
+		);
+
+		if (remediationOptionGr.next()) {
+			remediationOptionGr.setValue('status', status);
+			remediationOptionGr.setValue('actionable_rights', value);
+			remediationOptionGr.update();
+		}
+	},
+
+	updateAllRemediationOptionStatus: function(softwareModelResult, status, remediationAction, value) {
+		var remediationOptionGr = new GlideRecord('samp_remediation_option');
+		remediationOptionGr.addQuery('software_model_result', softwareModelResult);
+		remediationOptionGr.addQuery('remediation_action', remediationAction);
+		remediationOptionGr.query();
+		remediationOptionGr.setValue('status', status);
+		remediationOptionGr.setValue('actionable_rights', value);
+		remediationOptionGr.updateMultiple();
+	},
+
+	updateRightsNotAllocated: function(softwareModelResult, licenseMetric,
+		remediationAction, numOfAllocationsMade) {
+		var remediationOptionCreateGr = this.getRemediationOptionGr(
+			softwareModelResult,
+			licenseMetric,
+			remediationAction
+		);
+
+		if (remediationOptionCreateGr.next()) {
+			var newRightNotAllocated = parseInt(remediationOptionCreateGr.getValue('actionable_rights'), 10)
+				- parseInt(numOfAllocationsMade, 10);
+			remediationOptionCreateGr.setValue('actionable_rights', newRightNotAllocated);
+
+			var remediationOptionRemoveGr = this.getRemediationOptionGr(
+				softwareModelResult,
+				licenseMetric,
+				ReconciliationConstants.REMOVE_UNALLOCATED_INSTALLS
+			);
+			if (remediationOptionRemoveGr.next()) {
+				remediationOptionRemoveGr.setValue('actionable_rights', newRightNotAllocated);
+			}
+
+			if (newRightNotAllocated === 0) {
+				remediationOptionCreateGr.setValue('status', ReconciliationConstants.REMEDIATION_STATUS_COMPLETE);
+
+				// set the status void for remove unallocated installs action
+				if (remediationOptionRemoveGr
+					&& remediationOptionRemoveGr.getValue('status')
+					!== ReconciliationConstants.REMEDIATION_STATUS_IN_PROGRESS
+				) { remediationOptionRemoveGr.setValue('status', ReconciliationConstants.REMEDIATION_STATUS_VOID); }
+			}
+
+			remediationOptionCreateGr.update();
+			remediationOptionRemoveGr.update();
+		}
+	},
+
+	updateReclaimableRights: function(softwareModelResult, licenseMetric,
+		remediationAction, numOfReclaimableRightsUsed) {
+		var remediationOptionRemoveGr = this.getRemediationOptionGr(
+			softwareModelResult,
+			licenseMetric,
+			remediationAction
+		);
+
+		if (remediationOptionRemoveGr.next()) {
+			remediationOptionRemoveGr.status = ReconciliationConstants.REMEDIATION_STATUS_IN_PROGRESS;
+			var newReclaimableRights = parseInt(remediationOptionRemoveGr.getValue('actionable_rights'), 10)
+				- parseInt(numOfReclaimableRightsUsed, 10);
+			remediationOptionRemoveGr.setValue('actionable_rights', newReclaimableRights);
+
+			var remediationOptionCreateGr = this.getRemediationOptionGr(
+				softwareModelResult,
+				licenseMetric,
+				ReconciliationConstants.CREATE_ALLOCATIONS
+			);
+			if (remediationOptionCreateGr.next()) {
+				remediationOptionCreateGr.setValue('actionable_rights', newReclaimableRights);
+			}
+
+			if (newReclaimableRights === 0) {
+				remediationOptionRemoveGr.setValue('status',
+					ReconciliationConstants.REMEDIATION_STATUS_IN_PROGRESS);
+
+				// set the status void for create allocations action
+				if (remediationOptionCreateGr) {
+					remediationOptionCreateGr.setValue('status',
+						ReconciliationConstants.REMEDIATION_STATUS_VOID);
+				}
+			}
+
+			remediationOptionRemoveGr.update();
+			remediationOptionCreateGr.update();
+		}
+	},
+
+	updateUnlicensedRights: function(softwareModelResult, remediationAction, numOfUnlicensedRightsUsed) {
+		var remediationOptionGr = new GlideRecord('samp_remediation_option');
+		remediationOptionGr.addQuery('software_model_result', softwareModelResult);
+		remediationOptionGr.addQuery('remediation_action', remediationAction);
+		remediationOptionGr.query();
+
+		if (remediationOptionGr.next()) {
+			remediationOptionGr.status = ReconciliationConstants.REMEDIATION_STATUS_IN_PROGRESS;
+			var unlicensedRightsLeft = parseInt(remediationOptionGr.getValue('actionable_rights'), 10)
+				- parseInt(numOfUnlicensedRightsUsed, 10);
+			remediationOptionGr.setValue('actionable_rights', unlicensedRightsLeft);
+
+			if (unlicensedRightsLeft === 0) {
+				remediationOptionGr.setValue('status',
+					ReconciliationConstants.REMEDIATION_STATUS_IN_PROGRESS);
+			}
+			remediationOptionGr.update();
+		}
+	},
+
+	updateRightsNotInUse: function(softwareModelResult, licenseMetric, remediationAction,
+		countRemovedAllocations) {
+		var remediationOptionGr = this.getRemediationOptionGr(
+			softwareModelResult,
+			licenseMetric,
+			remediationAction
+		);
+
+		if (remediationOptionGr.next()) {
+			var newRightsNotInUse = parseInt(remediationOptionGr.getValue('actionable_rights'), 10)
+				- parseInt(countRemovedAllocations, 10);
+			remediationOptionGr.setValue('actionable_rights', newRightsNotInUse);
+
+			if (newRightsNotInUse === 0) {
+				remediationOptionGr.setValue('status',
+					ReconciliationConstants.REMEDIATION_STATUS_COMPLETE);
+			}
+			remediationOptionGr.update();
+		}
+	},
+
+	isAllocationsAvailable: function(remediationOptionGr) {
+		var almLicenseGr = new GlideRecord('alm_license');
+		almLicenseGr.addQuery('model', remediationOptionGr.software_model_result.software_model);
+		almLicenseGr.addQuery('license_metric', remediationOptionGr.license_metric);
+		almLicenseGr.addQuery('allocations_available', '>', 0);
+		almLicenseGr.query();
+		return almLicenseGr.hasNext();
+	},
+
+	getAvailableAllocations: function(softwareModel, licenseMetric) {
+		var almLicenseGr = new GlideAggregate('alm_license');
+		almLicenseGr.addQuery('model', softwareModel);
+		almLicenseGr.addQuery('license_metric', licenseMetric);
+		almLicenseGr.addQuery('allocations_available', '>', 0);
+		almLicenseGr.addAggregate('SUM', 'allocations_available');
+		almLicenseGr.groupBy('license_metric');
+		almLicenseGr.query();
+		if (almLicenseGr.next()) { return parseInt(almLicenseGr.getAggregate('SUM', 'allocations_available'), 10); }
+		return 0;
+	},
+
+	checkPartialLicensedInstallsExists: function() {
+		var partialInstallsExists = false;
+		var remediationOptionGr = new GlideRecord('samp_remediation_option');
+		remediationOptionGr.addQuery('software_model_result', this.getParameter('sysparm_sw_model_result'));
+		remediationOptionGr.addQuery('remediation_action', ReconciliationConstants.PURCHASE_RIGHTS);
+		remediationOptionGr.addQuery('status', ReconciliationConstants.REMEDIATION_STATUS_NEW);
+		remediationOptionGr.addQuery('license_metric', 'IN', [LicenseMetric.PER_CORE_FOR_MICROSOFT,
+			LicenseMetric.PER_CORE_WITH_CAL_FOR_MICROSOFT]);
+		remediationOptionGr.query();
+		var installs = {};
+		if (remediationOptionGr.next()) {
+			var remediationResultGr = new GlideRecord('samp_remediation_result');
+			remediationResultGr.addQuery('remediation_option', remediationOptionGr.getUniqueValue());
+			remediationResultGr.addQuery('action_taken', 'false');
+			remediationResultGr.addNotNullQuery('cluster');
+			remediationResultGr.addQuery('virtual', 'false');
+			remediationResultGr.query();
+			while (remediationResultGr.next()) {
+				var lrbInstalls = new GlideRecord('samp_licenses_required_by_to_installs');
+				lrbInstalls.addQuery('rights_needed_by', remediationResultGr.getUniqueValue());
+				lrbInstalls.addNullQuery('rights_used_by');
+				lrbInstalls.query();
+				while (lrbInstalls.next()) {
+					if (!installs.hasOwnProperty(lrbInstalls.getValue('software_install'))) {
+						installs[lrbInstalls.getValue('software_install')] = true;
+					}
+				}
+			}
+			// Check if there are parital installs
+			var rubInstalls = new GlideRecord('samp_licenses_required_by_to_installs');
+			rubInstalls.addQuery('software_install', 'IN', Object.keys(installs));
+			rubInstalls.addNullQuery('rights_needed_by');
+			rubInstalls.setLimit(1);
+			rubInstalls.query();
+			if (rubInstalls.hasNext()) {
+				partialInstallsExists = true;
+			}
+		}
+		return partialInstallsExists;
+	},
+
+	type: 'SampRemediationAction',
+});
+
+SampRemediationAction.isCreateUserAllocationActionable = function(rightsUsedByGr) {
+	if (this.isUserMetric(rightsUsedByGr)) {
+		return (rightsUsedByGr.getValue('used_by_table') === 'sys_user' && rightsUsedByGr.getValue('used_by') !== '')
+			|| (rightsUsedByGr.getValue('used_by_table') === 'samp_discovered_user'
+			&& SAMPremiumUtils.getSysUserBySAPDiscoveredUser(rightsUsedByGr.getValue('used_by')));
+	}
+	return true;
+};
+
+SampRemediationAction.isUserMetric = function(rightsUsedByGr) {
+	return rightsUsedByGr.license_metric_result.license_metric.toString() === LicenseMetric.PER_USER
+		|| rightsUsedByGr.license_metric_result.license_metric.toString() === LicenseMetric.PER_NAMED_USER
+		|| rightsUsedByGr.license_metric_result.license_metric.toString() === LicenseMetric.USER_SUBSCRIPTION
+		|| rightsUsedByGr.license_metric_result.license_metric.toString() === LicenseMetric.NAMED_USER_FOR_SAP;
+};
+
+SampRemediationAction.getRightsUsedBy = function(licenseMetric, softwareModelResult,
+	remediationField) {
+	var rightsUsedByList = new GlideRecord('samp_entitlement_result');
+	rightsUsedByList.addQuery('license_metric_result.license_metric', licenseMetric);
+	rightsUsedByList.addQuery('license_metric_result.software_model_result', softwareModelResult);
+	rightsUsedByList.addQuery('action_taken', false);
+	rightsUsedByList.addQuery(remediationField, '>', 0);
+	rightsUsedByList.addQuery('dual_use_rights_applied', '!=', 'yes');
+	rightsUsedByList.query();
+	return rightsUsedByList;
+};
+
+SampRemediationAction.getRightsNeededByForUnlicensedRights = function(remediationOptionsGr) {
+	// Find remediation option purchase rights: 1. With lowest true up cost OR 2.
+	// For all metrics that support downgrades
+	var remediationOptionGr = new GlideRecord('samp_remediation_option');
+	if (remediationOptionsGr.remediation_action.toString()
+				=== ReconciliationConstants.REMOVE_UNLICENSED_CLOUD_INSTALLS) {
+		remediationOptionGr.addQuery('remediation_action', ReconciliationConstants.REMOVE_UNLICENSED_CLOUD_INSTALLS);
+		remediationOptionGr.addQuery('license_metric_result', remediationOptionsGr.license_metric_result);
+	} else {
+		remediationOptionGr.addQuery('remediation_action', ReconciliationConstants.PURCHASE_RIGHTS);
+	}
+	remediationOptionGr.addQuery('software_model_result', remediationOptionsGr.software_model_result);
+	remediationOptionGr.addQuery('license_metric', 'NOT IN', SampRemediationAction.NOT_APPLICABLE_METRICS);
+	remediationOptionGr.orderBy('true_up_cost');
+	remediationOptionGr.setLimit(1);
+	remediationOptionGr.query();
+
+	if (remediationOptionGr.next()) {
+		var rightsNeededByGr = new GlideRecord('samp_remediation_result');
+		rightsNeededByGr.addQuery('remediation_option.license_metric',
+			remediationOptionGr.getValue('license_metric'));
+		rightsNeededByGr.addQuery('remediation_option.software_model_result', remediationOptionsGr.software_model_result);
+		rightsNeededByGr.addQuery('action_taken', false);
+		if (remediationOptionsGr.remediation_action.toString() === 'remove_unlicensed_installs') {
+			rightsNeededByGr.addNullQuery('cloud_provider');
+		} else if (remediationOptionsGr.remediation_action.toString() === 'optimize_vcpus') {
+			rightsNeededByGr.addQuery('needed_by_table', 'cmdb_ci_serverless_hardware');
+		} else {
+			rightsNeededByGr.addQuery('remediation_option.license_metric_result', remediationOptionsGr.license_metric_result);
+			rightsNeededByGr.addNotNullQuery('cloud_provider');
+		}
+		rightsNeededByGr.query();
+		return rightsNeededByGr;
+	}
+
+	return null;
+};
+
+SampRemediationAction.getRightsUsedByInstalls = function(rightsUsedByGr) {
+	// find all software install related to this rights used by record
+	var softwareInstalls = new GlideRecord(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+	softwareInstalls.addQuery('license_metric_result',
+		rightsUsedByGr.getValue('license_metric_result'))
+		.addOrCondition('sys_id',
+			SAMPremiumUtils.getOverflowEntities(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE,
+				rightsUsedByGr.getValue('license_metric_result')));
+	if (rightsUsedByGr.getValue('used_by_table') === 'sys_user') {
+		softwareInstalls.addQuery('assigned_to', rightsUsedByGr.used_by);
+	} else {
+		var qc = softwareInstalls.addQuery('installed_on', rightsUsedByGr.used_by);
+		var ciRelGr = new GlideRecord('cmdb_rel_ci');
+		// Handle specific metrics
+		if (rightsUsedByGr.license_metric_result.license_metric.toString()
+		=== LicenseMetric.PER_CORE_FOR_MICROSOFT || rightsUsedByGr.license_metric_result.license_metric.toString()
+		=== LicenseMetric.PER_CORE_WITH_CAL_FOR_MICROSOFT
+		|| rightsUsedByGr.license_metric_result.license_metric.toString()
+		=== LicenseMetric.PER_SERVER_FOR_MICROSOFT
+		|| rightsUsedByGr.license_metric_result.license_metric.toString()
+		=== LicenseMetric.PER_PROCESSOR_FOR_MICROSOFT) {
+			var installSysIds = [];
+			var lrbToInstall = new GlideRecord(ReconciliationConstants.LICENSES_REQD_BY_TO_INSTALLS_TABLE);
+			lrbToInstall.addQuery('rights_used_by', rightsUsedByGr.sys_id);
+			lrbToInstall.query();
+			while (lrbToInstall.next()) {
+				installSysIds.push(lrbToInstall.getValue('software_install'));
+			}
+			qc.addOrCondition('sys_id', installSysIds);
+		} else if (((rightsUsedByGr.license_metric_result.license_metric.toString()
+			=== LicenseMetric.PER_PHYSICAL_CORE_FOR_ORACLE
+			|| rightsUsedByGr.license_metric_result.license_metric.toString()
+			=== LicenseMetric.NAMED_USER_PLUS_FOR_ORACLE)
+			&& SampRemediationAction.RECON_LEVEL.equals(ReconciliationConstants.ESX_LEVEL))) {
+			if (rightsUsedByGr.getValue('used_by_table') === ReconciliationConstants.IBM_FRAME_CLASS && GlidePluginManager().isActive('com.sn_cmdb_ci_class')) {
+				var viewAixGr = new GlideAggregate(ReconciliationConstants.SAMP_HARD_PARTITIONING_DBVIEW);
+				viewAixGr.addQuery('frame_sys_id', rightsUsedByGr.used_by);
+				viewAixGr.query();
+				while (viewAixGr.next()) {
+					qc.addOrCondition('installed_on', viewAixGr.aix_sys_id);
+				}
+			} else if (rightsUsedByGr.used_by.virtual.toString() === 'false') {
+				// if used by physical device, find all virtual
+				if (gs.nil(rightsUsedByGr.cluster)) {
+					ciRelGr.addQuery('child', rightsUsedByGr.used_by);
+					ciRelGr.addQuery('type', ReconciliationConstants.CI_RELATION_VIRTUALIZED_BY);
+					ciRelGr.query();
+					while (ciRelGr.next()) {
+						qc.addOrCondition('installed_on', ciRelGr.parent);
+					}
+				} else {
+					var clusterHelper = new SamClusterHostAffinityHelper();
+					var clusterObj = clusterHelper.getClusterHostswithVMs(rightsUsedByGr.cluster);
+					var vmList = [];
+					if (clusterObj.hasOwnProperty(rightsUsedByGr.used_by)) {
+						vmList = clusterObj[rightsUsedByGr.used_by];
+					}
+					qc.addOrCondition('installed_on', 'IN', vmList);
+				}
+			}
+		} else if (rightsUsedByGr.license_metric_result.license_metric.toString()
+			=== LicenseMetric.PER_PHYSICAL_CORE_FOR_ORACLE
+			|| rightsUsedByGr.license_metric_result.license_metric.toString()
+			=== LicenseMetric.NAMED_USER_PLUS_FOR_ORACLE) {
+			if (rightsUsedByGr.getValue('used_by_table') === ReconciliationConstants.VCENTER_CLUSTER_CLASS) { // handle vmware clusters
+				var esxRelGr = new GlideRecord('cmdb_rel_ci');
+				esxRelGr.addQuery('parent', rightsUsedByGr.used_by);
+				esxRelGr.addQUery('type', ReconciliationConstants.CI_RELATION_MEMBER_OF);
+				esxRelGr.addQuery('child.sys_class_name', ReconciliationConstants.ESX_SERVER_CLASS);
+				esxRelGr.query();
+
+				while (esxRelGr.next()) { // all VM's hosted on each ESX server on this cluster
+					var vmRelGr = new GlideRecord('cmdb_rel_ci');
+					vmRelGr.addQuery('child', esxRelGr.child);
+					vmRelGr.addQuery('type', ReconciliationConstants.CI_RELATION_VIRTUALIZED_BY);
+					vmRelGr.query();
+
+					while (vmRelGr.next()) {
+						qc.addOrCondition('installed_on', vmRelGr.parent);
+					}
+				}
+			} else if (rightsUsedByGr.getValue('used_by_table') === ReconciliationConstants.IBM_FRAME_CLASS && GlidePluginManager().isActive('com.sn_cmdb_ci_class')) {
+				var viewGr = new GlideAggregate(ReconciliationConstants.SAMP_HARD_PARTITIONING_DBVIEW);
+				viewGr.addQuery('frame_sys_id', rightsUsedByGr.used_by);
+				viewGr.query();
+				while (viewGr.next()) {
+					qc.addOrCondition('installed_on', viewGr.aix_sys_id);
+				}
+			} else if (rightsUsedByGr.getValue('used_by_table') === ReconciliationConstants.VM_ZONES_CLASS || !rightsUsedByGr.used_by.virtual) {
+				// if used by physical device, find all virtual not hosted by esx
+				ciRelGr.addQuery('child', rightsUsedByGr.used_by);
+				ciRelGr.addQuery('type', ReconciliationConstants.CI_RELATION_VIRTUALIZED_BY);
+				ciRelGr.query();
+
+				while (ciRelGr.next()) {
+					qc.addOrCondition('installed_on', ciRelGr.parent);
+				}
+			} else if (rightsUsedByGr.used_by.virtual.toString() === 'true') { // ignore VMs hosted on esx server
+				var esxHostGr = new GlideRecord('cmdb_rel_ci');
+				esxHostGr.addQuery('parent', rightsUsedByGr.used_by);
+				esxHostGr.addQuery('child.sys_class_name', ReconciliationConstants.ESX_SERVER_CLASS);
+				esxHostGr.addQuery('type', ReconciliationConstants.CI_RELATION_VIRTUALIZED_BY);
+				esxHostGr.setLimit(1);
+				esxHostGr.query();
+
+				if (esxHostGr.next()) {
+					current.addQuery('installed_on', '!=', rightsUsedByGr.used_by);
+				}
+			}
+		} else if (rightsUsedByGr.license_metric_result.license_metric.toString()
+			=== LicenseMetric.PER_SOCKET_PAIR_FOR_REDHAT && GlidePluginManager().isActive('com.sn_cmdb_ci_class')) {
+			var dbViewGr;
+			if (rightsUsedByGr.getValue('used_by_table') === ReconciliationConstants.RHV_CLUSTER_CLASS) { // handle rhv clusters
+				var rhvRelGr = new GlideRecord(ReconciliationConstants.CMDB_REL_CI_TABLE);
+				rhvRelGr.addQuery('parent', rightsUsedByGr.used_by);
+				rhvRelGr.addQUery('type', ReconciliationConstants.CI_RELATION_MEMBER_OF);
+				rhvRelGr.addQuery('child.sys_class_name', ReconciliationConstants.RHV_SERVER_CLASS);
+				rhvRelGr.query();
+
+				while (rhvRelGr.next()) { // all VM's hosted on each RHV server on this cluster
+					qc.addOrCondition('installed_on', rhvRelGr.child); // consider installs on physical associated with cluster
+					dbViewGr = new GlideRecord(ReconciliationConstants.RHVMINSTALL_ON_RHVPINSTALL);
+					dbViewGr.addNotNullQuery('virtualrel_parent');
+					dbViewGr.addQuery('registeredrel_child', rhvRelGr.child);
+					dbViewGr.query();
+					while (dbViewGr.next()) {
+						qc.addOrCondition('installed_on', dbViewGr.virtualrel_parent);
+					}
+				}
+			} else if (rightsUsedByGr.getValue('used_by_table') === ReconciliationConstants.CMDB_CI_COMPUTER_TABLE) {
+				dbViewGr = new GlideRecord(ReconciliationConstants.RHVMINSTALL_ON_RHVPINSTALL);
+				dbViewGr.addNotNullQuery('virtualrel_parent');
+				dbViewGr.addQuery('registeredrel_child', rightsUsedByGr.used_by);
+				dbViewGr.query();
+				while (dbViewGr.next()) {
+					qc.addOrCondition('installed_on', dbViewGr.virtualrel_parent);
+				}
+			}
+		}
+	}
+	softwareInstalls.query();
+	return softwareInstalls;
+};
+
+SampRemediationAction.getRightsNeededByInstalls = function(rightsNeededByGr) {
+	// find all software install related to this rights needed by record
+	var softwareInstalls = new GlideRecord(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+	softwareInstalls.addQuery('software_model_result', rightsNeededByGr.remediation_option.software_model_result);
+	softwareInstalls.addQuery('unlicensed_install', true);
+
+	if (!gs.nil(rightsNeededByGr.getValue('reconciled_software_models'))) {
+		softwareInstalls.addQuery('software_model',
+			rightsNeededByGr.getValue('reconciled_software_models').split(','));
+	}
+
+	if (rightsNeededByGr.getValue('needed_by_table') === 'sys_user') {
+		softwareInstalls.addQuery('assigned_to',
+			rightsNeededByGr.needed_by);
+	} else {
+		var qc = softwareInstalls.addQuery('installed_on', rightsNeededByGr.needed_by);
+		var ciRelGr = new GlideRecord('cmdb_rel_ci');
+		// Handle specific metrics
+		if (rightsNeededByGr.remediation_option.license_metric.toString()
+		=== LicenseMetric.PER_CORE_FOR_MICROSOFT || rightsNeededByGr.remediation_option.license_metric.toString()
+		=== LicenseMetric.PER_CORE_WITH_CAL_FOR_MICROSOFT
+		|| rightsNeededByGr.remediation_option.license_metric.toString()
+		=== LicenseMetric.PER_SERVER_FOR_MICROSOFT
+		|| rightsNeededByGr.remediation_option.license_metric.toString()
+		=== LicenseMetric.PER_PROCESSOR_FOR_MICROSOFT) {
+			var installSysIds = [];
+			var lrbToInstall = new GlideRecord(ReconciliationConstants.LICENSES_REQD_BY_TO_INSTALLS_TABLE);
+			lrbToInstall.addQuery('rights_needed_by', rightsNeededByGr.sys_id);
+			lrbToInstall.query();
+			while (lrbToInstall.next()) {
+				installSysIds.push(lrbToInstall.getValue('software_install'));
+			}
+			qc.addOrCondition('sys_id', installSysIds);
+		} else if (((rightsNeededByGr.remediation_option.license_metric.toString()
+			=== LicenseMetric.PER_PHYSICAL_CORE_FOR_ORACLE
+			|| rightsNeededByGr.remediation_option.license_metric.toString()
+			=== LicenseMetric.NAMED_USER_PLUS_FOR_ORACLE)
+			&& SampRemediationAction.RECON_LEVEL.equals(ReconciliationConstants.ESX_LEVEL))) {
+			if (rightsNeededByGr.getValue('needed_by_table') === ReconciliationConstants.IBM_FRAME_CLASS && GlidePluginManager().isActive('com.sn_cmdb_ci_class')) {
+				var viewAixGr = new GlideAggregate(ReconciliationConstants.SAMP_HARD_PARTITIONING_DBVIEW);
+				viewAixGr.addQuery('frame_sys_id', rightsNeededByGr.needed_by);
+				viewAixGr.query();
+				while (viewAixGr.next()) {
+					qc.addOrCondition('installed_on', viewAixGr.aix_sys_id);
+				}
+			} else if (rightsNeededByGr.needed_by.virtual.toString() === 'false') {
+				// Check if the host is part of cluster.
+				var clusterRelGr = new GlideQuery('cmdb_rel_ci')
+					.where('child', rightsNeededByGr.needed_by)
+					.where('type', ReconciliationConstants.CI_RELATION_MEMBER_OF)
+					.where('child.sys_class_name', 'cmdb_ci_esx_server')
+					.where('parent.sys_class_name', 'cmdb_ci_vcenter_cluster')
+					.select('parent')
+					.toArray(1);
+				var	clusterId = clusterRelGr[0].parent;
+				if (gs.nil(clusterId)) {
+					// if used by physical device, find all virtual
+					if (!gs.nil(rightsNeededByGr.cloud_provider)) {
+						var virtualRelCloud = new GlideRecord('cmdb_rel_ci');
+						virtualRelCloud.addQuery('type', ReconciliationConstants.CI_RELATION_VIRTUALIZED_BY);
+						var runsRelCloud = virtualRelCloud.addJoinQuery('cmdb_rel_ci', 'child', 'parent');
+						runsRelCloud.addCondition('hostId', rightsNeededByGr.needed_by);
+						runsRelCloud.addJoinQuery('type', ReconciliationConstants.CI_RELATION_RUNS_ON);
+						virtualRelCloud.query();
+						while (virtualRelCloud.next()) {
+							qc.addOrCondition('installed_on', virtualRelCloud.parent);
+						}
+					} else {
+						ciRelGr.addQuery('child', rightsNeededByGr.needed_by);
+						ciRelGr.addQuery('type', ReconciliationConstants.CI_RELATION_VIRTUALIZED_BY);
+						ciRelGr.query();
+						while (ciRelGr.next()) {
+							qc.addOrCondition('installed_on', ciRelGr.parent);
+						}
+					}
+				} else {
+					var clusterHelper = new SamClusterHostAffinityHelper();
+					var clusterObj = clusterHelper.getClusterHostswithVMs(clusterId);
+					var vmList = [];
+					if (clusterObj.hasOwnProperty(rightsNeededByGr.needed_by)) {
+						vmList = clusterObj[rightsNeededByGr.needed_by];
+					}
+					qc.addOrCondition('installed_on', 'IN', vmList);
+				}
+			}
+		} else if (rightsNeededByGr.remediation_option.license_metric.toString()
+			=== LicenseMetric.PER_PHYSICAL_CORE_FOR_ORACLE
+			|| rightsNeededByGr.remediation_option.license_metric.toString()
+			=== LicenseMetric.NAMED_USER_PLUS_FOR_ORACLE) {
+			if (rightsNeededByGr.getValue('needed_by_table') === ReconciliationConstants.VCENTER_CLUSTER_CLASS) {
+				// handle vmware clusters
+				var esxRelGr = new GlideRecord('cmdb_rel_ci');
+				esxRelGr.addQuery('parent', rightsNeededByGr.needed_by);
+				esxRelGr.addQUery('type', ReconciliationConstants.CI_RELATION_MEMBER_OF);
+				esxRelGr.addQuery('child.sys_class_name', ReconciliationConstants.ESX_SERVER_CLASS);
+				esxRelGr.query();
+
+				while (esxRelGr.next()) { // all VM's hosted on each ESX server on this cluster
+					var vmRelGr = new GlideRecord('cmdb_rel_ci');
+					vmRelGr.addQuery('child', esxRelGr.child);
+					vmRelGr.addQuery('type', ReconciliationConstants.CI_RELATION_VIRTUALIZED_BY);
+					vmRelGr.query();
+
+					while (vmRelGr.next()) {
+						qc.addOrCondition('installed_on', vmRelGr.parent);
+					}
+				}
+			} else if (rightsNeededByGr.getValue('needed_by_table') === ReconciliationConstants.IBM_FRAME_CLASS && GlidePluginManager().isActive('com.sn_cmdb_ci_class')) {
+				var viewGr = new GlideAggregate(ReconciliationConstants.SAMP_HARD_PARTITIONING_DBVIEW);
+				viewGr.addQuery('frame_sys_id', rightsNeededByGr.needed_by);
+				viewGr.query();
+				while (viewGr.next()) {
+					qc.addOrCondition('installed_on', viewGr.aix_sys_id);
+				}
+			} else if (rightsNeededByGr.getValue('needed_by_table') === ReconciliationConstants.VM_ZONES_CLASS || !rightsNeededByGr.needed_by.virtual) {
+				// if used by physical device, find all virtual not hosted by esx
+				if (!gs.nil(rightsNeededByGr.cloud_provider)) {
+					var virtualRel = new GlideRecord('cmdb_rel_ci');
+					virtualRel.addQuery('type', ReconciliationConstants.CI_RELATION_VIRTUALIZED_BY);
+					var runsRel = virtualRel.addJoinQuery('cmdb_rel_ci', 'child', 'parent');
+					runsRel.addCondition('hostId', rightsNeededByGr.needed_by);
+					runsRel.addJoinQuery('type', ReconciliationConstants.CI_RELATION_RUNS_ON);
+					virtualRel.query();
+					while (virtualRel.next()) {
+						qc.addOrCondition('installed_on', virtualRel.parent);
+					}
+				} else {
+					ciRelGr.addQuery('child', rightsNeededByGr.needed_by);
+					ciRelGr.addQuery('type', ReconciliationConstants.CI_RELATION_VIRTUALIZED_BY);
+					ciRelGr.query();
+
+					while (ciRelGr.next()) {
+						qc.addOrCondition('installed_on', ciRelGr.parent);
+					}
+				}
+			} else if (rightsNeededByGr.needed_by.virtual.toString() === 'true') {
+				// ignore VMs hosted on esx server
+				var esxHostGr = new GlideRecord('cmdb_rel_ci');
+				esxHostGr.addQuery('parent', rightsNeededByGr.needed_by);
+				esxHostGr.addQuery('child.sys_class_name', ReconciliationConstants.ESX_SERVER_CLASS);
+				esxHostGr.addQuery('type', ReconciliationConstants.CI_RELATION_VIRTUALIZED_BY);
+				esxHostGr.setLimit(1);
+				esxHostGr.query();
+
+				if (esxHostGr.next()) {
+					current.addQuery('installed_on', '!=', rightsNeededByGr.needed_by);
+				}
+			}
+		} else if (rightsNeededByGr.remediation_option.license_metric.toString()
+			=== LicenseMetric.PER_SOCKET_PAIR_FOR_REDHAT && GlidePluginManager().isActive('com.sn_cmdb_ci_class')) {
+			var dbViewGr;
+			if (rightsNeededByGr.getValue('needed_by_table') === ReconciliationConstants.RHV_CLUSTER_CLASS) { // handle rhv clusters
+				var rhvRelGr = new GlideRecord(ReconciliationConstants.CMDB_REL_CI_TABLE);
+				rhvRelGr.addQuery('parent', rightsNeededByGr.needed_by);
+				rhvRelGr.addQUery('type', ReconciliationConstants.CI_RELATION_MEMBER_OF);
+				rhvRelGr.addQuery('child.sys_class_name', ReconciliationConstants.RHV_SERVER_CLASS);
+				rhvRelGr.query();
+
+				while (rhvRelGr.next()) { // all VM's hosted on each RHV server on this cluster
+					qc.addOrCondition('installed_on', rhvRelGr.child); // consider installs on physical associated with cluster
+					dbViewGr = new GlideRecord(ReconciliationConstants.RHVMINSTALL_ON_RHVPINSTALL);
+					dbViewGr.addNotNullQuery('virtualrel_parent');
+					dbViewGr.addQuery('registeredrel_child', rhvRelGr.child);
+					dbViewGr.query();
+					while (dbViewGr.next()) {
+						qc.addOrCondition('installed_on', dbViewGr.virtualrel_parent);
+					}
+				}
+			} else if (rightsNeededByGr.getValue('needed_by_table') === ReconciliationConstants.CMDB_CI_COMPUTER_TABLE) {
+				dbViewGr = new GlideRecord(ReconciliationConstants.RHVMINSTALL_ON_RHVPINSTALL);
+				dbViewGr.addNotNullQuery('virtualrel_parent');
+				dbViewGr.addQuery('registeredrel_child', rightsNeededByGr.needed_by);
+				dbViewGr.query();
+				while (dbViewGr.next()) {
+					qc.addOrCondition('installed_on', dbViewGr.virtualrel_parent);
+				}
+			}
+		}
+	}
+	softwareInstalls.query();
+	return softwareInstalls;
+};
+
+SampRemediationAction.updateOtherPurchaseRights = function(notApplicableMetrics,
+	softwareModelResult, remediationAction) {
+	var remediationOptionGr = new GlideRecord('samp_remediation_option');
+	remediationOptionGr.addQuery('software_model_result', softwareModelResult);
+	remediationOptionGr.addQuery('remediation_action', remediationAction);
+	remediationOptionGr.addQuery('license_metric', 'NOT IN', notApplicableMetrics);
+	remediationOptionGr.query();
+	remediationOptionGr.setValue('status', 'void');
+	remediationOptionGr.setValue('actionable_rights', 0);
+	remediationOptionGr.updateMultiple();
+};
+
+SampRemediationAction.voidPerProcessorRemediationActions = function(softwareModelResult,
+	rightsProcessed, action, rightsNeeded) {
+	var remediationOptionGr = new GlideRecord('samp_remediation_option');
+	remediationOptionGr.addQuery('software_model_result', softwareModelResult);
+	remediationOptionGr.addQuery('remediation_action', action);
+	remediationOptionGr.addQuery('status', ReconciliationConstants.REMEDIATION_STATUS_NEW);
+
+	if (action === ReconciliationConstants.PURCHASE_RIGHTS) {
+		var PER_PROCESSOR_FOR_ORACLE = '3135b14367b222007d59cbb35685ef04';
+		remediationOptionGr.addQuery('license_metric', PER_PROCESSOR_FOR_ORACLE);
+	} else {
+		remediationOptionGr.addQuery('unlicensed_rights', rightsNeeded);
+	}
+
+	remediationOptionGr.query();
+	while (remediationOptionGr.next()) {
+		var rights = remediationOptionGr.getValue('actionable_rights');
+		remediationOptionGr.setValue('actionable_rights', Math.max(0, (rights - rightsProcessed)));
+		if ((rights - rightsProcessed) <= 0) {
+			remediationOptionGr.setValue('status', 'void');
+		}
+		remediationOptionGr.update();
+	}
+};
+
+SampRemediationAction.getPerProcessorUnlicensedRights = function(softwareModelResult) {
+	var PER_PROCESSOR_FOR_ORACLE = '3135b14367b222007d59cbb35685ef04';
+
+	var remediationOptionGr = new GlideRecord('samp_remediation_option');
+	remediationOptionGr.addQuery('software_model_result', softwareModelResult);
+	remediationOptionGr.addQuery('remediation_action', ReconciliationConstants.PURCHASE_RIGHTS);
+	remediationOptionGr.addQuery('status', ReconciliationConstants.REMEDIATION_STATUS_NEW);
+	remediationOptionGr.addQuery('license_metric', PER_PROCESSOR_FOR_ORACLE);
+	remediationOptionGr.setLimit(1);
+	remediationOptionGr.query();
+	if (remediationOptionGr.next()) {
+		return remediationOptionGr.getValue('rights_needed');
+	}
+	return 0;
+};
+
+SampRemediationAction.voidOtherRemediationActions = function(softwareModelResult, remediationAction) {
+	var gr = new GlideRecord('samp_remediation_option');
+	gr.addQuery('software_model_result', softwareModelResult);
+	gr.addQuery('remediation_action', remediationAction);
+	gr.query();
+	if (gr.next()) {
+		if (gr.getValue('status') !== ReconciliationConstants.REMEDIATION_STATUS_IN_PROGRESS) {
+			gr.setValue('status', ReconciliationConstants.REMEDIATION_STATUS_VOID);
+		}
+		gr.setValue('actionable_rights', 0);
+		gr.update();
+	}
+};
+
+SampRemediationAction.setAllRightsNeededByActionTakenBySysId = function(remediationOptionSysId) {
+	var rightsNeededByGr = new GlideRecord('samp_remediation_result');
+	rightsNeededByGr.addQuery('remediation_option', remediationOptionSysId);
+	rightsNeededByGr.query();
+	SampRemediationAction.setAllRNBActionTaken(rightsNeededByGr);
+};
+
+SampRemediationAction.setAllRightsNeededByActionTaken = function(remediationOptionGr, cloudProvider) {
+	var rightsNeededByGr = new GlideRecord('samp_remediation_result');
+	rightsNeededByGr.addQuery('remediation_option.software_model_result', remediationOptionGr.software_model_result);
+	rightsNeededByGr.addQuery('action_taken', false);
+
+	if (cloudProvider) {
+		rightsNeededByGr.addQuery('remediation_option.license_metric_result', remediationOptionGr.license_metric_result);
+		rightsNeededByGr.addNotNullQuery('cloud_provider');
+	} else {
+		rightsNeededByGr.addNullQuery('cloud_provider');
+	}
+	if (remediationOptionGr.remediation_action.toString() === ReconciliationConstants.OPTIMIZE_VCPUS) {
+		rightsNeededByGr.addQuery('needed_by_table', ReconciliationConstants.CMDB_CI_SERVERLESS_HARDWARE);
+	}
+
+	rightsNeededByGr.query();
+	SampRemediationAction.setAllRNBActionTaken(rightsNeededByGr);
+};
+
+SampRemediationAction.setAllRNBActionTaken = function(rightsNeededByGr) {
+	if (rightsNeededByGr.hasNext()) {
+		var encodedQuery = rightsNeededByGr.getEncodedQuery();
+		rightsNeededByGr.setValue('action_taken', true);
+		rightsNeededByGr.updateMultiple();
+
+		var grLic = new GlideRecord(ReconciliationConstants.LICENSES_REQUIRED_BY_TABLE);
+		grLic.addQuery('licensing_status', 'not_licensed');
+		grLic.addEncodedQuery(encodedQuery);
+		grLic.query();
+		if (grLic.hasNext()) {
+			grLic.setValue('action_taken', true);
+			grLic.updateMultiple();
+		}
+	}
+};
+
+SampRemediationAction.NOT_APPLICABLE_METRICS = [
+	LicenseMetric.DEVICE_CAL_FOR_MICROSOFT,
+	LicenseMetric.USER_CAL_FOR_MICROSOFT,
+];
+
+SampRemediationAction.RECON_LEVEL = GlideProperties.get('com.snc.samp.oracle.reconlevel',
+	ReconciliationConstants.CLUSTER_LEVEL);
+
+SampRemediationAction.showCreatePOButton = function(current) {
+	return GlidePluginManager().isActive('com.snc.procurement')
+		&& new GlideRecord('proc_po').canCreate()
+		&& current.getValue('remediation_action') === 'purchase_rights'
+		&& current.actionable_rights > 0
+		&& !current.purchase_order
+		&& !current.oracle_option;
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:33</sys_created_on>
+        <sys_id>81d5656c47111110c859fee3846d4377</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampRemediationAction</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_81d5656c47111110c859fee3846d4377</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:33</sys_updated_on>
+    </sys_script_include>
+</record_update>

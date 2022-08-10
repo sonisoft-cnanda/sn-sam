@@ -1,0 +1,722 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampO365Admin</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SampO365Admin</name>
+        <script><![CDATA[var SampO365Admin = Class.create();
+SampO365Admin.prototype = {
+	initialize: function() {
+		this.restClient = null;
+		this.sampPremiumUtilsObj = null;
+		this.fSampLogger = new SampLogger();
+		this.subscriptionIdentifierUtil = new sn_sam_saas.SampSaasSubscriptionIdentifierUtils();
+		this.saasCommonUtil = new sn_sam_saas.SAMSaasCommonUtils();
+		this.samSaasSubscriptionUtils = new sn_sam_saas.SAMSaasSubscriptionUtils();
+		this.samSaasIntegrationUtils = new SAMSaasIntegrationUtils();
+	},
+
+	deleteActiveSubscription: function(profile) {
+		var subscriptionGr = new GlideRecord(SampO365Admin.SOFTWARE_SUBSCRIPTION_TABLE);
+		subscriptionGr.addQuery('subscription_profile', profile);
+		subscriptionGr.addQuery('active', true);
+		subscriptionGr.setWorkflow(false);
+		subscriptionGr.deleteMultiple();
+	},
+
+	markSubscriptionActive: function(profile) {
+		var subscriptionGr = new GlideRecord(SampO365Admin.SOFTWARE_SUBSCRIPTION_TABLE);
+		subscriptionGr.addQuery('subscription_profile', profile);
+		subscriptionGr.addQuery('active', false);
+		subscriptionGr.setValue('active', true);
+		subscriptionGr.setWorkflow(false);
+		subscriptionGr.updateMultiple();
+	},
+
+	deactivateSubscription: function(profile) {
+		var subscriptionGr = new GlideRecord(SampO365Admin.SOFTWARE_SUBSCRIPTION_TABLE);
+		subscriptionGr.addQuery('subscription_profile', profile);
+		subscriptionGr.addQuery('active', true);
+		subscriptionGr.setValue('active', false);
+		subscriptionGr.setWorkflow(false);
+		subscriptionGr.updateMultiple();
+	},
+
+	deleteInactiveSubscription: function(profile) {
+		var subscriptionGr = new GlideRecord(SampO365Admin.SOFTWARE_SUBSCRIPTION_TABLE);
+		subscriptionGr.addQuery('subscription_profile', profile);
+		subscriptionGr.addQuery('active', false);
+		subscriptionGr.setWorkflow(false);
+		subscriptionGr.deleteMultiple();
+	},
+
+	getProfileGr: function() {
+		var o365ProfileGr = new GlideRecord(SampO365Admin.SAMP_SW_O365_PROFILE);
+		o365ProfileGr.addQuery('profile_type', 'microsoft_office_365');
+		o365ProfileGr.query();
+		return o365ProfileGr;
+	},
+
+	importSubscriptionForProfile: function(o365ProfileGr) {
+		var restMessageGr = new GlideRecord('sys_rest_message');
+		if (restMessageGr.get(o365ProfileGr.rest_message)) {
+			this.restClient = new SampO365RestClient(restMessageGr.name);
+			// Deactivate current subscriptions
+			this.deactivateSubscription(o365ProfileGr.sys_id);
+			try {
+				this.fSampLogger.info(this.type, 'Start subscription pull for profile : ' + o365ProfileGr.sys_id);
+				// create sys choice for instance_name of samp_sw_subscription
+				this.samSaasIntegrationUtils
+					.createSysChoice(o365ProfileGr.sys_id, o365ProfileGr.display_name.slice(0, 100));
+				// Insert new subscription or update existing subscription
+				this.insertSubscriptions(o365ProfileGr.sys_id);
+				this.fSampLogger.info(this.type, 'Users and subscriptions inserted');
+				// If there are active subscriptions, get activity and activations CSV
+				if (this._getCSV()) {
+					this.saasCommonUtil.maybeCreateReclamationRule(SampO365Admin.OFFICE365_PRODUCT_SYSID, 60, '',
+						SampO365Admin.OFFICE365_DESKTOP_PRODUCT_SYSIDS, 'last_used_date', true, 3);
+					this.fSampLogger.info(this.type, 'Finish subscription pull for profile : ' + o365ProfileGr.sys_id);
+					// Delete left overs(inactive subscriptions)
+					this.deleteInactiveSubscription(o365ProfileGr.sys_id);
+				} else {
+					this.fSampLogger.info(this.type, 'Finish subscription pull for profile : ' + o365ProfileGr.sys_id);
+				}
+			} catch (ex) {
+				// Mark all subscriptions back to active
+				this.markSubscriptionActive(o365ProfileGr.sys_id);
+				throw new Error(this.type + 'Unhandled exception for profile : ' + o365ProfileGr.sys_id + ' : ' + ex);
+			}
+		}
+	},
+
+	deleteAttachmentsForProfile: function(o365ProfileGr) {
+		// Delete all attachments on integration profile
+		var attachment = new GlideRecord('sys_attachment');
+		attachment.addQuery('table_name', o365ProfileGr.getTableName());
+		attachment.addQuery('table_sys_id', o365ProfileGr.getUniqueValue());
+		attachment.query();
+		while (attachment.next()) {
+			new GlideSysAttachment().deleteAttachment(attachment.getUniqueValue());
+		}
+	},
+
+	getAllUsersPrincipalName: function() {
+		return this.restClient.getUsersPrincipalNameByPages();
+	},
+
+	getUsersLicenses: function(usersPrincipalNames) {
+		return this.restClient.getUsersLicenses(usersPrincipalNames);
+	},
+
+	setSubscriptionGrFields: function(swSubscriptionGrIn, user, licenseSku, profile) {
+		swSubscriptionGrIn.active = true;
+		swSubscriptionGrIn.user_principal_name = user.userPrincipalName;
+		swSubscriptionGrIn.external_user_id = user.id;
+		var swSubscriptionGr = this.setUserOrRemoveInactiveUser(swSubscriptionGrIn, user.userPrincipalName);
+		var swModelSysId = this.subscriptionIdentifierUtil.getSoftwareModel(licenseSku, profile);
+		if (!swSubscriptionGr.getValue('software_model') && swModelSysId && swModelSysId !== 'multiple') {
+			this.addSoftwareModelToSubscription(swSubscriptionGr, swModelSysId);
+		} else if (!swSubscriptionGr.getValue('software_model')) {
+			swSubscriptionGr.display_name = licenseSku;
+		}
+		swSubscriptionGr.subscription_identifier = licenseSku;
+		swSubscriptionGr.subscription_profile = profile;
+		swSubscriptionGr.sourced_from_integration = 'yes';
+		swSubscriptionGr.instance_name = profile;
+		return swSubscriptionGr;
+	},
+
+	setUserOrRemoveInactiveUser: function(swSubscriptionGr, userPrincipalName) {
+		var userRecord = SampO365Admin.getSysUser(userPrincipalName);
+		swSubscriptionGr.setValue('user', userRecord ? userRecord.sys_id : 'NULL');
+		this.samSaasSubscriptionUtils.createOrUpdateDiscoveredUser(swSubscriptionGr, userRecord, userPrincipalName);
+		return swSubscriptionGr;
+	},
+
+	// For each license assigned to a user, create or update a subscription record
+	createSubscriptionRecord: function(user, licenseInfoList, profile) {
+		for (var j = 0; j < licenseInfoList.length; j++) {
+			var licenseSku = (licenseInfoList[j].skuPartNumber).toString();
+			// Check whether we need to create a new subscription
+			var swSubscriptionGr = new GlideRecord(SampO365Admin.SOFTWARE_SUBSCRIPTION_TABLE);
+			swSubscriptionGr.addQuery('subscription_profile', profile);
+			swSubscriptionGr.addQuery('external_user_id', user.id);
+			swSubscriptionGr.addQuery('subscription_identifier', licenseSku);
+			swSubscriptionGr.setLimit(1);
+			swSubscriptionGr.query();
+			if (swSubscriptionGr.next()) {
+				swSubscriptionGr = this.setSubscriptionGrFields(swSubscriptionGr, user, licenseSku, profile);
+				swSubscriptionGr.update();
+			} else {
+				// Create a new subscription record and mark it active
+				var subscriptionGr = new GlideRecord(SampO365Admin.SOFTWARE_SUBSCRIPTION_TABLE);
+				subscriptionGr.initialize();
+				subscriptionGr = this.setSubscriptionGrFields(subscriptionGr, user, licenseSku, profile);
+				subscriptionGr.setWorkflow(false);
+				subscriptionGr.insert();
+			}
+		}
+	},
+
+	addSoftwareModelToSubscription: function(subscriptionGr, softwareModelSysId) {
+		var softwareModelGr = new GlideRecord('cmdb_software_product_model');
+		if (softwareModelGr.get(softwareModelSysId)) {
+			subscriptionGr.publisher = softwareModelGr.manufacturer;
+			subscriptionGr.product = softwareModelGr.product;
+			subscriptionGr.version = softwareModelGr.version;
+			subscriptionGr.edition = softwareModelGr.edition;
+			subscriptionGr.software_model = softwareModelGr.sys_id;
+			subscriptionGr.display_name = softwareModelGr.getValue('display_name');
+		}
+	},
+
+	insertSubscriptions: function(profile) {
+		var BATCH_SIZE = 20; // O365 batch request is limited to 20 individual requests
+		do {
+			var users = this.getAllUsersPrincipalName();
+			var usersToProcess = [];
+			var userCount = 0;
+			for (var i = 0; i < users.length; i++) {
+				usersToProcess.push(users[i]);
+				userCount += 1;
+				if (userCount === BATCH_SIZE) {
+					this._processUserSubscriptionBatch(profile, usersToProcess);
+					usersToProcess = [];
+					userCount = 0;
+				}
+			}
+			if (userCount > 0) { this._processUserSubscriptionBatch(profile, usersToProcess); }
+		} while (this.restClient.nextLinkUsersPrincipalName);
+		this.subscriptionIdentifierUtil.updateNumberOfUnrecognizedSubscription();
+	},
+
+	_processUserSubscriptionBatch: function(profile, users) {
+		var usersLicenses = this.getUsersLicenses(users.map(function (u) { return u.userPrincipalName; }));
+		if (!usersLicenses) { return; }
+		for (var i = 0; i < users.length; i++) {
+			if (usersLicenses[i]) {
+				var licenses = usersLicenses[i];
+				this.createSubscriptionRecord(users[i], licenses, profile);
+			}
+		}
+	},
+
+	updateUserActivity: function(profileGR) {
+		var usrActivityAttachmentID = this.restClient.getUserActivity(profileGR);
+		if (!gs.nil(usrActivityAttachmentID)) {
+			SampO365Admin.csvToArray(usrActivityAttachmentID, profileGR, 'activity');
+		}
+	},
+
+	collectO365Usage: function(o365ProfileGr) {
+		var restMessageGr = new GlideRecord('sys_rest_message');
+		if (restMessageGr.get(o365ProfileGr.rest_message)) {
+			this.restClient = new SampO365RestClient(restMessageGr.name);
+			this.fSampLogger.info(this.type, 'Started usage pull for profile : ' + o365ProfileGr.sys_id);
+			this.updateUserActivity(o365ProfileGr);
+			this.fSampLogger.info(this.type, 'User activity updated');
+			this.updateUserActivations(o365ProfileGr);
+			this.fSampLogger.info(this.type, 'User activations updated');
+			this.updatePowerBIActivity(o365ProfileGr);
+			this.optimizeO365Subscriptions(o365ProfileGr);
+			this.populateO365UsageReportTable(o365ProfileGr);
+			this.deleteAttachmentsForProfile(o365ProfileGr);
+		}
+	},
+
+	populateO365UsageReportTable: function(profile) {
+		var that = this;
+		new global.GlideQuery(SampO365Admin.SOFTWARE_SUBSCRIPTION_TABLE)
+			.where('subscription_profile', profile.sys_id)
+			.where('subscription_identifier', 'IN', [SampO365Admin.Office365SubscriptionIdentifiers.O365_E1,
+				SampO365Admin.Office365SubscriptionIdentifiers.O365_E3,
+				SampO365Admin.Office365SubscriptionIdentifiers.O365_E5])
+			.select('sys_id', 'user_principal_name', 'user', 'software_model', 'last_activity')
+			.forEach(function(subscription) {
+				var productActivityMap = {};
+				// Get Desktop specific usage
+				var latestDateGQ = new global.GlideQuery('samp_sw_usage')
+					.where('norm_product', 'IN', SampO365Admin.E3_TO_E1_DESKTOP_PRODUCT_SYSIDS);
+				latestDateGQ = latestDateGQ.where('usage_type', SampO365Admin.USAGE_TYPE.DESKTOP);
+				var userQuery = new GlideQuery().where('user_principal_name', subscription.user_principal_name);
+				if (subscription.user) {
+					userQuery = userQuery.orWhere('user', subscription.user);
+				}
+				latestDateGQ = latestDateGQ.where(userQuery);
+				latestDateGQ.select('norm_product', 'last_used_time')
+					.forEach(function(usage) {
+						if (usage.last_used_time) {
+							productActivityMap[usage.norm_product] = new GlideDateTime(usage.last_used_time).getDate();
+						}
+					});
+				// Get cumulative specific usage
+				var latestDateCumulativeGQ = new global.GlideQuery('samp_sw_usage')
+					.where('norm_product', 'IN', [SampO365Admin.ONEDRIVE_FOR_BUSINESS_PRODUCT_SYSID,
+						SampO365Admin.EXCHANGE_ONLINE_PRODUCT_SYSID,
+						SampO365Admin.SHAREPOINT_ONLINE_PRODUCT_SYSID,
+						SampO365Admin.YAMMER_PRODUCT_SYSID,
+						SampO365Admin.TEAMS_PRODUCT_SYSID, SampO365Admin.POWERBI_PRODUCT_SYSID]);
+				latestDateCumulativeGQ = latestDateCumulativeGQ.where('usage_type', SampO365Admin.USAGE_TYPE.CUMULATIVE);
+				latestDateCumulativeGQ = latestDateCumulativeGQ.where(userQuery);
+				latestDateCumulativeGQ.select('norm_product', 'last_used_time')
+					.forEach(function(usage) {
+						if (usage.last_used_time) {
+							productActivityMap[usage.norm_product] = new GlideDateTime(usage.last_used_time).getDate();
+						}
+					});
+				that.upsertReportUsage(subscription.sys_id, productActivityMap, subscription.last_activity,
+					subscription.software_model);
+			});
+	},
+
+	upsertReportUsage: function(subscription, productActivityMap, lastActivity, softwareModel) {
+		var usageRecord = {};
+		usageRecord.last_activity = lastActivity;
+		usageRecord.software_model = softwareModel;
+		var prodColumnMap = {
+			'92105c060b3022002d6c650d37673ab7': 'ms_access',
+			ab109c060b3022002d6c650d37673a4f: 'ms_excel_desktop',
+			f520dc060b3022002d6c650d37673a24: 'ms_powerpoint_desktop',
+			fa6ef8dcdbf0cb00b30d79fdae9619a2: 'ms_yammer',
+			d1209c060b3022002d6c650d37673af4: 'ms_outlook_desktop',
+			b83010460b3022002d6c650d37673a2f: 'ms_word_desktop',
+			'4d209c060b3022002d6c650d37673aea': 'ms_onedrive',
+			'3120dc060b3022002d6c650d37673a31': 'ms_publisher',
+			d27001acdbca0f00fa001aac0b961943: 'ms_teams',
+			'41209c060b3022002d6c650d37673aeb': 'ms_onenote_desktop',
+			'71d07024dbca0f00fa001aac0b96199a': 'ms_powerbi_pro',
+			fd22b218dbf58300fa001aac0b961994: 'ms_exchange_online',
+			'6d273a98dbf58300fa001aac0b96199e': 'ms_sharepoint_online',
+		};
+		for (var prodId in prodColumnMap) {
+			if (productActivityMap[prodId]) {
+				usageRecord[prodColumnMap[prodId]] = productActivityMap[prodId];
+			}
+		}
+		var usageSysID = null;
+		new global.GlideQuery(SampO365Admin.O365_USAGE_REPORT_TABLE).where('subscription', subscription)
+			.selectOne().ifPresent(function (O365UsageRecord) {
+				usageSysID = O365UsageRecord.sys_id;
+			});
+		if (usageSysID) {
+			new global.GlideQuery(SampO365Admin.O365_USAGE_REPORT_TABLE)
+				.where('sys_id', usageSysID)
+				.update(usageRecord);
+		} else {
+			usageRecord.subscription = subscription;
+			new global.GlideQuery(SampO365Admin.O365_USAGE_REPORT_TABLE)
+				.insert(usageRecord);
+		}
+	},
+
+	generateOptimizationCandidates: function(profile, fromSubscriptionIdentifier, toSubscriptionIdentifier, productList,
+		lastActivityThreshold, ruleSysId, usageType) {
+		new global.GlideQuery(SampO365Admin.SOFTWARE_SUBSCRIPTION_TABLE)
+			.where('subscription_identifier', fromSubscriptionIdentifier)
+			.where('subscription_profile', profile)
+			.where('sys_created_on', '<', gs.daysAgo(lastActivityThreshold))
+			.select('sys_id', 'user_principal_name', 'user')
+			.forEach(function(subscription) {
+				var latestDateGQ = new global.GlideQuery('samp_sw_usage')
+					.where('norm_product', 'IN', productList);
+				if (usageType) {
+					latestDateGQ = latestDateGQ.where('usage_type', usageType);
+				}
+				var userQuery = new GlideQuery().where('user_principal_name', subscription.user_principal_name);
+				if (subscription.user) {
+					userQuery = userQuery.orWhere('user', subscription.user);
+				}
+				latestDateGQ = latestDateGQ.where(userQuery);
+
+				latestDateGQ = latestDateGQ.max('last_used_time').orElse('');
+				var threshold = gs.daysAgo(lastActivityThreshold);
+				var stale = latestDateGQ ? latestDateGQ < threshold : true;
+				var subscriptionGR = new global.GlideQuery('samp_sw_subscription')
+					.where('sys_id', subscription.sys_id)
+					.toGlideRecord();
+				subscriptionGR.query();
+				subscriptionGR.next();
+
+				if (stale) {
+					var saasReclamationUtil = new sn_sam_saas.SAMSaasReclamationUtil();
+					saasReclamationUtil.generateOptimizationCandidateForSubscription(
+						SampO365Admin.OFFICE365_PRODUCT_SYSID, subscriptionGR, ruleSysId,
+						toSubscriptionIdentifier
+					);
+				}
+			});
+	},
+
+	createReclamationCandidate: function(user, installId, productSysId, reclamationRuleId, publisherSysId) {
+		var reclationCandidateSysId;
+		new global.GlideQuery(SampO365Admin.RECLAMATION_CANDIDATE_TABLE)
+			.where('software_install', installId)
+			.selectOne()
+			.ifPresent(function (rcRecord) {
+				reclationCandidateSysId = rcRecord.sys_id;
+			});
+		if (gs.nil(reclationCandidateSysId)) {
+			var reclamationRule = new global.GlideQuery('samp_sw_reclamation_rule')
+				.get(reclamationRuleId, ['notify_user', 'days_before_reclamation']).orElse({
+					notify_user: true, days_before_reclamation: 3,
+				});
+			new global.GlideQuery(SampO365Admin.RECLAMATION_CANDIDATE_TABLE)
+				.insert({
+					software_install: installId,
+					assignment_group: SampO365Admin.ASSIGNMENT_GROUP_DEFAULT,
+					reclamation_rule: reclamationRuleId,
+					notify_user: reclamationRule.notify_user,
+					days_before_reclamation: reclamationRule.days_before_reclamation,
+					product: productSysId,
+					user: user,
+					publisher: publisherSysId,
+					justification: 'dual_license',
+					state: 11,
+				});
+		}
+	},
+
+	generateDualLicenseReclamationCandidates: function(profile, reclamationRuleId) {
+		var that = this;
+		new global.GlideQuery(SampO365Admin.SOFTWARE_SUBSCRIPTION_TABLE)
+			.where('subscription_profile', profile)
+			.where('subscription_identifier', 'IN', [SampO365Admin.Office365SubscriptionIdentifiers.O365_E3,
+				SampO365Admin.Office365SubscriptionIdentifiers.O365_E5])
+			.whereNotNull('user')
+			.select('sys_id', 'user')
+			.forEach(function(subscription) {
+				new global.GlideQuery(SampO365Admin.SW_INSTALL_TABLE)
+					.where('assigned_to', subscription.user)
+					.where('norm_product', SampO365Admin.OFFICE_PRODUCT_SYSID)
+					.whereNull('inferred_suite')
+					.select('sys_id')
+					.forEach(function(install) {
+						that.createReclamationCandidate(subscription.user, install.sys_id,
+							SampO365Admin.OFFICE_PRODUCT_SYSID, reclamationRuleId,
+							SampO365Admin.MICROSOFT_PUBLISHER_SYS_ID);
+					});
+
+				new global.GlideQuery(SampO365Admin.SW_INSTALL_TABLE)
+					.where('assigned_to', subscription.user)
+					.where('inferred_suite_product', SampO365Admin.OFFICE_PRODUCT_SYSID)
+					.select('sys_id', 'norm_product')
+					.forEach(function(install) {
+						that.createReclamationCandidate(subscription.user, install.sys_id,
+							install.norm_product, reclamationRuleId,
+							SampO365Admin.MICROSOFT_PUBLISHER_SYS_ID);
+					});
+			});
+	},
+	optimizeO365Subscriptions: function(o365ProfileGr) {
+		var m2mReclamationRuleGr = new GlideRecord(SampO365Admin.M2M_RULE_PRODUCT_TABLE);
+		m2mReclamationRuleGr.addQuery('software_product', SampO365Admin.OFFICE365_PRODUCT_SYSID);
+		m2mReclamationRuleGr.query();
+		if (m2mReclamationRuleGr.next()) {
+			var ruleSysId = m2mReclamationRuleGr.reclamation_rule;
+			var lastActivityThreshold = m2mReclamationRuleGr.reclamation_rule.last_activity_threshold;
+			var ruleCreatedAt = m2mReclamationRuleGr.reclamation_rule.sys_created_on;
+			var thresholdDate = gs.daysAgo(lastActivityThreshold);
+			// Consider downgrade/reclamation candidates only once rule is at least as old as threshold
+			// since we would be having the relevant sccm usage collection only then
+			if (lastActivityThreshold && ruleCreatedAt < thresholdDate) {
+				if (!o365ProfileGr.custom_properties || o365ProfileGr.custom_properties.powerBIAPIStatus === 'success') {
+					this.generateOptimizationCandidates(o365ProfileGr.sys_id,
+						SampO365Admin.Office365SubscriptionIdentifiers.O365_E5,
+						SampO365Admin.Office365SubscriptionIdentifiers.O365_E3,
+						[SampO365Admin.POWERBI_PRODUCT_SYSID], lastActivityThreshold,
+						ruleSysId);
+				} else {
+					gs.info('Skipped generating Office 365 E5 to Office 365 E3 optimization candidate due '
+							+ 'to PowerBI API error for profile - ' + o365ProfileGr.display_name);
+				}
+				this.generateOptimizationCandidates(o365ProfileGr.sys_id,
+					SampO365Admin.Office365SubscriptionIdentifiers.O365_E3,
+					SampO365Admin.Office365SubscriptionIdentifiers.O365_E1,
+					SampO365Admin.E3_TO_E1_DESKTOP_PRODUCT_SYSIDS, lastActivityThreshold,
+					ruleSysId, SampO365Admin.USAGE_TYPE.DESKTOP);
+			}
+			this.generateDualLicenseReclamationCandidates(o365ProfileGr.sys_id, ruleSysId);
+		}
+	},
+
+	updatePowerBIActivity: function(o365ProfileGr) {
+		var powerbiActivityMap = this.restClient.getPowerBIUserActivity(o365ProfileGr);
+		for (var key in powerbiActivityMap) {
+			// insert or update the latest time for user
+			SampO365Admin.upsertUsage(key, SampO365Admin.MICROSOFT_PUBLISHER_SYS_ID,
+				SampO365Admin.POWERBI_PRODUCT_SYSID, powerbiActivityMap[key], SampO365Admin.USAGE_TYPE.CUMULATIVE);
+		}
+	},
+
+	updateUserActivations: function(profileGR) {
+		var usersActivationAttachmentID = this.restClient.getActivations(profileGR);
+		if (!gs.nil(usersActivationAttachmentID)) {
+			SampO365Admin.csvToArray(usersActivationAttachmentID, profileGR, 'activation');
+		}
+	},
+
+	_getCSV: function() {
+		var sub = new GlideRecord(SampO365Admin.SOFTWARE_SUBSCRIPTION_TABLE);
+		sub.addQuery('active', true);
+		sub.setLimit(1);
+		sub.query();
+		if (sub.hasNext()) { return true; }
+		return false;
+	},
+
+	type: 'SampO365Admin',
+};
+
+SampO365Admin.csvToArray = function (attachmentSysID, profileGR, type) {
+	var headers;
+	var count = 0;
+	var csv = new GlideSysAttachment().getContentStream(attachmentSysID);
+	var reader = new GlideTextReader(csv);
+	var row = reader.readLine();
+	while (!gs.nil(row)) {
+		row = row.replace(/\r/g, '');
+		// Created headers only for first row
+		if (count === 0) {
+			// Format: this_that_then_now
+			var names = (row.toLowerCase()).replace(/ /g, '_');
+			headers = (SampO365Admin.removeQuotes(names)).split(',');
+		} else {
+			var line = (SampO365Admin.removeQuotes(row)).split(',');
+			var obj = {};
+			for (var j = 0; j < line.length; j++) {
+				obj[headers[j]] = (gs.nil(line[j]) || (line[j] === undefined)) ? null : line[j];
+			}
+			if (!gs.nil(obj.user_principal_name)) {
+				if (type === 'activity') {
+					SampO365Admin.createUsageRecords(obj);
+					SampO365Admin.updateActivity(obj, profileGR);
+				} else if (type === 'activation') {
+					SampO365Admin.updateActivation(obj, profileGR);
+				}
+			}
+		}
+		count += 1;
+		row = reader.readLine();
+	}
+};
+
+SampO365Admin.updateActivity = function (row, profileGR) {
+	var prodList = [SampO365Admin.OFFICE365_PRODUCT_SYSID,
+		SampO365Admin.EXCHANGE_ONLINE_PRODUCT_SYSID,
+		SampO365Admin.SHAREPOINT_ONLINE_PRODUCT_SYSID,
+		SampO365Admin.POWERBI_PRODUCT_SYSID,
+	];
+	Array.prototype.push.apply(prodList, SampO365Admin.OFFICE365_DESKTOP_PRODUCT_SYSIDS);
+	var sysUser = SampO365Admin.getSysUser(row.user_principal_name);
+	var latestDateGQ = new global.GlideQuery(SampO365Admin.SOFTWARE_USAGE_TABLE)
+		.where('norm_product', 'IN', prodList);
+	if (!gs.nil(sysUser)) {
+		latestDateGQ = latestDateGQ.where('user.email', sysUser.email);
+	} else {
+		latestDateGQ = latestDateGQ.where('user_principal_name', row.user_principal_name);
+	}
+	latestDateGQ = latestDateGQ.max('last_used_time').orElse('');
+	if (!gs.nil(latestDateGQ)) {
+		var Office365SubscriptionIdentifiersArr = [];
+		for (var key in SampO365Admin.Office365SubscriptionIdentifiers) {
+			Office365SubscriptionIdentifiersArr.push(SampO365Admin.Office365SubscriptionIdentifiers[key]);
+		}
+		var latestGlideDate = new GlideDateTime((latestDateGQ)).getDate();
+		new global.GlideQuery(SampO365Admin.SOFTWARE_SUBSCRIPTION_TABLE)
+			.where('active', true)
+			.where('subscription_profile', profileGR.getUniqueValue())
+			.where('user_principal_name', row.user_principal_name)
+			.where('subscription_identifier', 'IN', Office365SubscriptionIdentifiersArr)
+			.disableWorkflow()
+			.updateMultiple({ last_activity: latestGlideDate });
+	}
+};
+
+SampO365Admin.updateActivation = function (row, profileGR) {
+	var shouldUpdate = false;
+	var sub = new GlideRecord(SampO365Admin.SOFTWARE_SUBSCRIPTION_TABLE);
+	sub.addQuery('active', true);
+	sub.addQuery('subscription_profile', profileGR.getUniqueValue());
+	sub.addQuery('user_principal_name', row.user_principal_name);
+	if (!gs.nil(row.windows)) {
+		sub.setValue('windows', row.windows);
+		shouldUpdate = true;
+	}
+	if (!gs.nil(row.mac)) {
+		sub.setValue('mac', row.mac);
+		shouldUpdate = true;
+	}
+	if (!gs.nil(row.ios)) {
+		sub.setValue('ios', row.ios);
+		shouldUpdate = true;
+	}
+	if (!gs.nil(row.windows_10_mobile)) {
+		sub.setValue('windows_mobile', row.windows_10_mobile);
+		shouldUpdate = true;
+	}
+	if (!gs.nil(row.android)) {
+		sub.setValue('android', row.android);
+		shouldUpdate = true;
+	}
+	if (shouldUpdate) {
+		sub.setWorkflow(false);
+		sub.updateMultiple();
+	}
+};
+
+// create individual usage records for six products got through getOffice365ActiveUserDetail api.
+SampO365Admin.createUsageRecords = function (row) {
+	var dateFieldToProductMap = {
+		onedrive_last_activity_date: SampO365Admin.ONEDRIVE_FOR_BUSINESS_PRODUCT_SYSID,
+		exchange_last_activity_date: SampO365Admin.EXCHANGE_ONLINE_PRODUCT_SYSID,
+		sharepoint_last_activity_date: SampO365Admin.SHAREPOINT_ONLINE_PRODUCT_SYSID,
+		skype_for_business_last_activity_date: SampO365Admin.SKYPE_FOR_BUSINESS_PRODUCT_SYSID,
+		yammer_last_activity_date: SampO365Admin.YAMMER_PRODUCT_SYSID,
+		teams_last_activity_date: SampO365Admin.TEAMS_PRODUCT_SYSID,
+	};
+	for (var d in dateFieldToProductMap) {
+		if (!gs.nil(row[d])) {
+			SampO365Admin.upsertUsage(row.user_principal_name, SampO365Admin.MICROSOFT_PUBLISHER_SYS_ID,
+				dateFieldToProductMap[d], new GlideDateTime(row[d]), SampO365Admin.USAGE_TYPE.CUMULATIVE);
+		}
+	}
+};
+
+SampO365Admin.removeQuotes = function(strIn) {
+	var str = strIn;
+	do {
+		var beginQuote = str.indexOf('"');
+		if (beginQuote === -1) {
+			break;
+		}
+		var endQuote = str.indexOf('"', beginQuote + 1);
+		var start = str.substring(0, beginQuote);
+		var stripped = str.substring(beginQuote + 1, endQuote).replaceAll(',', '');
+		var end = str.substring(endQuote + 1);
+		str = start + stripped + end;
+	} while (str);
+	return str;
+};
+
+SampO365Admin.upsertUsage = function(userPrincipal, normPublisher, normProduct, lastUsedTime, usageType) {
+	var delimiter = '@';
+	var primaryKey = (new GlideDigest()).getMD5Base64(userPrincipal + delimiter
+				+ normProduct);
+
+	var usageSysID = null;
+	new global.GlideQuery(SampO365Admin.SOFTWARE_USAGE_TABLE).where('primary_key', primaryKey)
+		.selectOne().ifPresent(function (usageRecord) {
+			usageSysID = usageRecord.sys_id;
+		});
+	if (usageSysID) {
+		new global.GlideQuery(SampO365Admin.SOFTWARE_USAGE_TABLE)
+			.where('sys_id', usageSysID)
+			.update({
+				last_used_time: lastUsedTime,
+			});
+	} else {
+		var sysUser = SampO365Admin.getSysUser(userPrincipal);
+		new global.GlideQuery(SampO365Admin.SOFTWARE_USAGE_TABLE)
+			.insert({
+				user: sysUser ? sysUser.sys_id : 'NULL',
+				norm_publisher: normPublisher,
+				norm_product: normProduct,
+				reclamation_type: 'last_used_date',
+				user_principal_name: userPrincipal,
+				last_used_time: lastUsedTime,
+				usage_type: usageType,
+			});
+	}
+};
+
+/*
+Searches for matching sys_user by user principal name to email or by matching names.
+Returns: Found sys_user record or null.
+*/
+SampO365Admin.getSysUser = function(upn) {
+	var userGr = new GlideRecord('sys_user');
+	userGr.addActiveQuery();
+	userGr.addQuery('email', upn);
+	userGr.setLimit(1);
+	userGr.query();
+	if (userGr.next()) {
+		return userGr;
+	}
+	var userName = upn.split('@')[0];
+	userGr = new GlideRecord('sys_user');
+	userGr.addActiveQuery();
+	userGr.addQuery('user_name', userName);
+	userGr.setLimit(1);
+	userGr.query();
+	if (userGr.next()) {
+		return userGr;
+	}
+	return null;
+};
+SampO365Admin.Office365SubscriptionIdentifiers = {
+	O365_E1: 'STANDARDPACK',
+	O365_E3: 'ENTERPRISEPACK',
+	O365_E5: 'ENTERPRISEPREMIUM',
+};
+SampO365Admin.USAGE_TYPE = {
+	DESKTOP: 'desktop',
+	WEB: 'web',
+	MOBILE: 'mobile',
+	CUMULATIVE: 'cumulative',
+};
+SampO365Admin.MICROSOFT_PUBLISHER_SYS_ID = '28dcccc20b3022002d6c650d37673ab2';
+SampO365Admin.POWERBI_PRODUCT_SYSID = '71d07024dbca0f00fa001aac0b96199a';
+SampO365Admin.SOFTWARE_USAGE_TABLE = 'samp_sw_usage';
+SampO365Admin.SOFTWARE_SUBSCRIPTION_TABLE = 'samp_sw_subscription';
+SampO365Admin.SAMP_SW_O365_PROFILE = 'samp_sw_subscription_profile';
+SampO365Admin.M2M_RULE_PRODUCT_TABLE = 'samp_m2m_rule_product';
+SampO365Admin.SW_INSTALL_TABLE = 'cmdb_sam_sw_install';
+SampO365Admin.O365_USAGE_REPORT_TABLE = 'samp_sw_o365_usage_report';
+SampO365Admin.OFFICE365_PRODUCT_SYSID = '8d209c060b3022002d6c650d37673ae3'; // Office 365
+SampO365Admin.POWERBI_PRODUCT_SYSID = '71d07024dbca0f00fa001aac0b96199a'; // Office 365
+SampO365Admin.OFFICE365_DESKTOP_PRODUCT_SYSIDS = ['92105c060b3022002d6c650d37673ab7', // Access
+	'ab109c060b3022002d6c650d37673a4f', // Excel
+	'7620dc060b3022002d6c650d37673a85', // Skype for Business
+	'f520dc060b3022002d6c650d37673a24', // PowerPoint
+	'fa6ef8dcdbf0cb00b30d79fdae9619a2', // Yammer
+	'd1209c060b3022002d6c650d37673af4', // Outlook
+	'b83010460b3022002d6c650d37673a2f', // Word
+	'4d209c060b3022002d6c650d37673aea', // OneDrive for Business
+	'3120dc060b3022002d6c650d37673a31', // Publisher
+	'd27001acdbca0f00fa001aac0b961943', // Teams
+	'41209c060b3022002d6c650d37673aeb', // OneNote
+];
+SampO365Admin.E3_TO_E1_DESKTOP_PRODUCT_SYSIDS = ['92105c060b3022002d6c650d37673ab7', // Access
+	'ab109c060b3022002d6c650d37673a4f', // Excel
+	'f520dc060b3022002d6c650d37673a24', // PowerPoint
+	'd1209c060b3022002d6c650d37673af4', // Outlook
+	'b83010460b3022002d6c650d37673a2f', // Word
+	'3120dc060b3022002d6c650d37673a31', // Publisher
+	'41209c060b3022002d6c650d37673aeb', // OneNote
+];
+SampO365Admin.ONEDRIVE_FOR_BUSINESS_PRODUCT_SYSID = '4d209c060b3022002d6c650d37673aea';
+SampO365Admin.EXCHANGE_ONLINE_PRODUCT_SYSID = 'fd22b218dbf58300fa001aac0b961994';
+SampO365Admin.SHAREPOINT_ONLINE_PRODUCT_SYSID = '6d273a98dbf58300fa001aac0b96199e';
+SampO365Admin.SKYPE_FOR_BUSINESS_PRODUCT_SYSID = '7620dc060b3022002d6c650d37673a85';
+SampO365Admin.YAMMER_PRODUCT_SYSID = 'fa6ef8dcdbf0cb00b30d79fdae9619a2';
+SampO365Admin.TEAMS_PRODUCT_SYSID = 'd27001acdbca0f00fa001aac0b961943';
+SampO365Admin.OFFICE_PRODUCT_SYSID = '89209c060b3022002d6c650d37673ae3';
+SampO365Admin.ASSIGNMENT_GROUP_DEFAULT = '9ee15afd677222007d59cbb35685efec';
+SampO365Admin.RECLAMATION_CANDIDATE_TABLE = 'samp_sw_reclamation_candidate';]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:39</sys_created_on>
+        <sys_id>16d5e96c47111110c859fee3846d43d6</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampO365Admin</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_16d5e96c47111110c859fee3846d43d6</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:39</sys_updated_on>
+    </sys_script_include>
+</record_update>

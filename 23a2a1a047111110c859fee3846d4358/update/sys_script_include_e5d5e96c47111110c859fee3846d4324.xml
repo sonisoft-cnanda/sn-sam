@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampCDSHealthCheck</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SampCDSHealthCheck</name>
+        <script><![CDATA[var SampCDSHealthCheck = Class.create();
+SampCDSHealthCheck.prototype = {
+
+	initialize: function() {
+		this.coreCompanyUtil = new SAMCoreCompanyUtil();
+	},
+
+	process: function() {
+		this.CDSHealthCheckNormRate();
+		this.CDSHealthCheckPublisherNormRate();
+	},
+
+	CDSHealthCheckNormRate: function() {
+		var installGr = new GlideAggregate('cmdb_sam_sw_install');
+		installGr.addNotNullQuery('norm_publisher');
+		installGr.addNotNullQuery('norm_product');
+		installGr.addAggregate('COUNT', 'discovery_model.status');
+		installGr.groupBy('discovery_model.status');
+		installGr.query();
+
+		var installNormRateGr = new GlideRecord('samp_sw_install_normalization_rate');
+		installNormRateGr.setWorkflow(false);
+		installNormRateGr.deleteMultiple();
+
+		while (installGr.next()) {
+			installNormRateGr.initialize();
+			installNormRateGr.setValue('count', installGr.getAggregate('COUNT', 'discovery_model.status'));
+			installNormRateGr.setValue('normalization_status', installGr.getValue('discovery_model.status'));
+			installNormRateGr.setWorkflow(false);
+			installNormRateGr.insert();
+		}
+	},
+
+	CDSHealthCheckPublisherNormRate: function() {
+		var microsoftCoreCompany = this.coreCompanyUtil.resolveCoreCompanyForSoftwarePublisher(ReconciliationConstants.MICROSOFT_PUBLISHER_SYS_ID);
+		var oracleCoreCompany = this.coreCompanyUtil.resolveCoreCompanyForSoftwarePublisher(ReconciliationConstants.ORACLE_PUBLISHER_SYS_ID);
+		var ibmCoreCompany = this.coreCompanyUtil.resolveCoreCompanyForSoftwarePublisher(ReconciliationConstants.IBM_PUBLISHER_SYS_ID);
+		var vmwareCoreCompany = this.coreCompanyUtil.resolveCoreCompanyForSoftwarePublisher(ReconciliationConstants.VMWARE_PUBLISHER_SYS_ID);
+		var adobeCoreCompany = this.coreCompanyUtil.resolveCoreCompanyForSoftwarePublisher(ReconciliationConstants.ADOBE_PUBLISHER_SYS_ID);
+		var citrixCoreCompany = this.coreCompanyUtil.resolveCoreCompanyForSoftwarePublisher(ReconciliationConstants.CITRIX_PUBLISHER_SYS_ID);
+
+		var topPublishers = [microsoftCoreCompany, oracleCoreCompany, ibmCoreCompany, vmwareCoreCompany, adobeCoreCompany, citrixCoreCompany];
+
+		var installGr = new GlideAggregate('cmdb_sam_sw_install');
+		// Liceansable Product Type
+		installGr.addNotNullQuery('norm_product');
+		installGr.addNotNullQuery('norm_publisher');
+		// Filter based on Top Publishers
+		installGr.addQuery('norm_publisher', topPublishers);
+		installGr.addAggregate('COUNT', 'discovery_model.status');
+		installGr.groupBy('norm_publisher');
+		installGr.groupBy('discovery_model.status');
+		installGr.query();
+
+		var installPublisherNormRateGr = new GlideRecord('samp_sw_install_publisher_normalization_rate');
+		installPublisherNormRateGr.setWorkflow(false);
+		installPublisherNormRateGr.deleteMultiple();
+
+		while (installGr.next()) {
+		   installPublisherNormRateGr.initialize();
+		   installPublisherNormRateGr.setValue('count', installGr.getAggregate('COUNT', 'discovery_model.status'));
+		   installPublisherNormRateGr.setValue('norm_publisher', installGr.getValue('norm_publisher'));
+		   installPublisherNormRateGr.setValue('normalization_status', installGr.getValue('discovery_model.status'));
+		   installPublisherNormRateGr.setWorkflow(false);
+		   installPublisherNormRateGr.insert();
+		}
+	},
+
+	type: 'SampCDSHealthCheck',
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:36</sys_created_on>
+        <sys_id>e5d5e96c47111110c859fee3846d4324</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampCDSHealthCheck</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_e5d5e96c47111110c859fee3846d4324</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:36</sys_updated_on>
+    </sys_script_include>
+</record_update>

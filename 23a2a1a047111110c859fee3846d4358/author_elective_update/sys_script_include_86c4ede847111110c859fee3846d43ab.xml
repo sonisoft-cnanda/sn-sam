@@ -1,0 +1,499 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="DELETE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SAMCalculateLifecycles</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SAMCalculateLifecycles</name>
+        <script><![CDATA[var SAMCalculateLifecycles = Class.create();
+SAMCalculateLifecycles.prototype = Object.extendsObject(
+	AssetManagementPerDomainAssetProcessSettingBaseJob, (function() {
+		var LIFECYCLE_PHASE_GA = 'availability';
+		var LIFECYCLE_PHASE_EOL = 'end_of_life';
+		var LIFECYCLE_PHASE_EOS = 'end_of_support';
+		var LIFECYCLE_AVERAGES_TYPE_CUSTOM = 'custom_industry_average';
+		var LIFECYCLE_AVERAGES_TYPE_GLOBAL = 'global_industry_average';
+		var LIFECYCLE_AVERAGES_TYPE_PRODUCT = 'product';
+		var LIFECYCLE_AVERAGES_TYPE_PUBLISHER = 'publisher';
+		var LIFECYCLE_SOURCE_CALCULATED = 'sn_calculated';
+		var LIFECYCLE_SOURCE_SERVICE_NOW = 'service_now';
+		var LIFECYCLE_SOURCE_INTERNAL = 'internal';
+		var LIFECYCLE_TYPE_INTERNAL = 'internal';
+		var PRODUCT_LIFECYCLE_TABLE = 'sam_sw_product_lifecycle';
+		var CUSTOM_PRODUCT_LIFECYCLE_TABLE = 'sam_custom_sw_product_lifecycle';
+		var LIFECYCLE_AVERAGES_TABLE = 'samp_sw_lifecycle_averages';
+		var LIFECYCLE_PROPERTY = 'com.snc.samp.generate.calculated.lifecycles';
+		return {
+			initialize: function() {
+				this.fSampLogger = new SampLogger();
+			},
+
+			preRunJob: function() {
+				this.fSampLogger.info(this.type, 'making records inactive ');
+			},
+
+			/*
+			Get all lifecycles from "sam_sw_product_lifecycle" with
+				GA dates are available & Lifecycle is published by ServiceNow.
+			Get lifecycle records with unique key (Publisher, Product, Version, Full Version, Edition & Lifecycle Phase)
+				Content published EOS/EOL - skip
+				Calculated EOS/EOL - recalculate
+				no EOS/EOL - insert
+			Get "number of months" value from "samp_sw_lifecycle_averages" by checking in below order
+				Product, Publisher, Custom, Global
+			If prior calculated EOS/EOL are found, update the dates.
+			Create calculated EOS/EOL.
+		*/
+			insertAndProcessData: function() {
+				var that = this;
+				new GlideQuery(PRODUCT_LIFECYCLE_TABLE)
+					.where('lifecycle_phase', LIFECYCLE_PHASE_GA)
+					.where('source', LIFECYCLE_SOURCE_SERVICE_NOW)
+					.select('norm_product.publisher', 'norm_product.sys_id', 'norm_version', 'norm_full_version', 'norm_edition', 'start_date')
+					.forEach(function(lifecycleGAGr) {
+						try {
+							that.fSampLogger.info(that.type, 'Started the process for ' + lifecycleGAGr.sys_id);
+							var productObject = lifecycleGAGr.norm_product;
+							var product = productObject.sys_id;
+							var publisher = productObject.publisher;
+							var version = lifecycleGAGr.norm_version;
+							var fullVersion = lifecycleGAGr.norm_full_version;
+							var edition = lifecycleGAGr.norm_edition;
+							var gaDate = lifecycleGAGr.start_date;
+							var supportPeriod = that.getSupportPeriod(product, publisher);
+							var customLifecyclePhases = [LIFECYCLE_PHASE_EOS, LIFECYCLE_PHASE_EOL];
+							var createEOL = true;
+							var createEOS = true;
+							var deleteCustomEOL = false;
+							var deleteCustomEOS = false;
+							new GlideQuery(PRODUCT_LIFECYCLE_TABLE)
+								.where('norm_product', product)
+								.where('norm_version', version)
+								.where('norm_full_version', fullVersion)
+								.where('norm_edition', edition)
+								.where('lifecycle_phase', 'IN', customLifecyclePhases)
+								.select('lifecycle_type', 'lifecycle_phase', 'source')
+								.forEach(function(lifecycleGr) {
+									var lifecycleType = lifecycleGr.lifecycle_type;
+									var source = lifecycleGr.source;
+									var lifecyclePhase = lifecycleGr.lifecycle_phase;
+									if (lifecyclePhase === LIFECYCLE_PHASE_EOL) {
+										createEOL = false;
+										if (lifecycleType === LIFECYCLE_TYPE_INTERNAL
+											&& source === LIFECYCLE_SOURCE_CALCULATED
+											&& !gs.nil(supportPeriod.avgEOL)) {
+											that.updateCustomLifecycle(lifecycleGr.sys_id,
+												gaDate, supportPeriod.avgEOL);
+										} else if (source === LIFECYCLE_SOURCE_SERVICE_NOW
+											|| source === LIFECYCLE_SOURCE_INTERNAL) {
+											deleteCustomEOL = true;
+										}
+									} else {
+										createEOS = false;
+										if (lifecycleType === LIFECYCLE_TYPE_INTERNAL
+										&& source === LIFECYCLE_SOURCE_CALCULATED
+										&& !gs.nil(supportPeriod.avgEOS)) {
+											that.updateCustomLifecycle(lifecycleGr.sys_id,
+												gaDate, supportPeriod.avgEOS);
+										} else if (source === LIFECYCLE_SOURCE_SERVICE_NOW
+										|| source === LIFECYCLE_SOURCE_INTERNAL) {
+											deleteCustomEOS = true;
+										}
+									}
+								});
+
+							if (createEOL && !gs.nil(supportPeriod.avgEOL)) {
+								that.createCustomLifecycle(version, edition, fullVersion, product, publisher,
+									LIFECYCLE_PHASE_EOL, gaDate, supportPeriod.avgEOL);
+							}
+							if (createEOS && !gs.nil(supportPeriod.avgEOS)) {
+								that.createCustomLifecycle(version, edition, fullVersion, product, publisher,
+									LIFECYCLE_PHASE_EOS, gaDate, supportPeriod.avgEOS);
+							}
+							if (deleteCustomEOL || gs.nil(supportPeriod.avgEOL)) {
+								that.deleteCustomLifecycle(version, edition, fullVersion, product, publisher,
+									LIFECYCLE_PHASE_EOL);
+							}
+							if (deleteCustomEOS || gs.nil(supportPeriod.avgEOS)) {
+								that.deleteCustomLifecycle(version, edition, fullVersion, product, publisher,
+									LIFECYCLE_PHASE_EOS);
+							}
+						} catch (error) {
+							that.fSampLogger.error(that.type, 'Unable to create lifecycles for ' + lifecycleGAGr.sys_id);
+						}
+					});
+			},
+			deleteCustomLifecycle: function(version, edition, fullVersion, product, publisher, lifecyclePhase) {
+				var lifecycleGr = new GlideQuery(CUSTOM_PRODUCT_LIFECYCLE_TABLE)
+					.where('norm_product', product)
+					.where('norm_version', version)
+					.where('norm_full_version', fullVersion)
+					.where('norm_edition', edition)
+					.where('lifecycle_phase', lifecyclePhase)
+					.where('lifecycle_type', LIFECYCLE_TYPE_INTERNAL)
+					.where('source', LIFECYCLE_SOURCE_CALCULATED)
+					.toGlideRecord();
+				lifecycleGr.query();
+				if (lifecycleGr.getRowCount() === 1) {
+					lifecycleGr.deleteMultiple();
+					this.fSampLogger.info(this.type, 'Deleted calculated software lifecycle with publisher: ' + publisher + ' product: ' + product + ' version: ' + version
+						+ 'edition: ' + edition + ' fullVersion: ' + fullVersion + ' lifecyclePhase: ' + lifecyclePhase);
+				}
+			},
+			updateCustomLifecycle: function(sysId, gaDate, period) {
+				var phaseEndDate = new GlideDateTime(gaDate);
+				phaseEndDate.addMonthsUTC(period);
+				new GlideQuery(CUSTOM_PRODUCT_LIFECYCLE_TABLE)
+					.where('sys_id', sysId)
+					.update({ start_date: phaseEndDate.getDate(), active: true });
+				this.fSampLogger.info(this.type, 'Updated calculated software lifecycle ' + sysId);
+			},
+			createCustomLifecycle: function(version, edition, fullVersion, product, publisher,
+				lifecyclePhase, gaDate, period) {
+				var phaseEndDate = new GlideDateTime(gaDate);
+				phaseEndDate.addMonthsUTC(period);
+				new GlideQuery(CUSTOM_PRODUCT_LIFECYCLE_TABLE)
+					.insert({
+						norm_product: product,
+						norm_version: version,
+						norm_full_version: fullVersion,
+						norm_edition: edition,
+						lifecycle_phase: lifecyclePhase,
+						lifecycle_type: LIFECYCLE_TYPE_INTERNAL,
+						source: LIFECYCLE_SOURCE_CALCULATED,
+						start_date: phaseEndDate.getDate(),
+						exclude_from_content_service: true,
+					});
+				this.fSampLogger.info(this.type, 'Created new calculated software lifecycle with publisher: ' + publisher + ' product: ' + product + ' version: ' + version
+						+ 'edition: ' + edition + ' fullVersion: ' + fullVersion + ' lifecyclePhase: ' + lifecyclePhase);
+			},
+			querySupportPeriod: function(queryColumn, queryValue, type) {
+				var avgEOL;
+				var avgEOS;
+				var matchFound = false;
+				var supportQuery = new GlideQuery(LIFECYCLE_AVERAGES_TABLE)
+					.where('type', type)
+					.where('active', true);
+				if (!gs.nil(queryColumn)) {
+					supportQuery = supportQuery.where(queryColumn, queryValue);
+				}
+				supportQuery.select('average_end_of_life_period', 'average_end_of_support_period')
+					.forEach(function(lifecycleAverage) {
+						avgEOL = lifecycleAverage.average_end_of_life_period;
+						avgEOS = lifecycleAverage.average_end_of_support_period;
+						matchFound = true;
+					});
+				return {
+					avgEOL: avgEOL,
+					avgEOS: avgEOS,
+					matchFound: matchFound,
+				};
+			},
+			getSupportPeriod: function(product, publisher) {
+				var resultData = this.querySupportPeriod('product', product, LIFECYCLE_AVERAGES_TYPE_PRODUCT);
+				if (!resultData.matchFound) {
+					resultData = this.querySupportPeriod('publisher', publisher, LIFECYCLE_AVERAGES_TYPE_PUBLISHER);
+				}
+				if (!resultData.matchFound) {
+					resultData = this.querySupportPeriod('', '', LIFECYCLE_AVERAGES_TYPE_CUSTOM);
+				}
+				if (!resultData.matchFound) {
+					resultData = this.querySupportPeriod('', '', LIFECYCLE_AVERAGES_TYPE_GLOBAL);
+				}
+				return {
+					avgEOL: resultData.avgEOL,
+					avgEOS: resultData.avgEOS,
+				};
+			},
+			runJob: function() {
+				if (GlidePluginManager.isActive('com.glide.domain.msp_extensions.installer') && GlideDomainSupport.isDataSeparationEnabled()) {
+					if (GlideApplicationProperty.getValue(LIFECYCLE_PROPERTY) === 'true') {
+						this.insertAndProcessData();
+					}
+				} else if (gs.getProperty(LIFECYCLE_PROPERTY) === 'true') {
+					this.insertAndProcessData();
+				}
+			},
+			postRunJobOnSuccess: function() {
+				this.fSampLogger.info(this.type, 'Deleted inactive records ');
+			},
+			type: 'CalculateLifecycles',
+		};
+	}())
+);]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:49:59</sys_created_on>
+        <sys_id>86c4ede847111110c859fee3846d43ab</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SAMCalculateLifecycles</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_86c4ede847111110c859fee3846d43ab</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:49:59</sys_updated_on>
+    </sys_script_include>
+    <sys_update_version action="INSERT_OR_UPDATE">
+        <action>DELETE</action>
+        <application display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</application>
+        <file_path/>
+        <instance_id>4e2646e7dbf513888264f70fbf96195b</instance_id>
+        <instance_name>dev58455</instance_name>
+        <name>sys_script_include_86c4ede847111110c859fee3846d43ab</name>
+        <payload>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;record_update table="sys_script_include"&gt;&lt;sys_script_include action="INSERT_OR_UPDATE"&gt;&lt;access&gt;public&lt;/access&gt;&lt;active&gt;true&lt;/active&gt;&lt;api_name&gt;x_807586_sam_scrip.SAMCalculateLifecycles&lt;/api_name&gt;&lt;caller_access/&gt;&lt;client_callable&gt;false&lt;/client_callable&gt;&lt;description/&gt;&lt;name&gt;SAMCalculateLifecycles&lt;/name&gt;&lt;script&gt;&lt;![CDATA[var SAMCalculateLifecycles = Class.create();
+SAMCalculateLifecycles.prototype = Object.extendsObject(
+	AssetManagementPerDomainAssetProcessSettingBaseJob, (function() {
+		var LIFECYCLE_PHASE_GA = 'availability';
+		var LIFECYCLE_PHASE_EOL = 'end_of_life';
+		var LIFECYCLE_PHASE_EOS = 'end_of_support';
+		var LIFECYCLE_AVERAGES_TYPE_CUSTOM = 'custom_industry_average';
+		var LIFECYCLE_AVERAGES_TYPE_GLOBAL = 'global_industry_average';
+		var LIFECYCLE_AVERAGES_TYPE_PRODUCT = 'product';
+		var LIFECYCLE_AVERAGES_TYPE_PUBLISHER = 'publisher';
+		var LIFECYCLE_SOURCE_CALCULATED = 'sn_calculated';
+		var LIFECYCLE_SOURCE_SERVICE_NOW = 'service_now';
+		var LIFECYCLE_SOURCE_INTERNAL = 'internal';
+		var LIFECYCLE_TYPE_INTERNAL = 'internal';
+		var PRODUCT_LIFECYCLE_TABLE = 'sam_sw_product_lifecycle';
+		var CUSTOM_PRODUCT_LIFECYCLE_TABLE = 'sam_custom_sw_product_lifecycle';
+		var LIFECYCLE_AVERAGES_TABLE = 'samp_sw_lifecycle_averages';
+		var LIFECYCLE_PROPERTY = 'com.snc.samp.generate.calculated.lifecycles';
+		return {
+			initialize: function() {
+				this.fSampLogger = new SampLogger();
+			},
+
+			preRunJob: function() {
+				this.fSampLogger.info(this.type, 'making records inactive ');
+			},
+
+			/*
+			Get all lifecycles from "sam_sw_product_lifecycle" with
+				GA dates are available &amp; Lifecycle is published by ServiceNow.
+			Get lifecycle records with unique key (Publisher, Product, Version, Full Version, Edition &amp; Lifecycle Phase)
+				Content published EOS/EOL - skip
+				Calculated EOS/EOL - recalculate
+				no EOS/EOL - insert
+			Get "number of months" value from "samp_sw_lifecycle_averages" by checking in below order
+				Product, Publisher, Custom, Global
+			If prior calculated EOS/EOL are found, update the dates.
+			Create calculated EOS/EOL.
+		*/
+			insertAndProcessData: function() {
+				var that = this;
+				new GlideQuery(PRODUCT_LIFECYCLE_TABLE)
+					.where('lifecycle_phase', LIFECYCLE_PHASE_GA)
+					.where('source', LIFECYCLE_SOURCE_SERVICE_NOW)
+					.select('norm_product.publisher', 'norm_product.sys_id', 'norm_version', 'norm_full_version', 'norm_edition', 'start_date')
+					.forEach(function(lifecycleGAGr) {
+						try {
+							that.fSampLogger.info(that.type, 'Started the process for ' + lifecycleGAGr.sys_id);
+							var productObject = lifecycleGAGr.norm_product;
+							var product = productObject.sys_id;
+							var publisher = productObject.publisher;
+							var version = lifecycleGAGr.norm_version;
+							var fullVersion = lifecycleGAGr.norm_full_version;
+							var edition = lifecycleGAGr.norm_edition;
+							var gaDate = lifecycleGAGr.start_date;
+							var supportPeriod = that.getSupportPeriod(product, publisher);
+							var customLifecyclePhases = [LIFECYCLE_PHASE_EOS, LIFECYCLE_PHASE_EOL];
+							var createEOL = true;
+							var createEOS = true;
+							var deleteCustomEOL = false;
+							var deleteCustomEOS = false;
+							new GlideQuery(PRODUCT_LIFECYCLE_TABLE)
+								.where('norm_product', product)
+								.where('norm_version', version)
+								.where('norm_full_version', fullVersion)
+								.where('norm_edition', edition)
+								.where('lifecycle_phase', 'IN', customLifecyclePhases)
+								.select('lifecycle_type', 'lifecycle_phase', 'source')
+								.forEach(function(lifecycleGr) {
+									var lifecycleType = lifecycleGr.lifecycle_type;
+									var source = lifecycleGr.source;
+									var lifecyclePhase = lifecycleGr.lifecycle_phase;
+									if (lifecyclePhase === LIFECYCLE_PHASE_EOL) {
+										createEOL = false;
+										if (lifecycleType === LIFECYCLE_TYPE_INTERNAL
+											&amp;&amp; source === LIFECYCLE_SOURCE_CALCULATED
+											&amp;&amp; !gs.nil(supportPeriod.avgEOL)) {
+											that.updateCustomLifecycle(lifecycleGr.sys_id,
+												gaDate, supportPeriod.avgEOL);
+										} else if (source === LIFECYCLE_SOURCE_SERVICE_NOW
+											|| source === LIFECYCLE_SOURCE_INTERNAL) {
+											deleteCustomEOL = true;
+										}
+									} else {
+										createEOS = false;
+										if (lifecycleType === LIFECYCLE_TYPE_INTERNAL
+										&amp;&amp; source === LIFECYCLE_SOURCE_CALCULATED
+										&amp;&amp; !gs.nil(supportPeriod.avgEOS)) {
+											that.updateCustomLifecycle(lifecycleGr.sys_id,
+												gaDate, supportPeriod.avgEOS);
+										} else if (source === LIFECYCLE_SOURCE_SERVICE_NOW
+										|| source === LIFECYCLE_SOURCE_INTERNAL) {
+											deleteCustomEOS = true;
+										}
+									}
+								});
+
+							if (createEOL &amp;&amp; !gs.nil(supportPeriod.avgEOL)) {
+								that.createCustomLifecycle(version, edition, fullVersion, product, publisher,
+									LIFECYCLE_PHASE_EOL, gaDate, supportPeriod.avgEOL);
+							}
+							if (createEOS &amp;&amp; !gs.nil(supportPeriod.avgEOS)) {
+								that.createCustomLifecycle(version, edition, fullVersion, product, publisher,
+									LIFECYCLE_PHASE_EOS, gaDate, supportPeriod.avgEOS);
+							}
+							if (deleteCustomEOL || gs.nil(supportPeriod.avgEOL)) {
+								that.deleteCustomLifecycle(version, edition, fullVersion, product, publisher,
+									LIFECYCLE_PHASE_EOL);
+							}
+							if (deleteCustomEOS || gs.nil(supportPeriod.avgEOS)) {
+								that.deleteCustomLifecycle(version, edition, fullVersion, product, publisher,
+									LIFECYCLE_PHASE_EOS);
+							}
+						} catch (error) {
+							that.fSampLogger.error(that.type, 'Unable to create lifecycles for ' + lifecycleGAGr.sys_id);
+						}
+					});
+			},
+			deleteCustomLifecycle: function(version, edition, fullVersion, product, publisher, lifecyclePhase) {
+				var lifecycleGr = new GlideQuery(CUSTOM_PRODUCT_LIFECYCLE_TABLE)
+					.where('norm_product', product)
+					.where('norm_version', version)
+					.where('norm_full_version', fullVersion)
+					.where('norm_edition', edition)
+					.where('lifecycle_phase', lifecyclePhase)
+					.where('lifecycle_type', LIFECYCLE_TYPE_INTERNAL)
+					.where('source', LIFECYCLE_SOURCE_CALCULATED)
+					.toGlideRecord();
+				lifecycleGr.query();
+				if (lifecycleGr.getRowCount() === 1) {
+					lifecycleGr.deleteMultiple();
+					this.fSampLogger.info(this.type, 'Deleted calculated software lifecycle with publisher: ' + publisher + ' product: ' + product + ' version: ' + version
+						+ 'edition: ' + edition + ' fullVersion: ' + fullVersion + ' lifecyclePhase: ' + lifecyclePhase);
+				}
+			},
+			updateCustomLifecycle: function(sysId, gaDate, period) {
+				var phaseEndDate = new GlideDateTime(gaDate);
+				phaseEndDate.addMonthsUTC(period);
+				new GlideQuery(CUSTOM_PRODUCT_LIFECYCLE_TABLE)
+					.where('sys_id', sysId)
+					.update({ start_date: phaseEndDate.getDate(), active: true });
+				this.fSampLogger.info(this.type, 'Updated calculated software lifecycle ' + sysId);
+			},
+			createCustomLifecycle: function(version, edition, fullVersion, product, publisher,
+				lifecyclePhase, gaDate, period) {
+				var phaseEndDate = new GlideDateTime(gaDate);
+				phaseEndDate.addMonthsUTC(period);
+				new GlideQuery(CUSTOM_PRODUCT_LIFECYCLE_TABLE)
+					.insert({
+						norm_product: product,
+						norm_version: version,
+						norm_full_version: fullVersion,
+						norm_edition: edition,
+						lifecycle_phase: lifecyclePhase,
+						lifecycle_type: LIFECYCLE_TYPE_INTERNAL,
+						source: LIFECYCLE_SOURCE_CALCULATED,
+						start_date: phaseEndDate.getDate(),
+						exclude_from_content_service: true,
+					});
+				this.fSampLogger.info(this.type, 'Created new calculated software lifecycle with publisher: ' + publisher + ' product: ' + product + ' version: ' + version
+						+ 'edition: ' + edition + ' fullVersion: ' + fullVersion + ' lifecyclePhase: ' + lifecyclePhase);
+			},
+			querySupportPeriod: function(queryColumn, queryValue, type) {
+				var avgEOL;
+				var avgEOS;
+				var matchFound = false;
+				var supportQuery = new GlideQuery(LIFECYCLE_AVERAGES_TABLE)
+					.where('type', type)
+					.where('active', true);
+				if (!gs.nil(queryColumn)) {
+					supportQuery = supportQuery.where(queryColumn, queryValue);
+				}
+				supportQuery.select('average_end_of_life_period', 'average_end_of_support_period')
+					.forEach(function(lifecycleAverage) {
+						avgEOL = lifecycleAverage.average_end_of_life_period;
+						avgEOS = lifecycleAverage.average_end_of_support_period;
+						matchFound = true;
+					});
+				return {
+					avgEOL: avgEOL,
+					avgEOS: avgEOS,
+					matchFound: matchFound,
+				};
+			},
+			getSupportPeriod: function(product, publisher) {
+				var resultData = this.querySupportPeriod('product', product, LIFECYCLE_AVERAGES_TYPE_PRODUCT);
+				if (!resultData.matchFound) {
+					resultData = this.querySupportPeriod('publisher', publisher, LIFECYCLE_AVERAGES_TYPE_PUBLISHER);
+				}
+				if (!resultData.matchFound) {
+					resultData = this.querySupportPeriod('', '', LIFECYCLE_AVERAGES_TYPE_CUSTOM);
+				}
+				if (!resultData.matchFound) {
+					resultData = this.querySupportPeriod('', '', LIFECYCLE_AVERAGES_TYPE_GLOBAL);
+				}
+				return {
+					avgEOL: resultData.avgEOL,
+					avgEOS: resultData.avgEOS,
+				};
+			},
+			runJob: function() {
+				if (GlidePluginManager.isActive('com.glide.domain.msp_extensions.installer') &amp;&amp; GlideDomainSupport.isDataSeparationEnabled()) {
+					if (GlideApplicationProperty.getValue(LIFECYCLE_PROPERTY) === 'true') {
+						this.insertAndProcessData();
+					}
+				} else if (gs.getProperty(LIFECYCLE_PROPERTY) === 'true') {
+					this.insertAndProcessData();
+				}
+			},
+			postRunJobOnSuccess: function() {
+				this.fSampLogger.info(this.type, 'Deleted inactive records ');
+			},
+			type: 'CalculateLifecycles',
+		};
+	}())
+);]]&gt;&lt;/script&gt;&lt;sys_class_name&gt;sys_script_include&lt;/sys_class_name&gt;&lt;sys_created_by&gt;admin&lt;/sys_created_by&gt;&lt;sys_created_on&gt;2022-08-10 15:49:59&lt;/sys_created_on&gt;&lt;sys_id&gt;86c4ede847111110c859fee3846d43ab&lt;/sys_id&gt;&lt;sys_mod_count&gt;0&lt;/sys_mod_count&gt;&lt;sys_name&gt;SAMCalculateLifecycles&lt;/sys_name&gt;&lt;sys_package display_value="SAM Scripts" source="x_807586_sam_scrip"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_package&gt;&lt;sys_policy&gt;protected&lt;/sys_policy&gt;&lt;sys_scope display_value="SAM Scripts"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_scope&gt;&lt;sys_update_name&gt;sys_script_include_86c4ede847111110c859fee3846d43ab&lt;/sys_update_name&gt;&lt;sys_updated_by&gt;admin&lt;/sys_updated_by&gt;&lt;sys_updated_on&gt;2022-08-10 15:49:59&lt;/sys_updated_on&gt;&lt;/sys_script_include&gt;&lt;/record_update&gt;</payload>
+        <payload_hash>-1406286086</payload_hash>
+        <record_name>SAMCalculateLifecycles</record_name>
+        <reverted_from/>
+        <source>6ea42de847111110c859fee3846d434c</source>
+        <source_table>sys_update_set</source_table>
+        <state>previous</state>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:49:59</sys_created_on>
+        <sys_id>c2c4ede847111110c859fee3846d43ad</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_recorded_at>1828872c50e0000001</sys_recorded_at>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:49:59</sys_updated_on>
+        <type>Script Include</type>
+        <update_guid>0ec4ede8d9111110e79a53050aebbdac</update_guid>
+        <update_guid_history>0ec4ede8d9111110e79a53050aebbdac:-1406286086</update_guid_history>
+    </sys_update_version>
+    <sys_metadata_delete action="INSERT_OR_UPDATE">
+        <sys_audit_delete/>
+        <sys_class_name>sys_metadata_delete</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:52:24</sys_created_on>
+        <sys_db_object display_value="" name="sys_script_include">sys_script_include</sys_db_object>
+        <sys_id>a8ce984955e0444897360db550d5fa40</sys_id>
+        <sys_metadata>86c4ede847111110c859fee3846d43ab</sys_metadata>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SAMCalculateLifecycles</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_parent/>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_scope_delete display_value="">0011b6f5266e481c80012473557b6490</sys_scope_delete>
+        <sys_update_name>sys_script_include_86c4ede847111110c859fee3846d43ab</sys_update_name>
+        <sys_update_version display_value="sys_script_include_86c4ede847111110c859fee3846d43ab">c2c4ede847111110c859fee3846d43ad</sys_update_version>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:52:24</sys_updated_on>
+    </sys_metadata_delete>
+</record_update>

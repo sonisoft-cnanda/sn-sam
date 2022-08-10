@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamPublisherCalculatorOracle</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamPublisherCalculatorOracle</name>
+        <script><![CDATA[var SamPublisherCalculatorOracle = Class.create();
+SamPublisherCalculatorOracle.prototype = Object.extendsObject(SamPublisherCalculator, {
+	initialize: function(reconEngine, coreCompanyId) {
+		SamPublisherCalculator.prototype.initialize.call(this, reconEngine, coreCompanyId);
+		this.fisSAMPOracleActive = GlidePluginManager.isActive('com.snc.samp.oracle');
+		this.cloudInstallUtil = new global.SamCloudInstallUtil();
+	},
+
+	prepare: function() {
+		SamPublisherCalculator.prototype.prepare.call(this);
+
+		if (this.fisSAMPActive) {
+			this.clearCloudLicenseTypeAndServiceType();
+			this.stampCloudServiceTypeAndCloudProvider();
+			this.stampCloudLicenseType();
+			this.ignoreNonBYOLInstalls();
+		}
+		this.cleanUpOracleOptions();
+	},
+
+	clearCloudLicenseTypeAndServiceType: function() {
+		new GlideQuery(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE)
+			.whereNotNull('norm_product')
+			.whereNotNull('norm_publisher')
+			.whereNotNull('cloud_service_type')
+			.where('norm_publisher', this.coreCompanyId)
+			.where('cloud_license_type_source', '!=', ReconciliationConstants.LICENSE_TYPE_SOURCE_THIRD_PARTY)
+			.updateMultiple({
+				cloud_service_type: null,
+				cloud_provider: null,
+			});
+
+		new GlideQuery(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE)
+			.whereNotNull('norm_product')
+			.whereNotNull('norm_publisher')
+			.whereNotNull('cloud_license_type')
+			.where('norm_publisher', this.coreCompanyId)
+		// don't clear the values stamped by third party sources. If third party integrations is stamping the value,
+		// the reponsibility of keeping it updated is with the integration itself
+			.where('cloud_license_type_source', '!=', ReconciliationConstants.LICENSE_TYPE_SOURCE_THIRD_PARTY)
+			.updateMultiple({
+				cloud_license_type: null,
+				cloud_license_type_source: null,
+			});
+	},
+
+	stampCloudServiceTypeAndCloudProvider: function() {
+		this.cloudInstallUtil.stampCloudServiceTypeAndCloudProvider(ReconciliationConstants.AZURE_DATACENTER_CI_TABLE,
+			[ReconciliationConstants.ORACLE_DATABASE_SYS_ID],
+			ReconciliationConstants.CLOUD_SERVICE_TYPE_IAAS);
+
+		this.cloudInstallUtil.stampCloudServiceTypeAndCloudProvider(ReconciliationConstants.AWS_DATACENTER_CI_TABLE,
+			[ReconciliationConstants.ORACLE_DATABASE_SYS_ID],
+			ReconciliationConstants.CLOUD_SERVICE_TYPE_IAAS);
+
+		this.cloudInstallUtil.stampCloudServiceTypeAndCloudProvider(ReconciliationConstants.AWS_DATACENTER_CI_TABLE,
+			[ReconciliationConstants.ORACLE_DATABASE_SYS_ID],
+			ReconciliationConstants.CLOUD_SERVICE_TYPE_PAAS);
+	},
+	/* We are relying on the automatic tags created via cloud discovery */
+	stampCloudLicenseType: function() {
+		this.cloudInstallUtil.stampUsingDiscoveryTags(
+			ReconciliationConstants.AZURE_DATACENTER_CI_TABLE,
+			[ReconciliationConstants.ORACLE_DATABASE_SYS_ID],
+			ReconciliationConstants.CLOUD_SERVICE_TYPE_IAAS
+		);
+		this.cloudInstallUtil.stampUsingDiscoveryTags(
+			ReconciliationConstants.AWS_DATACENTER_CI_TABLE,
+			[ReconciliationConstants.ORACLE_DATABASE_SYS_ID],
+			ReconciliationConstants.CLOUD_SERVICE_TYPE_IAAS
+		);
+
+		this.cloudInstallUtil.stampUsingDiscoveryTags(
+			ReconciliationConstants.AWS_DATACENTER_CI_TABLE,
+			[ReconciliationConstants.ORACLE_DATABASE_SYS_ID],
+			ReconciliationConstants.CLOUD_SERVICE_TYPE_PAAS
+		);
+	},
+
+	ignoreNonBYOLInstalls: function() {
+		// Find the installs to be ignored and mark those as reconciled
+		var grInstalls = new GlideRecord(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+		grInstalls.addQuery('norm_publisher', this.coreCompanyId);
+		grInstalls.addQuery('cloud_license_type', ReconciliationConstants.LICENSE_TYPE_LICENSE_INCLUDED);
+		this.reconcileIgnoredInstalls(grInstalls);
+	},
+
+	cleanUpOracleOptions: function () {
+		var oracleInstances = new GlideRecord('cmdb_ci_db_ora_instance');
+		if (oracleInstances.isValid()) {
+			oracleInstances = SAMPremiumUtils.getGlideMultipleUpdate('cmdb_ci_db_ora_instance');
+			oracleInstances.setValue('is_reconciled', false);
+			oracleInstances.execute();
+
+			oracleInstances = SAMPremiumUtils.getGlideMultipleUpdate('cmdb_ci_db_ora_instance');
+			oracleInstances.addQuery('software_install.active', false);
+			oracleInstances.setValue('is_reconciled', true);
+			oracleInstances.execute();
+		}
+		var cloudInstances = new GlideRecord('cmdb_ci_cloud_database');
+		if (cloudInstances.isValid()) {
+			cloudInstances = SAMPremiumUtils.getGlideMultipleUpdate('cmdb_ci_cloud_database');
+			cloudInstances.setValue('is_reconciled', false);
+			cloudInstances.execute();
+
+			cloudInstances = SAMPremiumUtils.getGlideMultipleUpdate('cmdb_ci_cloud_database');
+			cloudInstances.addQuery('software_install.active', false);
+			cloudInstances.setValue('is_reconciled', true);
+			cloudInstances.execute();
+		}
+		this.markAllUnlicensableInstanceOptionsAsReconciled();
+	},
+
+	markAllUnlicensableInstanceOptionsAsReconciled: function () {
+		var optionSetGr = new GlideRecord(ReconciliationConstants.ORACLE_INSTANCE_OPTION_SET);
+		var oracleOptionGr = new GlideRecord(ReconciliationConstants.ORACLE_INSTANCE_OPTION_TABLE);
+		if (optionSetGr.isValid() && oracleOptionGr.isValid()) {
+			optionSetGr.query();
+			var licensableOptions = [];
+			while (optionSetGr.next()) {
+				licensableOptions.push(optionSetGr.getValue('oracle_option'));
+			}
+
+			oracleOptionGr = SAMPremiumUtils
+				.getGlideMultipleUpdate(ReconciliationConstants.ORACLE_INSTANCE_OPTION_TABLE);
+			oracleOptionGr.addQuery('instance.software_install.discovery_model.norm_edition', '!=',
+				ReconciliationConstants.ORACLE_ENTERPRISE_EDITION)
+				.addOrCondition('instance.software_install.discovery_model.norm_edition', '');
+			oracleOptionGr.addNullQuery('instance.software_install.cloud_service_type');
+			oracleOptionGr.setValue('unlicensed_option', false);
+			oracleOptionGr.setValue('is_reconciled', true);
+			oracleOptionGr.setValue('license_metric_result', '');
+			oracleOptionGr.setValue('software_model_result', '');
+			oracleOptionGr.setValue('product_result', '');
+			oracleOptionGr.setValue('software_model', '');
+			oracleOptionGr.execute();
+
+			oracleOptionGr = SAMPremiumUtils
+				.getGlideMultipleUpdate(ReconciliationConstants.ORACLE_INSTANCE_OPTION_TABLE);
+			oracleOptionGr.addQuery('option', 'IN', licensableOptions);
+			oracleOptionGr.setValue('unlicensed_option', true);
+			oracleOptionGr.setValue('is_reconciled', false);
+			oracleOptionGr.setValue('license_metric_result', '');
+			oracleOptionGr.setValue('software_model_result', '');
+			oracleOptionGr.setValue('product_result', '');
+			oracleOptionGr.setValue('software_model', '');
+			oracleOptionGr.execute();
+
+			oracleOptionGr = SAMPremiumUtils
+				.getGlideMultipleUpdate(ReconciliationConstants.ORACLE_INSTANCE_OPTION_TABLE);
+			oracleOptionGr.addQuery('option', 'NOT IN', licensableOptions);
+			oracleOptionGr.setValue('unlicensed_option', false);
+			oracleOptionGr.setValue('is_reconciled', true);
+			oracleOptionGr.setValue('license_metric_result', '');
+			oracleOptionGr.setValue('software_model_result', '');
+			oracleOptionGr.setValue('product_result', '');
+			oracleOptionGr.setValue('software_model', '');
+			oracleOptionGr.execute();
+
+			oracleOptionGr = SAMPremiumUtils
+				.getGlideMultipleUpdate(ReconciliationConstants.ORACLE_INSTANCE_OPTION_TABLE);
+			oracleOptionGr.addQuery('instance.software_install.active', false);
+			oracleOptionGr.setValue('unlicensed_option', false);
+			oracleOptionGr.setValue('is_reconciled', true);
+			oracleOptionGr.execute();
+
+			oracleOptionGr = SAMPremiumUtils
+				.getGlideMultipleUpdate(ReconciliationConstants.ORACLE_INSTANCE_OPTION_TABLE);
+			oracleOptionGr.addQuery('currently_used', 'Not In Use');
+			oracleOptionGr.setValue('unlicensed_option', false);
+			oracleOptionGr.setValue('is_reconciled', true);
+			oracleOptionGr.execute();
+		}
+	},
+
+	generateProductResultLeftover: function () {
+		SamPublisherCalculator.prototype.generateProductResultLeftover.call(this);
+		if (this.fisSAMPOracleActive) {
+			// Set remainding oracle options to reconcilied
+			var oracleOptionGr = new GlideRecord(ReconciliationConstants.ORACLE_INSTANCE_OPTION_TABLE);
+			oracleOptionGr.addQuery('is_reconciled', false);
+			oracleOptionGr.setValue('is_reconciled', true);
+			oracleOptionGr.setWorkflow(false);
+			oracleOptionGr.updateMultiple();
+		}
+	},
+
+	getProductCalculator: function (product) {
+		return this.fisSAMPActive
+			? new SampProductCalculatorOracle(this, product) : new SamsProductCalculator(this, product);
+	},
+
+	type: 'SamPublisherCalculatorOracle',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:38</sys_created_on>
+        <sys_id>12d5e96c47111110c859fee3846d43cc</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamPublisherCalculatorOracle</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_12d5e96c47111110c859fee3846d43cc</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:38</sys_updated_on>
+    </sys_script_include>
+</record_update>

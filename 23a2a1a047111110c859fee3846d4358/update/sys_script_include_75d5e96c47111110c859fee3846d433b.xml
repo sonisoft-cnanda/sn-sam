@@ -1,0 +1,414 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamILMTRVULicenseCalculator</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamILMTRVULicenseCalculator</name>
+        <script><![CDATA[var SamILMTRVULicenseCalculator = Class.create();
+SamILMTRVULicenseCalculator.prototype = Object.extendsObject(SamLicenseCalculator, {
+	initialize: function (coreCompany, product, reconResult, singleLicenseMetric, calculateRightsNeeded, metric) {
+		SamLicenseCalculator.prototype.initialize.call(this, metric, ReconciliationConstants.IBM_METRIC_GROUP,
+			coreCompany, product, reconResult, { mode: ReconciliationConstants.ENTITLEMENT_MAP_MODE.GROUP_BY_MODEL },
+			singleLicenseMetric, true);
+		this.initializeRVUTierBoundaryAndFactor();
+	},
+
+	initializeRVUTierBoundaryAndFactor: function () {
+		var tiers = [];
+		var i = 0;
+		var lowerBoundary = 0;
+		var upperBoundary = 0;
+		var lowerAccumulation = 0;
+		var upperAccumulation = 0;
+		var factor = 0.0;
+		// Fetch data from RVU tier table
+		var tierGr = new GlideRecord('samp_ibm_rvu_tier');
+		tierGr.orderBy('tier');
+		tierGr.query();
+		while (tierGr.next()) {
+			i = parseInt(tierGr.getValue('tier'), 10) - 1;
+			factor = parseFloat(tierGr.getValue('factor'));
+			upperBoundary = parseInt(tierGr.getValue('to_quantity'), 10);
+			if (isNaN(upperBoundary)) {
+				upperBoundary = Infinity;
+			}
+			upperAccumulation += (upperBoundary - lowerBoundary) * factor;
+			tiers[i] = {
+				lowerBoundary: lowerBoundary,
+				upperBoundary: upperBoundary,
+				lowerAccumulation: lowerAccumulation,
+				upperAccumulation: upperAccumulation,
+				factor: factor,
+			};
+			lowerBoundary = upperBoundary;
+			lowerAccumulation = upperAccumulation;
+		}
+		this.tiers = tiers;
+	},
+
+	runAllocatedPass: function() {},
+
+	runUnallocatedPass: function() {
+		var groups;
+		var rightsUsage = {};
+		var rightsNeeded;
+		var modelComboLicensedBy = {};
+		this.processedInstalls = [];
+		var swModels = this.getSwModels();
+
+		if (swModels.length !== 0) {
+			groups = this.findRelated(swModels.sort());
+			this.debug('Unallocated pass', 'Related groups: ' + JSON.stringify(groups));
+			this.debug('Unallocated pass',
+				'Unallocated entitlement sets: ' + JSON.stringify(this.entitlementSets));
+			rightsNeeded = this.consumeRights(groups, rightsUsage, modelComboLicensedBy);
+			this.debug('Unallocated pass',
+				'Entitlement map: ' + JSON.stringify(this.entitlementMap.map));
+
+			// process rights used
+			if (Object.keys(rightsUsage).length !== 0) {
+				this.updateDowngradeRightsUsage(rightsUsage);
+				this.markInstallsAfterAssignment(modelComboLicensedBy);
+				this.debug('Unallocated pass', 'Rights usage: ' + JSON.stringify(rightsUsage));
+			}
+
+			// process rights needed
+			if (Object.keys(rightsNeeded).length !== 0) {
+				if (this.calculateRightsNeeded) {
+					this.generateRightsNeededByForConsumer(rightsNeeded, null);
+					this.markUnlicensedInstallsAfterAssignment(rightsNeeded);
+					this.debug('Unallocated pass', 'Rights needed: ' + JSON.stringify(rightsNeeded));
+				}
+			}
+		}
+	},
+
+	consumeRights: function (swModelComboGroup, rightsUsage, modelComboLicensedBy) {
+		var capacityPeakValue = 0;
+		var swModelCombo;
+		var swModelComboStr;
+		var i;
+		var j;
+		var rightsNeeded = {};
+		var rightsUsed = [];
+		var entSets = [];
+
+		for (i = 0; i < swModelComboGroup.length; i++) {
+			swModelCombo = swModelComboGroup[i];
+			swModelComboStr = swModelCombo.join(',');
+			capacityPeakValue = this.getCapacityForProduct(swModelComboStr);
+
+			var compliant = false;
+			var model;
+			var rvuRights;
+			var sortedSwModels;
+			this.rightsNeededSoftwareModel = this.entitlementMap.cheapest[swModelComboStr].softwareModel;
+			this.rightsNeededAllocatedRights = 0;
+
+			sortedSwModels = this._getSortedModels(this.entitlementMap, swModelComboStr);
+			rvuRights = Math.ceil(this._getRVUTieredRights(capacityPeakValue));
+			this.debug('General information, Actual RVU rights needed: ' + rvuRights);
+			for (j = 0; j < sortedSwModels.length; j++) {
+				model = sortedSwModels[j];
+				if (this._consumeAvailableRights(rvuRights, model, swModelComboStr, rightsUsage,
+					modelComboLicensedBy, capacityPeakValue)) {
+					compliant = true;
+					break;
+				}
+			}
+
+			if (!compliant) {
+				this.calculateRightsNeededBy(rightsNeeded, swModelComboStr, rvuRights, capacityPeakValue);
+			} else {
+				var accumulated = 0;
+				for (var entSet in this.entitlementSets) {
+					if (this.entitlementSets[entSet].notAllocatedInUse === 0) {
+						continue;
+					}
+					entSets.push(entSet);
+					accumulated += this.entitlementSets[entSet].notAllocatedInUse;
+					rightsUsed.push(accumulated);
+				}
+
+				var rawPeakUsages = this.getRawPeakUsage(rightsUsed);
+				var k = 0;
+				var cur = 0;
+				accumulated = 0;
+
+				for (k = 0; k < entSets.length - 1; k++) {
+					cur = Math.ceil(rawPeakUsages[k]);
+					this.entitlementSets[entSets[k]].aggregatedPeakConsumption = cur - accumulated;
+					accumulated = cur;
+				}
+
+				this.entitlementSets[entSets[k]].aggregatedPeakConsumption = capacityPeakValue - accumulated;
+			}
+		}
+		return rightsNeeded;
+	},
+
+	calculateRightsNeededBy: function (rightsNeeded, swModelComboStr, rvuRights, capacityPeakValue) {
+		var rightsNeededEntitlementSet = this.entitlementMap.cheapest[swModelComboStr].entitlementSet;
+		rightsNeeded[rightsNeededEntitlementSet] = {
+			swModelCombo: swModelComboStr,
+			rights: rvuRights,
+			aggregatedPeakConsumption: capacityPeakValue,
+		};
+	},
+
+	getSwModels: function() {
+		var swModels = [];
+		var installsGr = new SampAggregate(ReconciliationConstants.IBM_INSTALL_TABLE);
+		installsGr.addEncodedQuery(this.generateInstallQuery(''));
+		installsGr.addQuery('norm_publisher', this.coreCompanyId);
+		installsGr.addQuery('license_type', this.licenseType);
+		installsGr.addQuery('is_reconciled', false);
+		installsGr.addNullQuery('product_install');
+		installsGr.groupBy('software_model');
+		installsGr.setGroup(true);
+		installsGr.query();
+
+		while (installsGr.next()) {
+			swModels.push(installsGr.getValue('software_model'));
+		}
+		return swModels;
+	},
+
+	getCapacityForProduct: function(swModelComboStr) {
+		var capacity = 0;
+		capacity += this._getCapacityForProductByType(swModelComboStr, 'full');
+		capacity += this._getCapacityForProductByType(swModelComboStr, 'sub');
+
+		return capacity;
+	},
+
+	_getCapacityForProductByType: function (swModelComboStr, usageType) {
+		var peakValueColumn = (usageType === 'full') ? 'full_capacity_peak_value' : 'sub_capacity_peak_value';
+		var capacity = 0;
+		var installs = new SampAggregate(ReconciliationConstants.IBM_INSTALL_TABLE);
+		installs.addEncodedQuery(this.generateInstallQuery(''));
+		installs.setNoLimit(true);
+		installs.addQuery('norm_publisher', this.coreCompanyId);
+		installs.addQuery('is_reconciled', false);
+		installs.addQuery('license_type', this.licenseType);
+		installs.addQuery('usage_type', usageType);
+		installs.addQuery('software_model', 'IN', swModelComboStr);
+		installs.addNotNullQuery(peakValueColumn);
+		installs.addNullQuery('product_install');
+		installs.setGroup(true);
+		installs.addAggregate('MAX', peakValueColumn);
+		installs.groupBy('installed_on');
+		installs.query();
+		while (installs.next()) {
+			capacity += parseInt(installs.getAggregate('MAX', peakValueColumn), 10);
+		}
+
+		return capacity;
+	},
+
+	_consumeAvailableRights: function (rvuRights, model, swModelComboStr, rightsUsage,
+		modelComboLicensedBy, aggregatedPeakValue) {
+		var totalUnallocatedRights = 0;
+		totalUnallocatedRights = this.entitlementMap.getTotalRights(swModelComboStr, model);
+		if (totalUnallocatedRights >= rvuRights) {
+			modelComboLicensedBy[swModelComboStr] = {
+				useAllocationOnly: false,
+				entitlementSets: [],
+			};
+
+			var unallocatedEntitlementOptions = this.entitlementMap.get(swModelComboStr) || {};
+			var unallocatedOptions = unallocatedEntitlementOptions[model] || [];
+			this.consumeUnallocatedRightsForModelCombo(swModelComboStr, unallocatedOptions, rightsUsage,
+				modelComboLicensedBy, rvuRights, aggregatedPeakValue);
+			return true;
+		}
+		return false;
+	},
+
+	_getSortedModels: function (entitlementMap, swModelComboStr) {
+		entitlementMap.cleanUpEntry(swModelComboStr);
+		return entitlementMap.sortEntryByModel(swModelComboStr);
+	},
+
+	_getRVUTieredRights: function (rawPeakUsage) {
+		var peakUsage = rawPeakUsage;
+		for (var i = this.tiers.length - 1; i >= 0; i--) {
+			if (peakUsage >= this.tiers[i].lowerBoundary) {
+				return this.tiers[i].lowerAccumulation + (peakUsage - this.tiers[i].lowerBoundary)
+					* this.tiers[i].factor;
+			}
+		}
+		return -1;
+	},
+
+	markInstallsAfterAssignment: function(modelComboLicensedBy) {
+		var entitlementSets;
+		var swModelComboStr;
+		var j;
+		for (swModelComboStr in modelComboLicensedBy) {
+			entitlementSets = modelComboLicensedBy[swModelComboStr].entitlementSets;
+
+			// Insert records in overflow table
+			var installToLmrGr = new SampRecord(ReconciliationConstants.SOFTWARE_ENTITY_TO_METRIC_RESULT_TABLE);
+			if (entitlementSets.length > 1) {
+				var swInstalls = new SampRecord(ReconciliationConstants.IBM_INSTALL_TABLE);
+				swInstalls.addEncodedQuery(this.generateInstallQuery(''));
+				swInstalls.addQuery('is_reconciled', false);
+				swInstalls.addQuery('software_model', 'IN', swModelComboStr);
+				swInstalls.query();
+
+				while (swInstalls.next()) {
+					for (j = 1; j < entitlementSets.length; j++) {
+						installToLmrGr.initialize();
+						installToLmrGr.setValue('software_entity', swInstalls.getUniqueValue());
+						installToLmrGr.setValue('software_entity_table', ReconciliationConstants
+							.IBM_INSTALL_TABLE);
+						installToLmrGr.setValue('license_metric_result', entitlementSets[j]);
+						installToLmrGr.insert();
+					}
+				}
+			}
+			this.markLicensedEntities(entitlementSets[0], swModelComboStr);
+		}
+	},
+
+	markLicensedEntities: function(lmr, swModelComboStr) {
+		var installs = [];
+		var swInstalls = new SampRecord(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+		swInstalls.addEncodedQuery(this.generateInstallQuery(''));
+		swInstalls.addQuery('is_reconciled', false);
+		swInstalls.addQuery('ref_samp_ilmt_sw_install.license_type', this.licenseType);
+		swInstalls.addQuery('software_model', 'IN', swModelComboStr);
+		swInstalls.addQuery('norm_publisher', this.coreCompanyId);
+		swInstalls.addNullQuery('product_install');
+		swInstalls.query();
+
+		while (swInstalls.next()) {
+			installs.push(swInstalls.getUniqueValue());
+
+			if (installs.length >= ReconciliationConstants.BATCHSIZE) {
+				this.stampLicensedEntities(installs, lmr);
+				installs = [];
+			}
+		}
+
+		this.stampLicensedEntities(installs, lmr);
+	},
+
+	stampLicensedEntities: function(installs, lmr) {
+		if (installs.length === 0) {
+			return;
+		}
+
+		var swInstalls = new GlideRecord(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+		swInstalls.addQuery('sys_id', installs);
+		swInstalls.setValue('unlicensed_install', false);
+		swInstalls.setValue('is_reconciled', true);
+		swInstalls.setValue('is_allocated', false);
+		swInstalls.setValue('allocation_needed', false);
+		swInstalls.setValue('license_metric_result', lmr);
+		swInstalls.setValue('software_model_result', this.entitlementSets[lmr].smr);
+		swInstalls.setWorkflow(false);
+		swInstalls.updateMultiple();
+		SampReconProgressUtil.updateProgress(this.fReconResultId, swInstalls.getRowCount());
+	},
+
+	markUnlicensedInstallsAfterAssignment: function(rightsNeeded) {
+		var entitlementSet;
+		var models;
+		for (entitlementSet in rightsNeeded) {
+			models = rightsNeeded[entitlementSet].swModelCombo;
+			this.markUnlicensedEntities(entitlementSet, models);
+		}
+	},
+
+	markUnlicensedEntities: function(lmr, models) {
+		var installCount = 0;
+		var installs = [];
+		var swInstalls = new SampRecord(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+		swInstalls.addEncodedQuery(this.generateInstallQuery(''));
+		swInstalls.addQuery('is_reconciled', false);
+		swInstalls.addQuery('ref_samp_ilmt_sw_install.license_type', this.licenseType);
+		swInstalls.addQuery('software_model', 'IN', models);
+		swInstalls.addQuery('norm_publisher', this.coreCompanyId);
+		swInstalls.addNullQuery('product_install');
+		swInstalls.query();
+
+		while (swInstalls.next()) {
+			installs.push(swInstalls.getUniqueValue());
+
+			if (installs.length >= ReconciliationConstants.BATCHSIZE) {
+				installCount += this.stampUnlicensedEntities(installs, lmr);
+				installs = [];
+			}
+		}
+
+		installCount += this.stampUnlicensedEntities(installs, lmr);
+
+		return installCount;
+	},
+
+	stampUnlicensedEntities: function(installs, lmr) {
+		// Insert records in overflow table
+		this.insertRecordsInOverflowTable(lmr, installs, ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+
+		var smr = this.entitlementSets[lmr].smr;
+		if (installs.length === 0) {
+			return 0;
+		}
+
+		var swInstalls = new GlideRecord(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+		swInstalls.addQuery('sys_id', installs);
+		swInstalls.setValue('unlicensed_install', true);
+		swInstalls.setValue('is_reconciled', true);
+		swInstalls.setValue('software_model_result', smr);
+		swInstalls.setValue('license_metric_result', lmr);
+		swInstalls.setWorkflow(false);
+		swInstalls.updateMultiple();
+		var installCount = swInstalls.getRowCount();
+		SampReconProgressUtil.updateProgress(this.fReconResultId, installCount);
+		return installCount;
+	},
+
+	getRawPeakUsage: function(actualRightsUsed) {
+		var section = this.tiers.length - 1;
+		var i = actualRightsUsed.length - 1;
+		var tier;
+		var actual;
+		var boundaries = [];
+		while (i >= 0) {
+			tier = this.tiers[section];
+			actual = actualRightsUsed[i];
+			if (actual >= tier.lowerAccumulation) {
+				boundaries.unshift(tier.lowerBoundary + (actual - tier.lowerAccumulation) / tier.factor);
+				i -= 1;
+			} else {
+				section -= 1;
+			}
+		}
+		return boundaries;
+	},
+
+	insertAllocationRemediationOptions: function() {},
+	insertRemoveUnlicensedInstalls: function() {},
+
+	licenseType: 'RVU',
+	type: 'SamILMTRVULicenseCalculator',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:36</sys_created_on>
+        <sys_id>75d5e96c47111110c859fee3846d433b</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamILMTRVULicenseCalculator</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_75d5e96c47111110c859fee3846d433b</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:36</sys_updated_on>
+    </sys_script_include>
+</record_update>

@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampLPRGenerationEngine</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>This script is the entry point for the creation of the license position report table and has all associated functions.</description>
+        <name>SampLPRGenerationEngine</name>
+        <script><![CDATA[var SampLPRGenerationEngine = Class.create();
+SampLPRGenerationEngine.prototype = {
+	initialize: function(reconResultId, reconParams, isSAMPOracleActive, isSAMPSAPActive) {
+		this.reconResult = reconResultId;
+		this.reconForAllPublishers = gs.nil(reconParams.publishers);
+		this.isSAMPOracleActive = isSAMPOracleActive;
+		this.isSAMPSAPActive = isSAMPSAPActive;
+		this.fReconParams = reconParams;
+	},
+
+	generateLicenseReport: function () {
+		// clean up license position report table
+		this.cleanUpLicensePositionReportTable();
+
+		var lmrGr = new GlideRecord(ReconciliationConstants.LICENSE_METRIC_RESULT_TABLE);
+		lmrGr.addQuery('reconciliation_result', this.reconResult);
+		lmrGr.query();
+		while (lmrGr.next()) {
+			var lprGr = new GlideRecord('samp_license_position_report');
+			lprGr.setValue('publisher', lmrGr.getValue('publisher'));
+			lprGr.setValue('product', lmrGr.getValue('product'));
+			lprGr.setValue('software_model', lmrGr.getValue('software_model'));
+			lprGr.setValue('version', lmrGr.software_model.version);
+			lprGr.setValue('edition', lmrGr.software_model.edition);
+			lprGr.setValue('license_metric', lmrGr.getValue('license_metric'));
+			lprGr.setValue('status', lmrGr.software_model_result.status);
+			lprGr.setValue('total_spend', lmrGr.getValue('total_spend'));
+			lprGr.setValue('rights_owned', lmrGr.getValue('rights_owned'));
+			lprGr.setValue('licenses_owned', lmrGr.getValue('rights_owned'));
+			lprGr.setValue('rights_used', lmrGr.getValue('rights_used'));
+			lprGr.setValue('unused_rights', lmrGr.getValue('unused_rights'));
+			lprGr.setValue('avg_price', lmrGr.getValue('avg_price'));
+			lprGr.setValue('over_licensed_amount', lmrGr.getValue('over_licensed_amount'));
+			lprGr.setValue('license_metric_result', lmrGr.getUniqueValue());
+			lprGr.setValue('group_table', lmrGr.getValue('group_table'));
+			lprGr.setValue('group_id', lmrGr.getValue('group_id'));
+			lprGr.setValue('group_display', lmrGr.getValue('group_display'));
+			lprGr.setValue('subgroup_table', lmrGr.getValue('subgroup_table'));
+			lprGr.setValue('subgroup_id', lmrGr.getValue('subgroup_id'));
+			lprGr.setValue('subgroup_display', lmrGr.getValue('subgroup_display'));
+			lprGr.setValue('allocations_needed', lmrGr.getValue('allocations_needed'));
+			lprGr.setValue('downgrade_rights', lmrGr.getValue('downgrade_rights'));
+			lprGr.setValue('maintenance', lmrGr.getValue('maintenance'));
+			lprGr.setValue('legacy_license', lmrGr.getValue('legacy_license'));
+			lprGr.setValue('rights_consumed', lmrGr.getValue('rights_consumed'));
+			lprGr.setValue('licenses_required', lmrGr.getValue('rights_consumed'));
+			lprGr.setValue('rights_needed', lmrGr.getValue('rights_needed'));
+			lprGr.setValue('unlicensed_installs', lmrGr.getValue('unlicensed_installs'));
+			lprGr.setValue('unlicensed_subscriptions', lmrGr.getValue('unlicensed_subscriptions'));
+			lprGr.setValue('unlicensed_sap_users', lmrGr.getValue('unlicensed_sap_users'));
+			lprGr.setValue('unlicensed_options', lmrGr.getValue('unlicensed_options'));
+			lprGr.setValue('potential_savings', lmrGr.getValue('potential_savings'));
+			lprGr.setValue('true_up_cost', lmrGr.getValue('true_up_cost'));
+			lprGr.insert();
+		}
+		this.generateLPRForUnlicensed();
+		SAMPremiumUtils.updateLwbReportLastUpdated('samp_license_position_report');
+	},
+
+	cleanUpLicensePositionReportTable: function () {
+		if (this.reconForAllPublishers) {
+			this.cleanTable('samp_license_position_report');
+		} else {
+			var licensePosReport = new GlideRecord('samp_license_position_report');
+			licensePosReport.addQuery('publisher', this.fReconParams.publishers);
+			licensePosReport.setWorkflow(false);
+			licensePosReport.deleteMultiple();
+		}
+	},
+
+	generateLPRForUnlicensed: function () {
+		var entities = [{
+			table: ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE,
+			unlicensedCol: 'unlicensed_install',
+			unlicensedLprCol: 'unlicensed_installs',
+		}, {
+			table: ReconciliationConstants.SOFTWARE_SUBSCRIPTION_TABLE,
+			unlicensedCol: 'unlicensed_subscription',
+			unlicensedLprCol: 'unlicensed_subscriptions',
+		}];
+		if (this.isSAMPOracleActive) {
+			entities.push({
+				table: ReconciliationConstants.ORACLE_INSTANCE_OPTION_TABLE,
+				unlicensedCol: 'unlicensed_option',
+				unlicensedLprCol: 'unlicensed_options',
+			});
+		}
+		if (this.isSAMPSAPActive) {
+			entities.push({
+				table: ReconciliationConstants.SAP_SYSTEM_USER_TABLE,
+				unlicensedCol: 'unlicensed_user',
+				unlicensedLprCol: 'unlicensed_sap_users',
+			});
+		}
+
+		entities.forEach(function(entity) {
+			this.generateLPRForUnlicensedEntities(entity.table, entity.unlicensedCol, entity.unlicensedLprCol);
+		}, this);
+	},
+
+	generateLPRForUnlicensedEntities: function (table, unlicensedCol, unlicensedLprCol) {
+		var unlicensedGa = new GlideAggregate(table);
+		unlicensedGa.addQuery('is_reconciled', true);
+		unlicensedGa.addQuery(unlicensedCol, true);
+		unlicensedGa.addNotNullQuery('product_result');
+		unlicensedGa.addQuery('product_result.reconciliation_result', this.reconResult);
+		unlicensedGa.groupBy('software_model_result');
+		unlicensedGa.groupBy('product_result');
+		unlicensedGa.addAggregate('COUNT', null);
+		unlicensedGa.query();
+		while (unlicensedGa.next()) {
+			var lprGr = new GlideRecord('samp_license_position_report');
+			var smr = unlicensedGa.getValue('software_model_result');
+			if (smr) {
+				var smrGr = new GlideRecord(ReconciliationConstants.SOFTWARE_MODEL_RESULT_TABLE);
+				smrGr.get(smr);
+				var smModel = smrGr.getValue('software_model');
+				lprGr.addQuery('software_model', smModel);
+				lprGr.addQuery(unlicensedLprCol, '>', '0');
+				lprGr.query();
+				if (lprGr.hasNext()) {
+					continue;
+				}
+
+				lprGr.initialize();
+				lprGr.setValue('status', smrGr.getValue('status'));
+				lprGr.setValue('publisher', smrGr.getValue('publisher'));
+				lprGr.setValue('product', smrGr.getValue('product'));
+				lprGr.setValue('software_model', smModel);
+				lprGr.setValue('version', smrGr.software_model.version);
+				lprGr.setValue('edition', smrGr.software_model.edition);
+			} else {
+				var pr = unlicensedGa.getValue('product_result');
+				if (!pr) {
+					continue;
+				}
+				var prGr = new GlideRecord(ReconciliationConstants.SOFTWARE_PRODUCT_RESULT_TABLE);
+				prGr.get(pr);
+				lprGr.setValue('publisher', prGr.getValue('publisher'));
+				lprGr.setValue('product', prGr.getValue('product'));
+				lprGr.setValue('status', prGr.getValue('status'));
+			}
+			lprGr.setValue(unlicensedLprCol, unlicensedGa.getAggregate('COUNT'));
+			lprGr.insert();
+		}
+	},
+
+	cleanTable: function (tableName) {
+		var gr = new GlideRecord(tableName);
+		gr.setWorkflow(false);
+		gr.deleteMultiple();
+	},
+
+	type: 'SampLPRGenerationEngine',
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:41</sys_created_on>
+        <sys_id>fad52d6c47111110c859fee3846d4328</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampLPRGenerationEngine</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_fad52d6c47111110c859fee3846d4328</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:41</sys_updated_on>
+    </sys_script_include>
+</record_update>

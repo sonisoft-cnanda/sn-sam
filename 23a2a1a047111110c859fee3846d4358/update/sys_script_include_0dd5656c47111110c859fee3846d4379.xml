@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampConstants</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>Constants for Samp</description>
+        <name>SampConstants</name>
+        <script><![CDATA[var SampConstants = Class.create();
+SampConstants.prototype = {
+	initialize: function() {
+	},
+
+	type: 'SampConstants',
+};
+
+SampConstants.MICROSOFT_PUBLISHER = '28dcccc20b3022002d6c650d37673ab2';
+SampConstants.ANY_LANGUAGE = '832bec5493212200caef14f1b47ffb56';
+SampConstants.ANYTHING = 'anything';
+SampConstants.GENERIC_SOURCE = 'generic';
+SampConstants.ILMT = 'ILMT';
+SampConstants.BIG_FIX = 'BigFix Inventory';
+SampConstants.CITRIX = 'Citrix';
+SampConstants.DISCOVERY_PATTERN = 'Pattern';
+SampConstants.INSTALL_BATCH_SIZE = 100;
+SampConstants.SOAP_CONNECTION_TIMEOUT = 600; // in seconds
+SampConstants.ENGINEERING_SOFTWARE = 'Engineering Software';
+
+SampConstants.SUPPORTED_LICENSE_METRICS = [
+	'83b731b30b520300f996440ff6673a67', // Concurrent User
+	'9c3a6ca493322200f2ef14f1b47ffb04', // Device CAL
+	'7743a812b7a300101b8b8238ee11a9f9', // Engine Measurement
+	'3644c91c73723300b19ba24853f6a78c', // Floating
+	'06aa51d30b231300815805c137673a0b', // Named User
+	'b935b14367b222007d59cbb35685ef04', // Named User Plus
+	'25ca499c73723300b19ba24853f6a739', // Network
+	'73af0c6f0b000300823505c137673ab9', // Per Application Instance
+	'26cbfd2fc35032002757dccdf3d3ae04', // Per Core - Common
+	'ef64c370534323005d74ddeeff7b1238', // Per Core - Microsoft
+	'22796ca493322200f2ef14f1b47ffb28', // Per Core (with CAL)
+	'54e17c5593222200caef14f1b47ffb63', // Per Core (Physical Core)
+	'63553c9593222200caef14f1b47ffb29', // Per Core (Virtual OSE)
+	'ee1759f5c31222006081face81d3ae7c', // Per Device
+	'1bf659f5c31222006081face81d3ae5e', // Per Named Device
+	'36d659f5c31222006081face81d3ae30', // Per Named User
+	'af3e086f0b000300823505c137673af1', // Per OSI
+	'3135b14367b222007d59cbb35685ef04', // Per Processor - Oracle
+	'4c2701d693872200f2ef14f1b47ffb72', // Per Processor - Microsoft
+	'cedaf92fc35032002757dccdf3d3ae09', // Per Processor - Common, IBM, Citrix, VMWare
+	'f60759f5c31222006081face81d3ae7b', // Per User
+	'c5634ed9db8b2b00bab87a1ebf9619a6', // Per User/Device
+	'd2386399d0ce2010fa9b14c154bce4e3', // Processor Value Unit (PVU)
+	'7e586399d0ce2010fa9b14c154bce453', // Resource Value Unit (RVU)
+	'62daeed293032200f2ef14f1b47ffb24', // Server (Per Instance)
+	'00bec99293032200f2ef14f1b47ffb78', // Server (Per Server)
+	'479a099c73723300b19ba24853f6a74a', // Token
+	'c9e92ca493322200f2ef14f1b47ffbc3', // User CAL
+	'48c5d8d293200300544814f1b47ffb45', // User Subscription - Adobe, Microsoft, Subscription
+	'45348b14530710104ab7ddeeff7b1210', // Per Socket-pair
+	'4fb2966924646010fa9bd4d6292283dc', // Consumption
+	'eba106e5b44bb010fa9bdb06055cd3dc', // User/Device CAL
+];
+
+// samp_app_domains_to_process module values
+SampConstants.ENGINEERING_APPLICATIONS = 'Engineering Applications';
+
+SampConstants.SUPPORTED_PRODUCT_TYPES = [
+	'full',
+	'upgrade',
+	'perpetual_software_assurance',
+	'software_assurance',
+	'step_up',
+	'subscription',
+	'perpetual_maintenance',
+	'maintenance',
+];
+SampConstants.SPEND_PREDICTION_SERVICE = 'SAMP_SPEND';
+SampConstants.NORMALIZATION_PREDICTION_SERVICE = 'SAMP_NORMALIZATION';
+]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:33</sys_created_on>
+        <sys_id>0dd5656c47111110c859fee3846d4379</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampConstants</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_0dd5656c47111110c859fee3846d4379</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:33</sys_updated_on>
+    </sys_script_include>
+</record_update>

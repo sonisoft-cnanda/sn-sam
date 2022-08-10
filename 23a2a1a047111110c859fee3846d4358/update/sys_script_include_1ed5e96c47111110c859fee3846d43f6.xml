@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampProductCalculatorOracle</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SampProductCalculatorOracle</name>
+        <script><![CDATA[var SampProductCalculatorOracle = Class.create();
+SampProductCalculatorOracle.prototype = Object.extendsObject(SampProductCalculator, {
+	initialize: function(publisherCalculator, product) {
+		SamsProductCalculator.prototype.initialize.call(this, publisherCalculator, product);
+	},
+
+	cleanAndUpdateCloudDeviceTypeOnAllocations: function() {
+		var cloudInstallUtil = new SamCloudInstallUtil();
+		var cloudProvidersData = {
+			cmdb_ci_aws_datacenter:
+			{
+				'AWS-PAAS': 'samp_allocations_on_paas_host',
+			},
+		};
+		// cleanup cloud device type on existing cloud allocations for the product
+		cloudInstallUtil.cleanDeviceTypeOnCloudAlloc(this.fProduct);
+
+		for (var provider in cloudProvidersData) {
+			var deviceTypeViews = cloudProvidersData[provider];
+			for (var deviceType in deviceTypeViews) {
+				// Stamp cloud device type on cloud allocations for a provider
+				cloudInstallUtil.markDeviceTypeOnCloudAlloc(provider,
+					deviceType, deviceTypeViews[deviceType], this.fProduct);
+			}
+		}
+	},
+
+	cleanReclamationCandidates: function() {
+		var reconLevel = GlideApplicationProperty.getValue('com.snc.samp.oracle.reconlevel');
+		var verifyGr = new GlideRecord('samp_sw_reclamation_candidate');
+		verifyGr.addQuery('recon_level', '!=', reconLevel);
+		verifyGr.addQuery('applies_to', 'oracle_ci');
+		verifyGr.addQuery('active', 'true');
+
+		verifyGr.setValue('state', 17);
+		verifyGr.updateMultiple();
+	},
+
+	reconcile: function() {
+		if (ReconciliationConstants.PRODUCTS_SUPPORTING_PAAS.indexOf(this.fProduct) !== -1) {
+			this.cleanAndUpdateCloudDeviceTypeOnAllocations();
+		}
+		SampProductCalculator.prototype.reconcile.call(this);
+		if (ReconciliationConstants.ORACLE_DATABASE_SYS_ID === this.fProduct) {
+			this.cleanReclamationCandidates();
+		}
+	},
+
+	type: 'SampProductCalculatorOracle',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:39</sys_created_on>
+        <sys_id>1ed5e96c47111110c859fee3846d43f6</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampProductCalculatorOracle</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_1ed5e96c47111110c859fee3846d43f6</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:39</sys_updated_on>
+    </sys_script_include>
+</record_update>

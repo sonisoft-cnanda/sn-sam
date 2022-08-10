@@ -1,0 +1,305 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampProcessAllocations</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>API to create allocations</description>
+        <name>SampProcessAllocations</name>
+        <script><![CDATA[var SampProcessAllocations = Class.create();
+SampProcessAllocations.prototype = {
+
+	initialize: function() {
+	},
+
+	// process the rights used by record to update existing allocations if possible, else create user/device allocations
+	processRightsUsedBy: function(rightsUsedByGr) {
+		// retrive sysIDs for those entitlements that have previously been used for the user/device allocation
+
+		var allocatedEntitlementsSysid = this.retrieveEntitlementsWithAllocationsSysId(rightsUsedByGr);
+
+		// retrieve the entitlements having available allocations for that rights used by record again
+
+		var almLicenseGr = this.retrieveEntitlementsWithAllocationsAvailable(rightsUsedByGr);
+
+		// retrieve the entitlements with user/device allocations
+
+		almLicenseGr.addQuery('sys_id', 'IN', allocatedEntitlementsSysid);
+
+		almLicenseGr.orderByDesc('allocations_available');
+		almLicenseGr.query();
+
+		// updating already existing user/device allocations
+
+		var countAllocationsMade = 0;
+
+		var currAllocationsNeeded = parseInt(rightsUsedByGr.getValue('not_allocated_in_use'), 10);
+		while (currAllocationsNeeded > 0 && almLicenseGr.next()) {
+			var allocationGr = null;
+			if (rightsUsedByGr.getValue('used_by_table') === 'sys_user') {
+				allocationGr = this.getUserAllocation(rightsUsedByGr.getValue('used_by'), almLicenseGr.sys_id);
+			} else if (rightsUsedByGr.getValue('used_by_table') === 'samp_discovered_user') {
+				var sysUser = SAMPremiumUtils.getSysUserBySAPDiscoveredUser(rightsUsedByGr.used_by);
+				allocationGr = this.getUserAllocation(sysUser, almLicenseGr.sys_id);
+			} else {
+				allocationGr = this.getDeviceAllocation(rightsUsedByGr.getValue('used_by'), almLicenseGr.sys_id);
+			}
+
+			var allocationsMade = this.updateAllocationQuantity(allocationGr,
+				almLicenseGr.allocations_available, currAllocationsNeeded);
+			countAllocationsMade += allocationsMade;
+			currAllocationsNeeded -= allocationsMade;
+		}
+
+		// creates user/device allocations if not exist
+
+		if (currAllocationsNeeded > 0) {
+			var usedByTable = rightsUsedByGr.getValue('used_by_table');
+			var usedByGr;
+			if (usedByTable === 'samp_discovered_user') {
+				var sysUserId = SAMPremiumUtils.getSysUserBySAPDiscoveredUser(rightsUsedByGr.getValue('used_by'));
+				usedByGr = new GlideRecord('sys_user');
+				usedByGr.get(sysUserId);
+			} else {
+				usedByGr = new GlideRecord(usedByTable);
+				usedByGr.get(rightsUsedByGr.getValue('used_by'));
+			}
+
+			var almLicenseGr2 = this.retrieveEntitlementsWithAllocationsAvailable(rightsUsedByGr);
+			almLicenseGr2.orderByDesc('allocations_available');
+			almLicenseGr2.query();
+
+			while (currAllocationsNeeded > 0 && almLicenseGr2.next()) {
+				var allocationCondition = null;
+				if (usedByTable === 'sys_user'
+					|| usedByTable === 'samp_discovered_user') {
+					allocationCondition = almLicenseGr2.getValue('assigned_condition');
+				} else {
+					allocationCondition = almLicenseGr2.getValue('entitlement_condition');
+				}
+
+				if (allocationCondition) {
+					var filter = new GlideFilter(allocationCondition, 'allocation-condition');
+					filter.setCaseSensitive(false);
+					if (!filter.match(usedByGr, true)) { continue; }
+				}
+
+				var toBeAllocated = Math.min(parseInt(almLicenseGr2.getValue('allocations_available'), 10),
+					currAllocationsNeeded);
+
+				if (usedByTable === 'sys_user'
+					|| usedByTable === 'samp_discovered_user') {
+					this.createUserAllocations(rightsUsedByGr, almLicenseGr2.sys_id, toBeAllocated);
+				} else {
+					this.createDeviceAllocations(rightsUsedByGr, almLicenseGr2.sys_id, toBeAllocated);
+				}
+				countAllocationsMade += toBeAllocated;
+				currAllocationsNeeded -= toBeAllocated;
+			}
+		}
+
+		return countAllocationsMade;
+	},
+
+	isCreateAllocationNeeded: function(rightsUsedBy) {
+		// get all the number of allocations currently existing for this user/device
+		var allocatedQuantity = this.getAllocatedQuantity(rightsUsedBy);
+
+		if (allocatedQuantity < rightsUsedBy.rights_used) { return true; }
+		return false;
+	},
+
+	isRemoveAllocationNeeded: function(rightsUsedBy) {
+		var allocatedQuantity = this.getAllocatedQuantity(rightsUsedBy);
+
+		if (allocatedQuantity > rightsUsedBy.allocated_in_use) { return true; }
+		return false;
+	},
+
+	getAllocatedQuantity: function(rightsUsedBy) {
+		var allocatedEntitlementGr;
+		var groupBy;
+		if (rightsUsedBy.getValue('used_by_table') === 'sys_user') {
+			allocatedEntitlementGr = new GlideAggregate('alm_entitlement_user');
+			allocatedEntitlementGr.addQuery('assigned_to', rightsUsedBy.used_by);
+			groupBy = 'assigned_to';
+		} else if (rightsUsedBy.getValue('used_by_table') === 'samp_discovered_user') {
+			var sysUser = SAMPremiumUtils.getSysUserBySAPDiscoveredUser(rightsUsedBy.used_by);
+			allocatedEntitlementGr = new GlideAggregate('alm_entitlement_user');
+			allocatedEntitlementGr.addQuery('assigned_to', sysUser);
+			groupBy = 'assigned_to';
+		} else {
+			allocatedEntitlementGr = new GlideAggregate('alm_entitlement_asset');
+			allocatedEntitlementGr.addQuery('allocated_to', rightsUsedBy.used_by);
+			groupBy = 'allocated_to';
+		}
+		allocatedEntitlementGr.addQuery('licensed_by.model', rightsUsedBy.license_metric_result.software_model);
+		allocatedEntitlementGr.addQuery('licensed_by.license_metric',
+			rightsUsedBy.license_metric_result.license_metric);
+		allocatedEntitlementGr.addQuery('licensed_by.license_metric_result',
+			rightsUsedBy.license_metric_result);
+		allocatedEntitlementGr.addAggregate('SUM', 'quantity');
+		allocatedEntitlementGr.groupBy(groupBy);
+		allocatedEntitlementGr.query();
+		var allocatedQuantity = 0;
+		if (allocatedEntitlementGr.next()) {
+			allocatedQuantity = parseInt(allocatedEntitlementGr.getAggregate('SUM', 'quantity'), 10);
+		}
+		return allocatedQuantity;
+	},
+
+	retrieveEntitlementsWithAllocationsAvailable: function(rightsUsedByGr) {
+		var almLicenseGr = new GlideRecord('alm_license');
+		almLicenseGr.addQuery('license_metric_result', rightsUsedByGr.license_metric_result);
+		almLicenseGr.addQuery('model', rightsUsedByGr.license_metric_result.software_model);
+		almLicenseGr.addQuery('license_metric', rightsUsedByGr.license_metric_result.license_metric);
+		almLicenseGr.addQuery('allocations_available', '>', 0);
+		return almLicenseGr;
+	},
+
+	retrieveEntitlementsWithAllocationsSysId: function(rightsUsedByGr) {
+		var allocatedEntitlementsSysid = [];
+		var allocatedEntitlementsGr = null;
+
+		// retrieve all entitlements having available allocations for that rights used by record
+		var entitlementGr = this.retrieveEntitlementsWithAllocationsAvailable(rightsUsedByGr);
+
+		entitlementGr.query();
+		while (entitlementGr.next()) {
+			if (rightsUsedByGr.getValue('used_by_table') === 'sys_user') {
+				allocatedEntitlementsGr = new GlideRecord('alm_entitlement_user');
+				allocatedEntitlementsGr.addQuery('assigned_to', rightsUsedByGr.used_by);
+			} else if (rightsUsedByGr.getValue('used_by_table') === 'samp_discovered_user') {
+				var sysUser = SAMPremiumUtils.getSysUserBySAPDiscoveredUser(rightsUsedByGr.used_by);
+				allocatedEntitlementsGr = new GlideRecord('alm_entitlement_user');
+				allocatedEntitlementsGr.addQuery('assigned_to', sysUser);
+			} else {
+				allocatedEntitlementsGr = new GlideRecord('alm_entitlement_asset');
+				allocatedEntitlementsGr.addQuery('allocated_to', rightsUsedByGr.used_by);
+			}
+			allocatedEntitlementsGr.addQuery('licensed_by', entitlementGr.sys_id);
+			allocatedEntitlementsGr.query();
+			if (allocatedEntitlementsGr.next()) {
+				allocatedEntitlementsSysid.push(entitlementGr.getUniqueValue());
+			}
+		}
+		return allocatedEntitlementsSysid.join(',');
+	},
+
+	getUserAllocation: function(assignedTo, license) {
+		var userAllocationGr = new GlideRecord('alm_entitlement_user');
+		userAllocationGr.addQuery('licensed_by', license);
+		userAllocationGr.addQuery('assigned_to', assignedTo);
+		userAllocationGr.query();
+		return userAllocationGr;
+	},
+
+	getDeviceAllocation: function(allocatedTo, license) {
+		var deviceAllocationGr = new GlideRecord('alm_entitlement_asset');
+		deviceAllocationGr.addQuery('licensed_by', license);
+		deviceAllocationGr.addQuery('allocated_to', allocatedTo);
+		deviceAllocationGr.query();
+		return deviceAllocationGr;
+	},
+
+	updateAllocationQuantity: function(allocationGr, allocationsAvailable, allocationsNeeded) {
+		if (!JSUtil.nil(allocationGr) && allocationGr.next()) {
+			var allocationsPossible = Math.min(allocationsAvailable, allocationsNeeded);
+			var prevQuantity = allocationGr.quantity;
+			allocationGr.quantity = parseInt(prevQuantity, 10) + parseInt(allocationsPossible, 10);
+			allocationGr.update();
+			return allocationsPossible;
+		}
+		return 0;
+	},
+
+	createDeviceAllocations: function(rightsUsedByGr, license, allocationsNeeded) {
+		var deviceAllocationGr = new GlideRecord('alm_entitlement_asset');
+		deviceAllocationGr.initialize();
+		deviceAllocationGr.licensed_by = license;
+		deviceAllocationGr.setValue('allocated_to', rightsUsedByGr.getValue('used_by'));
+		deviceAllocationGr.setValue('quantity', allocationsNeeded);
+		return deviceAllocationGr.insert();
+	},
+
+	createUserAllocations: function(rightsUsedByGr, license, allocationsNeeded) {
+		var userAllocationGr = new GlideRecord('alm_entitlement_user');
+		userAllocationGr.initialize();
+		userAllocationGr.licensed_by = license;
+		if (rightsUsedByGr.getValue('used_by_table') === 'samp_discovered_user') {
+			var sysUser = SAMPremiumUtils.getSysUserBySAPDiscoveredUser(rightsUsedByGr.used_by);
+			userAllocationGr.setValue('assigned_to', sysUser);
+		} else {
+			userAllocationGr.setValue('assigned_to', rightsUsedByGr.getValue('used_by'));
+		}
+		userAllocationGr.setValue('quantity', allocationsNeeded);
+		return userAllocationGr.insert();
+	},
+
+	// process the rights used by record to update user/device allocations if possible, else remove existing allocations
+	removeAllocationsForRightsUsedBy: function(rightsUsedByGr) {
+		// retrieve allocations for this rights used by record
+
+		var allocationsSetGr = this.retrieveAllocationsForRightsUsedBy(rightsUsedByGr);
+		allocationsSetGr.orderByDesc('quantity');
+		allocationsSetGr.query();
+
+		var countRemovedAllocations = 0;
+		var allocationsToRemove = rightsUsedByGr.getValue('allocated_not_in_use');
+		while (allocationsToRemove > 0 && allocationsSetGr.next()) {
+			var removedAllocations = this.processAllocationQuantity(allocationsSetGr, allocationsToRemove);
+			countRemovedAllocations += removedAllocations;
+			allocationsToRemove -= removedAllocations;
+		}
+		return countRemovedAllocations;
+	},
+
+	retrieveAllocationsForRightsUsedBy: function(rightsUsedByGr) {
+		var allocationsGr = null;
+		if (rightsUsedByGr.getValue('used_by_table') === 'sys_user') {
+			allocationsGr = new GlideRecord('alm_entitlement_user');
+			allocationsGr.addQuery('assigned_to', rightsUsedByGr.used_by);
+		} else if (rightsUsedByGr.getValue('used_by_table') === 'samp_discovered_user') {
+			var sysUser = SAMPremiumUtils.getSysUserBySAPDiscoveredUser(rightsUsedByGr.used_by);
+			allocationsGr = new GlideRecord('alm_entitlement_user');
+			allocationsGr.addQuery('assigned_to', sysUser);
+		} else {
+			allocationsGr = new GlideRecord('alm_entitlement_asset');
+			allocationsGr.addQuery('allocated_to', rightsUsedByGr.used_by);
+		}
+		allocationsGr.addQuery('licensed_by.license_metric_result', rightsUsedByGr.license_metric_result);
+		allocationsGr.addQuery('licensed_by.model', rightsUsedByGr.license_metric_result.software_model);
+		allocationsGr.addQuery('licensed_by.license_metric', rightsUsedByGr.license_metric_result.license_metric);
+		return allocationsGr;
+	},
+
+	// update allocations if possible, else remove
+	processAllocationQuantity: function(allocationGr, allocationsToRemove) {
+		var removableAllocations = Math.min(allocationGr.getValue('quantity'), allocationsToRemove);
+		var prevQuantity = allocationGr.getValue('quantity');
+		if (parseInt(prevQuantity, 10) <= allocationsToRemove) {
+			allocationGr.deleteRecord();
+		} else {
+			allocationGr.quantity = parseInt(prevQuantity, 10) - parseInt(allocationsToRemove, 10);
+			allocationGr.update();
+		}
+		return removableAllocations;
+	},
+
+	type: 'SampProcessAllocations',
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:35</sys_created_on>
+        <sys_id>21d5e96c47111110c859fee3846d430b</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampProcessAllocations</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_21d5e96c47111110c859fee3846d430b</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:35</sys_updated_on>
+    </sys_script_include>
+</record_update>

@@ -1,0 +1,1530 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SAMPremiumUtils</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>SAM Premium Core Utilities</description>
+        <name>SAMPremiumUtils</name>
+        <script><![CDATA[/* global AssetJobLogUtil, sn_dt */
+var SAMPremiumUtils = Class.create();
+SAMPremiumUtils.prototype = {
+	initialize: function() {
+		this.SAMP_SW_USAGE = 'samp_sw_usage';
+		this.CMDB_SAM_SW_INSTALL = 'cmdb_sam_sw_install';
+	},
+	checkIfProductInDeltaTable: function(productId) {
+		var productIdStr = productId.toString();
+		var deltaProductGr = new GlideRecord('samp_delta_product');
+		deltaProductGr.addQuery('product', productIdStr);
+		deltaProductGr.setLimit(1);
+		deltaProductGr.query();
+		if (!deltaProductGr.next()) {
+			deltaProductGr = new GlideRecord('samp_delta_product');
+			deltaProductGr.initialize();
+			deltaProductGr.setValue('product', productIdStr);
+			deltaProductGr.insert();
+		}
+	},
+	setWorkflow: function(gr, value) {
+		gr.setWorkflow(value);
+	},
+	softwareModelProductFilter: function(publisherSysId) {
+		var filter = 'active=true';
+		if (publisherSysId) {
+			filter += '^publisher.manufacturer=' + publisherSysId;
+		}
+		return filter;
+	},
+	sapEngineProductFilter: function(productSysId) {
+		var filter = 'active=true';
+		if (productSysId) {
+			filter += '^engine=' + productSysId;
+		}
+		return filter;
+	},
+	subscriptionSoftwareModelFilter: function(currentDomain) {
+		var filter = 'product.active=true^product.subscription_software=true'
+					+ '^sys_domain=' + currentDomain + '^ORsys_domain=global'
+					+ '^subscription_conditionISEMPTY^install_conditionISEMPTY';
+		return filter;
+	},
+
+	suitesPublisherFilter: function() {
+		var publisherSysId = gs.getSession().getClientData('SAMP:SuitePublisherSysId');
+		var filter = '';
+		if (publisherSysId) {
+			filter += '^manufacturer=' + publisherSysId;
+		}
+		return filter;
+	},
+
+	discoveryModelProductFilter: function(publisherSysId) {
+		var filter = 'active=true';
+		if (publisherSysId) {
+			filter += '^publisher.manufacturer=' + publisherSysId;
+		}
+		return filter;
+	},
+	unidentifiedFileSetProductFilter: function(publisherSysId) {
+		var filter = 'active=true';
+		if (publisherSysId) {
+			filter += '^publisher.manufacturer=' + publisherSysId;
+		}
+		return filter;
+	},
+	discoveryMapOnSoftwareModelFilter: function(publisherSysId, productId, dbOptionId) {
+		var filter = 'active=true';
+		if (productId) {
+			filter += '^sw_product=' + productId;
+		} else if (publisherSysId) {
+			filter += '^sw_product.publisher.manufacturer=' + publisherSysId;
+		}
+		if (dbOptionId) {
+			filter += '^database_option=' + dbOptionId;
+		}
+		return filter;
+	},
+	publisherPartNumberOnEntitlementFilter: function(entitlement) {
+		var filter = 'active=true';
+		// eslint-disable-next-line no-undef
+		if (GlidePluginManager.isActive('com.sn_sam_playbook') && sn_sam_playbook.SAMPlaybookUtils && sn_sam_playbook.SAMPlaybookUtils.addPublisherPartNumberFilter) {
+			// eslint-disable-next-line no-undef
+			filter = sn_sam_playbook.SAMPlaybookUtils.addPublisherPartNumberFilter(entitlement, filter);
+		}
+		return filter;
+	},
+
+	softwareModelOnEntitlementFilter: function(entitlement) {
+		var filter = '';
+
+		if (entitlement.isValidField('publisher_part_number')
+			&& !gs.nil(entitlement.getValue('publisher_part_number'))) {
+			var productDefinitionSysId = entitlement.getValue('publisher_part_number');
+			filter = this.getFilterForSM(productDefinitionSysId);
+		}
+		// eslint-disable-next-line no-undef
+		if (GlidePluginManager.isActive('com.sn_sam_playbook') && sn_sam_playbook.SAMPlaybookUtils && sn_sam_playbook.SAMPlaybookUtils.addSoftwareModelFilter) {
+			// eslint-disable-next-line no-undef
+			filter = sn_sam_playbook.SAMPlaybookUtils.addSoftwareModelFilter(entitlement, filter);
+		}
+		return filter;
+	},
+
+	getFilterForSM: function(productDefinitionSysId) {
+		var filter = '';
+		var productDefinitionGr = new GlideRecord('samp_sw_product_definition');
+		if (productDefinitionGr.isValid() && productDefinitionGr.get(productDefinitionSysId)
+			&& productDefinitionGr.getValue('active') === '1') {
+			var entitlementDefinitionGr = new GlideRecord('samp_sw_entitlement_definition');
+			if (productDefinitionGr.isValidField('entitlement_definition')
+				&& entitlementDefinitionGr.get(productDefinitionGr.getValue('entitlement_definition'))
+				&& entitlementDefinitionGr.getValue('active') === '1') {
+				filter += 'product=' + entitlementDefinitionGr.sw_product;
+				filter += '^version=' + entitlementDefinitionGr.version;
+				filter += '^edition=' + entitlementDefinitionGr.edition;
+				filter += '^platform=' + entitlementDefinitionGr.platform;
+				filter += '^language=' + entitlementDefinitionGr.language;
+				filter += '^version_operator=' + entitlementDefinitionGr.version_operator;
+				filter += '^edition_operator=' + entitlementDefinitionGr.edition_operator;
+				filter += '^language_operator=' + entitlementDefinitionGr.language_operator;
+				filter += '^platform_operator=' + entitlementDefinitionGr.platform_operator;
+			}
+		}
+		return filter;
+	},
+	getLicenseWithAvailableRights: function(swModel, licenseType) {
+		var allocationsCount;
+		var licGr;
+		// Query all existing licenses for the SW Model with unused rights
+		var reconResGr = new GlideRecord('samp_license_metric_result');
+		reconResGr.addQuery('license_metric.entitlement_type', licenseType);
+		reconResGr.addQuery('software_model_result.software_model', swModel);
+		reconResGr.addQuery('unused_rights', '>', 0);
+		reconResGr.orderByDesc('license_metric.rank_allocated');
+		reconResGr.query();
+		while (reconResGr.next()) {
+			licGr = new GlideRecord('alm_license');
+			licGr.addQuery('license_metric', reconResGr.license_metric);
+			licGr.addQuery('model', swModel);
+			licGr.query();
+			while (licGr.next()) {
+				allocationsCount = this._getAllocationsCount(licGr.sys_id, licenseType);
+				if (allocationsCount < licGr.rights) { // active rights
+					return licGr.sys_id;
+				}
+			}
+		}
+		return '';
+	},
+	_getAllocationsCount: function(licenseId, licenseType) {
+		var entTable = (licenseType === 'user') ? 'alm_entitlement_user' : 'alm_entitlement_asset';
+
+		var entGr = new GlideAggregate(entTable);
+		entGr.addQuery('licensed_by', licenseId);
+		entGr.addAggregate('COUNT');
+		entGr.query();
+		entGr.next();
+		return entGr.getAggregate('COUNT');
+	},
+	getManufacturerId: function(manufacturerName) {
+		var company = new GlideRecord('core_company');
+		company.addQuery('name', manufacturerName);
+		company.setLimit(1);
+		company.query();
+		company.next();
+		return company.sys_id || '';
+	},
+	createApproval: function(candidateGR) {
+		if (candidateGR.notify_user && !gs.nil(candidateGR.user)) {
+			var approvalGR = new GlideRecord('sysapproval_approver');
+			approvalGR.initialize();
+			approvalGR.setValue('state', 'not requested');
+			approvalGR.setValue('source_table', 'samp_sw_reclamation_candidate');
+			approvalGR.setValue('approver', candidateGR.user);
+			approvalGR.setValue('sysapproval', candidateGR.getUniqueValue());
+			approvalGR.setValue('document_id', candidateGR.getUniqueValue());
+
+			if (!approvalGR.insert()) {
+				gs.info('Unable to create a manual approval for ' + candidateGR.number);
+			}
+		} else if (candidateGR.getValue('justification') === 'user_surrendered' && !gs.nil(candidateGR.user)) {
+			new GlideQuery('sysapproval_approver')
+				.insert({
+					state: 'approved', source_table: 'samp_sw_reclamation_candidate', approver: candidateGR.user, sysapproval: candidateGR.getUniqueValue(), document_id: candidateGR.getUniqueValue(),
+				});
+		}
+	},
+
+	/* Use returnOldest = true if you want the oldest SM sys_id returned when duplicate SMs are found
+		filterByDomainArr = array of domain sys id's you want to find the software models in
+	*/
+	getSMFromProductDefinition: function(productDefinitionSysId, softwareModelID, returnOldest, filterByDomainArr) {
+		var productDefinitionGr = new GlideRecord('samp_sw_product_definition');
+		if (productDefinitionGr.isValid() && productDefinitionGr.get(productDefinitionSysId)
+			&& productDefinitionGr.getValue('active') === '1') {
+			var entitlementDefinitionGr = new GlideRecord('samp_sw_entitlement_definition');
+			if (productDefinitionGr.isValidField('entitlement_definition')
+				&& entitlementDefinitionGr.get(productDefinitionGr.getValue('entitlement_definition'))
+				&& entitlementDefinitionGr.getValue('active') === '1') {
+				var softwareModelGr = new GlideRecord('cmdb_software_product_model');
+				if (softwareModelGr.isValid()) {
+					softwareModelGr.addQuery('product', entitlementDefinitionGr.sw_product);
+					softwareModelGr.addQuery('version', entitlementDefinitionGr.version);
+					softwareModelGr.addQuery('edition', entitlementDefinitionGr.edition);
+					softwareModelGr.addQuery('platform', entitlementDefinitionGr.platform);
+					softwareModelGr.addQuery('language', entitlementDefinitionGr.language);
+					softwareModelGr.addQuery('version_operator', entitlementDefinitionGr.version_operator);
+					softwareModelGr.addQuery('edition_operator', entitlementDefinitionGr.edition_operator);
+					softwareModelGr.addQuery('language_operator', entitlementDefinitionGr.language_operator);
+					softwareModelGr.addQuery('platform_operator', entitlementDefinitionGr.platform_operator);
+					softwareModelGr.addQuery('named_user_type', entitlementDefinitionGr.named_user_type);
+					softwareModelGr.addQuery('database_option', entitlementDefinitionGr.database_option);
+					softwareModelGr.addQuery('unit_of_consumption', entitlementDefinitionGr.unit_of_consumption);
+					if (GlidePluginManager.isActive('com.sn_samp_sap')) {
+						softwareModelGr.addQuery('sap_license_metric', entitlementDefinitionGr.sap_license_metric);
+					}
+					if (!gs.nil(softwareModelID)) { softwareModelGr.addQuery('sys_id', softwareModelID); }
+
+					if (!gs.nil(filterByDomainArr) && filterByDomainArr.length > 0) {
+						softwareModelGr.addQuery('sys_domain', filterByDomainArr);
+					}
+
+					softwareModelGr.orderBy('sys_created_on');
+					softwareModelGr.query();
+
+					if (softwareModelGr.hasNext()) {
+						if (softwareModelGr.getRowCount() > 1) {
+							if (!gs.nil(returnOldest) && returnOldest) {
+								softwareModelGr.next();
+								return softwareModelGr.getUniqueValue();
+							} return 'multiple';
+						}
+
+						softwareModelGr.next();
+						return softwareModelGr.getUniqueValue();
+					}
+					if (gs.nil(softwareModelID)) {
+						return this.createSoftwareModelFromProductDefinition(productDefinitionSysId);
+					}
+					return null;
+				}
+			} else {
+				gs.error('No matching entitlement definition found');
+				return '';
+			}
+		} else {
+			gs.error('No matching product definition is found');
+			return '';
+		}
+		return '';
+	},
+
+	createSoftwareModelFromProductDefinition: function(productDefinitionSysId) {
+		var entitlementDefinitionSysId; // reference samp_sw_entitlement_definition
+
+		// Get product definition record from productDefinitionSysId
+		var productDefinitionRecord = new GlideRecord('samp_sw_product_definition');
+		if (productDefinitionRecord.get(productDefinitionSysId) && productDefinitionRecord.getValue('active') === '1') {
+			entitlementDefinitionSysId = productDefinitionRecord.entitlement_definition;
+			return this.createSoftwareModelFromEntitlementDefinition(entitlementDefinitionSysId);
+		}
+		gs.log('error: product definition sys_id ' + productDefinitionSysId + ' is invalid');
+		return '';
+	},
+
+	createSoftwareModelFromEntitlementDefinition: function(entitlementDefinitionSysId, createdSource) {
+		var productSysId; // reference samp_sw_product
+		var coreCompanySysId; // reference core_company
+
+		// Get entitlement definition record from entitlementDefinitionSysId
+		var entitlementDefinitionRecord = new GlideRecord('samp_sw_entitlement_definition');
+
+		if (entitlementDefinitionRecord.get(entitlementDefinitionSysId)
+			&& entitlementDefinitionRecord.getValue('active') === '1') {
+			productSysId = entitlementDefinitionRecord.sw_product;
+
+			// Get core_company sys_id from productSysId using SAMCoreCompanyUtil
+			coreCompanySysId = new SAMCoreCompanyUtil().resolveCoreCompanyForSoftwareProduct(productSysId);
+
+			if (coreCompanySysId) {
+				// Create a record of software model
+				var softwareModelRecord = new GlideRecord('cmdb_software_product_model');
+				softwareModelRecord.initialize();
+				softwareModelRecord.discovery_map = entitlementDefinitionSysId;
+				softwareModelRecord.manufacturer = coreCompanySysId;
+				softwareModelRecord.product = productSysId;
+				softwareModelRecord.version = entitlementDefinitionRecord.version;
+				softwareModelRecord.version_operator = entitlementDefinitionRecord.version_operator;
+				softwareModelRecord.edition = entitlementDefinitionRecord.edition;
+				softwareModelRecord.edition_operator = entitlementDefinitionRecord.edition_operator;
+				softwareModelRecord.language = entitlementDefinitionRecord.language;
+				softwareModelRecord.language_operator = entitlementDefinitionRecord.language_operator;
+				softwareModelRecord.platform = entitlementDefinitionRecord.platform;
+				softwareModelRecord.platform_operator = entitlementDefinitionRecord.platform_operator;
+				softwareModelRecord.named_user_type = entitlementDefinitionRecord.named_user_type;
+				softwareModelRecord.database_option = entitlementDefinitionRecord.database_option;
+				softwareModelRecord.unit_of_consumption = entitlementDefinitionRecord.unit_of_consumption;
+				if (GlidePluginManager.isActive('com.sn_samp_sap')) {
+					softwareModelRecord.sap_license_metric = entitlementDefinitionRecord.sap_license_metric;
+					softwareModelRecord.is_relevant = entitlementDefinitionRecord.is_relevant;
+					softwareModelRecord.threshold = entitlementDefinitionRecord.threshold;
+				}
+				if (!gs.nil(createdSource)) {
+					softwareModelRecord.created_source = createdSource;
+				}
+				return softwareModelRecord.insert();
+			}
+		} else {
+			gs.log('error: entitlement definition sys_id ' + entitlementDefinitionSysId + ' is invalid');
+			return '';
+		}
+		return '';
+	},
+
+	/*
+	filterByDomainArr = array of domain sys id's you want to find the software models in
+	*/
+	getSMGrFromEntitlementDefinition: function(entitlementDefinitionGr, filterByDomainArr) {
+		if (entitlementDefinitionGr.isValidRecord()) {
+			var softwareModelGr = new GlideRecord('cmdb_software_product_model');
+			softwareModelGr.addQuery('product', entitlementDefinitionGr.sw_product);
+			softwareModelGr.addQuery('version', entitlementDefinitionGr.version);
+			softwareModelGr.addQuery('edition', entitlementDefinitionGr.edition);
+			softwareModelGr.addQuery('platform', entitlementDefinitionGr.platform);
+			softwareModelGr.addQuery('language', entitlementDefinitionGr.language);
+			softwareModelGr.addQuery('version_operator', entitlementDefinitionGr.version_operator);
+			softwareModelGr.addQuery('edition_operator', entitlementDefinitionGr.edition_operator);
+			softwareModelGr.addQuery('language_operator', entitlementDefinitionGr.language_operator);
+			softwareModelGr.addQuery('platform_operator', entitlementDefinitionGr.platform_operator);
+			softwareModelGr.addQuery('named_user_type', entitlementDefinitionGr.named_user_type);
+			softwareModelGr.addQuery('database_option', entitlementDefinitionGr.database_option);
+			softwareModelGr.addQuery('unit_of_consumption', entitlementDefinitionGr.unit_of_consumption);
+			if (GlidePluginManager.isActive('com.sn_samp_sap')) {
+				softwareModelGr.addQuery('sap_license_metric', entitlementDefinitionGr.sap_license_metric);
+			}
+			if (!gs.nil(filterByDomainArr) && filterByDomainArr.length > 0) {
+				softwareModelGr.addQuery('sys_domain', filterByDomainArr);
+			}
+			return softwareModelGr;
+		}
+
+		gs.error('Matching record is not valid');
+		return null;
+	},
+
+	// Method to get sam property for given key
+	getSamProperty: function(key) {
+		var samPropGr = new GlideRecord('sam_property');
+		samPropGr.addQuery('key', key);
+		samPropGr.query();
+		if (samPropGr.next()) {
+			return samPropGr.getValue('value');
+		}
+		return null;
+	},
+
+	// Returns the license metric and the metric groups associated to that license metric for a given PPN
+	findMetricGroupAndLicenseMetricForPPN: function(ppnSysID) {
+		var result = { metricGrpSysID: null, licenseMetricSysID: '' };
+
+		if (!gs.nil(ppnSysID)) {
+			var ppnRec = new GlideQuery('samp_sw_product_definition')
+				.where('sys_id', ppnSysID)
+				.select('license_metric')
+				.toArray(1);
+
+			if (!gs.nil(ppnRec[0].license_metric)) {
+				var licenseMetricRec = new GlideQuery('samp_sw_license_metric')
+					.where('sys_id', ppnRec[0].license_metric)
+					.select('metric_group')
+					.toArray(1);
+
+				result.licenseMetricSysID = ppnRec[0].license_metric;
+				result.metricGrpSysID = licenseMetricRec[0].metric_group;
+			}
+		}
+
+		return JSON.stringify(result);
+	},
+
+	findLicenseMetricAndMetricGroupForEntitlement: function(ppnSysID, swModelSysID, userPreferredMetricGroup) {
+		var result = { metricGrpSysID: null, licenseMetricSysID: '' };
+
+		var ppnResults;
+		var licenseMetricOfPPN;
+		var metricGroupsOfLicenseMetric;
+
+		/* If the call is from entitlement import and user entered a metric group */
+		if (!gs.nil(userPreferredMetricGroup)) {
+			result.metricGrpSysID = userPreferredMetricGroup;
+			ppnResults = JSON.parse(this.findMetricGroupAndLicenseMetricForPPN(ppnSysID));
+			if (ppnResults.metricGrpSysID && (ppnResults.metricGrpSysID.indexOf(userPreferredMetricGroup) > -1)) {
+				result.licenseMetricSysID = ppnResults.licenseMetricSysID;
+			}
+			return JSON.stringify(result);
+		}
+
+		/* Moved logic to default metric and license metric from 'Manage fields for SAP named user product' */
+		if (!gs.nil(swModelSysID) && GlidePluginManager.isActive('com.sn_samp_sap')) {
+			var swModelGq = new GlideQuery('cmdb_software_product_model')
+				.where('sys_id', swModelSysID)
+				.select('product')
+				.toArray(1);
+			if (swModelGq[0].product === '5e73bc41dbab570024cd68461b9619f5') { // SAP Named User product
+				result.metricGrpSysID = '92c737830b631300815805c137673aa0';
+				result.licenseMetricSysID = '06aa51d30b231300815805c137673a0b';
+				return JSON.stringify(result);
+			}
+			// check if engine Product
+			if (new global.SAMPAjaxProcessor().checkSAPProductExistAsEngine(swModelGq[0].product)) {
+				result.metricGrpSysID = ReconciliationConstants.SAP_METRIC_GROUP;
+				result.licenseMetricSysID = ReconciliationConstants.SAP_ENGINE_LICENSE_METRIC_SYS_ID;
+				return JSON.stringify(result);
+			}
+		}
+
+		// If PPN and Sw Model are not present, default MG to Common
+		if (gs.nil(ppnSysID) && gs.nil(swModelSysID)) {
+			result.metricGrpSysID = ReconciliationConstants.COMMON_METRIC_GROUP;
+		} else if (gs.nil(ppnSysID) && !gs.nil(swModelSysID)) {
+			// If only SW Model is present, derive MG from Sw Model
+			result.metricGrpSysID = new SAMCoreCompanyUtil().resolveMetricForModelId(swModelSysID);
+		} else if (!gs.nil(ppnSysID) && !gs.nil(swModelSysID)) {
+		// If both PPN and Sw Model are present
+			// Derive Metric Group(s) and License Metric from PPN
+			ppnResults = JSON.parse(this.findMetricGroupAndLicenseMetricForPPN(ppnSysID));
+			licenseMetricOfPPN = ppnResults.licenseMetricSysID;
+			metricGroupsOfLicenseMetric = ppnResults.metricGrpSysID;
+			// If no metric group is derived from PPN, derive metric group from software model
+			if (gs.nil(metricGroupsOfLicenseMetric)) {
+				result.metricGrpSysID = new SAMCoreCompanyUtil().resolveMetricForModelId(swModelSysID);
+			} else if (!gs.nil(metricGroupsOfLicenseMetric)) {
+			// If Metric Group(s) is/are derived from License Metric on PPN
+				metricGroupsOfLicenseMetric = metricGroupsOfLicenseMetric.split(',');
+
+				// If only 1 Metric Group is derived from PPN, default MG and LM according to PPN value
+				if (metricGroupsOfLicenseMetric.length === 1) {
+					result.metricGrpSysID = metricGroupsOfLicenseMetric[0];
+					result.licenseMetricSysID = licenseMetricOfPPN;
+				} else if (metricGroupsOfLicenseMetric.length > 1) {
+				// If license metric on PPN is associated with multiple Metric Groups
+					var metricGroupOfSwModel = new SAMCoreCompanyUtil().resolveMetricForModelId(swModelSysID);
+
+					/*  Check if Metric Group derived from Sw model is present in
+					Metric groups derived from License Metric on PPN */
+					// If yes, default LM and MG according to PPN value
+					if (metricGroupsOfLicenseMetric.indexOf(metricGroupOfSwModel) !== -1) {
+						result.metricGrpSysID = metricGroupOfSwModel;
+						result.licenseMetricSysID = licenseMetricOfPPN;
+					} else {
+					// If Metric Group of Sw Model is not one of Metric Groups derived from PPN, default MG to Common
+						result.metricGrpSysID = ReconciliationConstants.COMMON_METRIC_GROUP;
+					}
+				}
+			}
+		} else if (!gs.nil(ppnSysID) && gs.nil(swModelSysID)) {
+		// If only PPN is present
+			ppnResults = JSON.parse(this.findMetricGroupAndLicenseMetricForPPN(ppnSysID));
+			licenseMetricOfPPN = ppnResults.licenseMetricSysID;
+			metricGroupsOfLicenseMetric = ppnResults.metricGrpSysID;
+
+			if (gs.nil(metricGroupsOfLicenseMetric)) {
+				result.metricGrpSysID = ReconciliationConstants.COMMON_METRIC_GROUP;
+			} else {
+				metricGroupsOfLicenseMetric = metricGroupsOfLicenseMetric.split(',');
+				if (metricGroupsOfLicenseMetric.length > 1) {
+					result.metricGrpSysID = ReconciliationConstants.COMMON_METRIC_GROUP;
+				} else {
+					result.metricGrpSysID = metricGroupsOfLicenseMetric[0];
+					result.licenseMetricSysID = licenseMetricOfPPN;
+				}
+			}
+		}
+
+		/*  Moved defaulting logic of license metric to User subscription when
+			metric group is Subscription from client script */
+		if (result.metricGrpSysID === 'e245fa8373631300009136366bf6a75e'
+			&& gs.nil(result.licenseMetricSysID)) {
+			result.licenseMetricSysID = '48c5d8d293200300544814f1b47ffb45';
+		} // User Subscription
+
+		// defaulting license metric to Consumption when metric group is Consumption
+		if (GlidePluginManager.isActive('sn_sam_saas')
+			&& result.metricGrpSysID === sn_sam_saas.SAMSaasConstants.METRIC_GROUP_CONSUMPTION) {
+			result.licenseMetricSysID = sn_sam_saas.SAMSaasConstants.LICENSE_METRIC_CONSUMPTION;
+		}
+
+		return JSON.stringify(result);
+	},
+
+	updateUserRefonUsage: function() {
+		// update the user field with CI user value
+		var gr = new GlideAggregate(this.SAMP_SW_USAGE);
+		gr.addNullQuery('user');
+		gr.addNotNullQuery('configuration_item');
+		gr.setGroup(true);
+		gr.groupBy('configuration_item');
+		gr.query();
+		while (gr.next()) {
+			var grUsage = new GlideRecord(this.SAMP_SW_USAGE);
+			grUsage.addQuery('configuration_item', gr.configuration_item);
+			grUsage.setValue('user', gr.configuration_item.assigned_to);
+			grUsage.setWorkflow(false);
+			grUsage.updateMultiple();
+		}
+	},
+
+	checkIfMicrosoftPluginEnabled: function() {
+		return GlidePluginManager().isActive('com.snc.samp.microsoft');
+	},
+
+	checkIfWorkspacePluginEnabled: function() {
+		return GlidePluginManager().isActive('com.sn_sam_workspace');
+	},
+
+	type: 'SAMPremiumUtils',
+};
+
+/* Check for an existing SM thats an exact match on fieldList
+** params: softwareModelGR: Software Model's GlideRecord
+*/
+SAMPremiumUtils.findMatchingSoftwareModel = function(softwareModelGR, excludeFields) {
+	var smIDList = [];
+	var sm = new GlideRecord('cmdb_software_product_model');
+	sm.addQuery('sys_id', '!=', softwareModelGR.getUniqueValue());
+	var fieldList = ['product', 'version', 'version_operator', 'edition', 'edition_operator', 'platform', 'language',
+		'named_user_type', 'database_option', 'install_condition', 'database_option_condition', 'subscription_condition'];
+	if (GlidePluginManager.isActive('com.sn_samp_sap')) {
+		fieldList.push('sap_license_metric');
+	}
+
+	if (Array.isArray(excludeFields)) {
+		for (var j = 0; j < excludeFields.length; j++) {
+			var index = fieldList.indexOf(excludeFields[j]);
+			fieldList.splice(index, 1);
+		}
+	}
+
+	for (var i = 0; i < fieldList.length; i++) { sm.addQuery(fieldList[i], softwareModelGR[fieldList[i]]); }
+
+	if (softwareModelGR.getValue('platform') !== 'anything') { sm.addQuery('platform_operator', 'is'); }
+
+	if (softwareModelGR.getValue('language') !== '832bec5493212200caef14f1b47ffb56') { // --Anything--
+		sm.addQuery('language_operator', 'is');
+	}
+
+	sm.query();
+	while (sm.next()) { smIDList.push(sm.getUniqueValue()); }
+
+	if (smIDList.length > 0) {
+		// Add newly created SM to the list of matching SMs
+		smIDList.push(softwareModelGR.getUniqueValue());
+		return smIDList.join(',');
+	}
+
+	return null;
+};
+
+SAMPremiumUtils.findMatchingSoftwareModelIncludeSelf = function(softwareModelGR, excludeFields) {
+	var smIDs = SAMPremiumUtils.findMatchingSoftwareModel(softwareModelGR, excludeFields);
+
+	return smIDs || softwareModelGR.getUniqueValue();
+};
+
+SAMPremiumUtils.getDiscoveryModelsFromSwModel = function(swModelId) {
+	var dms = [];
+	var swmGr = new GlideRecord('cmdb_software_product_model');
+	if (swmGr.get(swModelId)) {
+		var swmEncQuery;
+		try {
+			swmEncQuery = new SNC.QueryBuilderScriptable().getEncodedQueryForDiscoveryModel(swmGr);
+		} catch (err) {
+			gs.log('SAMPremiumUtils: Error calling QueryBuilderScriptable.getEncodedQueryForDiscoveryModel: ' + err);
+		}
+		if (swmEncQuery) {
+			var discModelGr = new GlideRecord('cmdb_sam_sw_discovery_model');
+			discModelGr.addNotNullQuery('norm_product');
+			discModelGr.addEncodedQuery(swmEncQuery);
+			discModelGr.query();
+
+			while (discModelGr.next()) {
+				dms.push(discModelGr.sys_id + '');
+			}
+		}
+	} else {
+		gs.log('SAMPremiumUtils: Software Model not found - sys_id: ' + swModelId);
+	}
+
+	return dms;
+};
+
+SAMPremiumUtils.getSoftwareModelsFromDiscModel = function(dmId) {
+	var swms = [];
+	// var swmSysId;
+	var dmGr = new GlideRecord('cmdb_sam_sw_discovery_model');
+	if (dmGr.get(dmId)) {
+		var dmEncQuery;
+		try {
+			dmEncQuery = new SNC.QueryBuilderScriptable().getEncodedQueryForSoftwareModel(dmGr);
+		} catch (err) {
+			var gl = new GSLog('err', 'SAMPremiumUtils');
+			gl.logErr('Error calling QueryBuilderScriptable.getEncodedQueryForSoftwareModel: ' + err);
+		}
+		if (dmEncQuery) {
+			var encQueries = '';
+			var unionQueries = '';
+			var swModelGr = new GlideRecord('cmdb_software_product_model');
+			for (var i = 0; i < dmEncQuery.size(); i++) {
+				encQueries += unionQueries + dmEncQuery.get(i) + '^productISNOTEMPTY';
+				unionQueries = '^NQ';
+			}
+			if (encQueries) {
+				swModelGr.addEncodedQuery(encQueries);
+				swModelGr.addNullQuery('database_option'); // filters DB option software models
+				swModelGr.query();
+				while (swModelGr.next()) {
+					// Handle the "Starts With" scenario post-querying the for SW Model
+					if (swModelGr.getValue('version_operator') === 'starts_with'
+						&& !(dmGr.norm_version).startsWith(swModelGr.version)) {
+						continue;
+					}
+					if (swModelGr.getValue('edition_operator') === 'starts_with'
+						&& !(dmGr.norm_edition).startsWith(swModelGr.edition)) {
+						continue;
+					}
+
+					swms.push(swModelGr.getUniqueValue());
+				}
+			}
+		}
+	}
+
+	return swms;
+};
+
+SAMPremiumUtils.getOverflowEntities = function(entityTable, lmr) {
+	var overflowGr = new GlideRecord(ReconciliationConstants.SOFTWARE_ENTITY_TO_METRIC_RESULT_TABLE);
+	overflowGr.addQuery('software_entity_table', entityTable);
+	overflowGr.addQuery('license_metric_result', lmr);
+	overflowGr.query();
+
+	var overflowEntities = [];
+
+	while (overflowGr.next()) {
+		overflowEntities.push(overflowGr.getValue('software_entity'));
+	}
+
+	return overflowEntities;
+};
+
+SAMPremiumUtils.getOverflowEntitiesForSMR = function(entityTable, smr) {
+	var overflowGr = new GlideRecord(ReconciliationConstants.SOFTWARE_ENTITY_TO_METRIC_RESULT_TABLE);
+	overflowGr.addQuery('software_entity_table', entityTable);
+	overflowGr.addQuery('license_metric_result.software_model_result', smr);
+	overflowGr.query();
+
+	var overflowEntities = [];
+
+	while (overflowGr.next()) {
+		overflowEntities.push(overflowGr.getValue('software_entity'));
+	}
+
+	return overflowEntities;
+};
+
+SAMPremiumUtils.getLock = function(table, sysId) {
+	var lock = new GlideLock(table + sysId);
+	lock.setLockDuration(60 * 5); // 5 minutes
+	return lock;
+};
+
+SAMPremiumUtils.isReconRunning = function(duringRecon) {
+	var isReconRunning = new GlideQuery(ReconciliationConstants.RECONCILIATION_TASK_QUEUE)
+		.where('status', 'NOT IN', [ReconciliationConstants.COMPLETED_STATUS, ReconciliationConstants.FAILED_STATUS,
+			SAMScheduledJobConstants.TIMED_OUT_STATUS])
+		.selectOne('sys_id')
+		.isPresent();
+
+	var expectedActiveWorkers = duringRecon ? 1 : 0;
+
+	if (isReconRunning && SAMPremiumUtils.getActiveReconWorkersCount() === expectedActiveWorkers) {
+		isReconRunning = false;
+	}
+
+	return isReconRunning;
+};
+
+SAMPremiumUtils.getActiveReconWorkersCount = function() {
+	return new GlideQuery('sys_trigger')
+		.where('document_key', 'IN',
+			[ReconciliationConstants.RECON_JOB_SYS_ID, ReconciliationConstants.RECON_WORKER_JOB_SYS_ID])
+		.where('state', 'IN', [1, 2]) // 1 - Running, 2 - Queued
+		.count();
+};
+
+SAMPremiumUtils.cleanTable = function(tableName) {
+	var gr = new GlideRecord(tableName);
+	gr.query();
+	gr.setWorkflow(false);
+	gr.deleteMultiple();
+};
+
+SAMPremiumUtils.isEditionEnterprise = function(lmrId) {
+	var lmrGr = new GlideRecord(ReconciliationConstants.LICENSE_METRIC_RESULT_TABLE);
+	lmrGr.get(lmrId);
+	var edition = lmrGr.software_model.edition + '';
+	return edition && edition.match(/enterprise/i);
+};
+
+/* Reset suite related fields on installs whose inferred suite is not empty,
+	inferred suite level is 0 and the normalzied product is empty */
+SAMPremiumUtils.resetInferredSuiteLevel = function() {
+	var install = new GlideMultipleUpdate('cmdb_sam_sw_install');
+	install.addNotNullQuery('inferred_suite');
+	install.addQuery('inferred_suite_level', '0');
+	install.addNullQuery('norm_product');
+	install.setValue('inferred_suite', '');
+	install.setValue('inferred_suite_level', '');
+	install.setValue('inferred_suite_product', '');
+	install.setValue('inference_calculated', 'false');
+	install.execute();
+};
+SAMPremiumUtils.getConditionForDuplicateCheck = function(model) {
+	var condition = model.manufacturer.changes() || model.product.changes() || model.version.changes()
+		|| model.version_operator.changes() || model.edition.changes() || model.edition_operator.changes()
+		|| model.language.changes() || model.language_operator.changes()
+		|| model.platform.changes() || model.platform_operator.changes()
+		|| model.install_condition.changes() || model.named_user_type.changes() || model.database_option.changes();
+	if (GlidePluginManager.isActive('com.sn_samp_sap')) {
+		condition = condition || model.sap_license_metric.changes()
+		|| model.is_relevant.changes() || model.threshold.changes();
+	}
+	return condition;
+};
+
+SAMPremiumUtils.createMetricAttributes = function(licenseMetricArray) {
+	var createAttributes = new global.SamHandleMetricAttributes();
+	var licenseGr = new GlideAggregate('alm_license');
+	licenseGr.addQuery('license_metric', 'IN', licenseMetricArray);
+	licenseGr.setGroup(true);
+	licenseGr.groupBy('license_metric');
+	licenseGr.groupBy('metric_group');
+	licenseGr.groupBy('software_model');
+	licenseGr.query();
+	while (licenseGr.next()) {
+		createAttributes.createMetricAttributes(
+			licenseGr.license_metric,
+			licenseGr.metric_group,
+			licenseGr.software_model
+		);
+	}
+};
+
+SAMPremiumUtils.checkSAPProductAndLicenseMetric = function(entitlementObject) {
+	var publisher = String(entitlementObject.software_model.product.publisher.sys_id);
+	var product = String(entitlementObject.software_model.product.sys_id);
+	var licenseMetric = String(entitlementObject.license_metric.sys_id);
+	if (publisher === ReconciliationConstants.SAP_PUBLISHER_SYS_ID) {
+		if (licenseMetric === ReconciliationConstants.SAP_NAMED_USER_METRIC_SYS_ID
+			&& product !== ReconciliationConstants.SAP_NAMED_USER_PRODUCT_SYS_ID) {
+			return true;
+		}
+		if (licenseMetric === ReconciliationConstants.SAP_ENGINE_LICENSE_METRIC_SYS_ID
+			&& !new global.SAMPAjaxProcessor().checkSAPProductExistAsEngine(product)) {
+			return true;
+		}
+		if (licenseMetric !== ReconciliationConstants.SAP_NAMED_USER_METRIC_SYS_ID
+			&& product === ReconciliationConstants.SAP_NAMED_USER_PRODUCT_SYS_ID) {
+			return true;
+		}
+		if (licenseMetric !== ReconciliationConstants.SAP_ENGINE_LICENSE_METRIC_SYS_ID
+			&& new global.SAMPAjaxProcessor().checkSAPProductExistAsEngine(product)) {
+			return true;
+		}
+	}
+	return false;
+};
+
+SAMPremiumUtils.createDowngradeMetricAttributes = function(licenseMetricArray) {
+	var metricAttribute = new global.SamHandleMetricAttributes();
+	var downgradeModelGr = new GlideRecord('samp_downgrade_model');
+	downgradeModelGr.addQuery('license.license_metric', licenseMetricArray);
+	downgradeModelGr.query();
+	while (downgradeModelGr.next()) {
+		metricAttribute.createMetricAttributes(downgradeModelGr.license.license_metric,
+			downgradeModelGr.license.metric_group, downgradeModelGr.model);
+	}
+};
+
+SAMPremiumUtils.getGlideMultipleUpdate = function(table) {
+	var gmuObj = new GlideMultipleUpdate(table);
+	if (GlideDomainSupport.isDataSeparationEnabled()) {
+		gmuObj.addQuery('sys_domain', 'IN', SAMPremiumUtils.getVisibleDomains());
+	}
+	return gmuObj;
+};
+
+SAMPremiumUtils.getVisibleDomains = function(domainId) {
+	var visibleDomains = ['global'];
+	var iterator = GlideDomainSupport.getVisibleDomainSet(gs.nil(domainId) ? '' : domainId).iterator();
+	while (iterator.hasNext()) {
+		visibleDomains.push(iterator.next().getID());
+	}
+	return visibleDomains;
+};
+
+SAMPremiumUtils.getConditionSoftwareTitle = function(dmap) {
+	var condition = dmap.sw_product.changes() || dmap.platform.changes() || dmap.version.changes()
+		|| dmap.edition.changes() || dmap.named_user_type.changes() || dmap.database_option.changes()
+		|| dmap.language.changes();
+	if (GlidePluginManager.isActive('com.sn_samp_sap')) {
+		condition = condition || dmap.sap_license_metric.changes();
+	}
+	return condition;
+};
+
+SAMPremiumUtils.isSingleAppModel = function(model) {
+	if (!GlidePluginManager.isActive('com.snc.samp')) {
+		return false;
+	}
+	var subscriptions = new GlideRecord(ReconciliationConstants.SOFTWARE_SUBSCRIPTION_TABLE);
+	subscriptions.addQuery('software_model', model);
+	subscriptions.addNotNullQuery('assigned_software_identifier');
+	subscriptions.setLimit(1);
+	subscriptions.query();
+	return subscriptions.hasNext();
+};
+
+SAMPremiumUtils.runPADataCollectionJob = function(jobSysId, domainArr) {
+	var paJobGr = new GlideRecord('sysauto_pa');
+	paJobGr.addQuery('sys_id', jobSysId);
+	paJobGr.addActiveQuery();
+	paJobGr.query();
+
+	if (!paJobGr.next()) {
+		gs.error('SAMPremiumUtils: Could not find active PA job with sys_id: ' + jobSysId);
+		return;
+	}
+
+	if (!GlideDomainSupport.isDataSeparationEnabled() || gs.nil(domainArr)
+		|| !GlidePluginManager.isActive('com.snc.pa.domain_support')) {
+		SncTriggerSynchronizer.executeNow(paJobGr);
+	} else {
+		var m2mJobDCGr = new GlideRecord('pa_job_domain_configurations');
+		m2mJobDCGr.addQuery('job', jobSysId);
+		m2mJobDCGr.orderBy('order');
+		m2mJobDCGr.query();
+
+		if (m2mJobDCGr.next()) {
+			var domainConfig = {};
+			domainConfig.domain_ids = domainArr;
+			domainConfig.collect_children = m2mJobDCGr.domain_configuration.collect_children.toString();
+			domainConfig.roll_up = m2mJobDCGr.domain_configuration.roll_up.toString();
+
+			SNC.ScriptablePACollectionJob.execute(jobSysId, domainConfig);
+		} else {
+			gs.info('SAMPremiumUtils.runPADataCollectionJob: Domain configuration does not exist for PA job: '
+				+ paJobGr.getDisplayValue() + '. Running job in global domain.');
+			SncTriggerSynchronizer.executeNow(paJobGr);
+		}
+	}
+};
+
+SAMPremiumUtils.getCurrentDomainSysId = function() {
+	var currentDomainSysId = GlideSession.get().getCurrentDomainID();
+	if (gs.nil(currentDomainSysId)) {
+		return 'global';
+	}
+	return String(currentDomainSysId);
+};
+
+SAMPremiumUtils.createLicenseKey = function () {
+	var grEntitlement = new GlideRecord('alm_license');
+	grEntitlement.addNotNullQuery('license_key');
+	grEntitlement.query();
+	while (grEntitlement.next()) {
+		var grLk = new GlideRecord('samp_sw_license_key');
+		grLk.addQuery('license_key', grEntitlement.license_key);
+		grLk.addQuery('software_entitlement', grEntitlement.sys_id);
+		grLk.query();
+		if (!grLk.next()) {
+			grLk.initialize();
+			grLk.license_key = grEntitlement.license_key;
+			grLk.software_entitlement = grEntitlement.sys_id;
+			grLk.insert();
+		}
+	}
+};
+
+SAMPremiumUtils.getSysUserBySAPDiscoveredUser = function(discoveredUser) {
+	var sysUser;
+	var discoveredUserGr = new GlideRecord('samp_discovered_user');
+	if (discoveredUserGr.get(discoveredUser)) {
+		sysUser = discoveredUserGr.getValue('user');
+	}
+	return sysUser;
+};
+
+/* If domain separation is enabled, get the domain for the SM lookup */
+SAMPremiumUtils.getDomainForSM = function () {
+	var filterByDomainArr = [];
+	if (GlideDomainSupport.isDataSeparationEnabled()) {
+		filterByDomainArr.push(this.getCurrentDomainSysId());
+	}
+	return filterByDomainArr;
+};
+// updating normalized display name in software install
+SAMPremiumUtils.updateNormDisplayName = function(lastDiscoveryModel) {
+	var jobLogUtil = new AssetJobLogUtil();
+	jobLogUtil.startJobLog('Update Normalized Display Names in cmdb_sam_sw_install');
+	var C_TIMEOUT = 900000;
+	var gmu;
+	var stopWatch = new GlideStopWatch();
+	var grDM = new GlideRecord('cmdb_sam_sw_discovery_model');
+	grDM.orderBy('sys_id');
+	if (!gs.nil(lastDiscoveryModel)) {
+		grDM.addQuery('sys_id', '>', lastDiscoveryModel);
+	}
+	grDM.query();
+	var DMsProcessed = 0;
+	while (grDM.next()) {
+		var display = SAMPremiumUtils.calculateNormDisplayName(grDM);
+		gmu = new GlideRecord('cmdb_sam_sw_install');
+		gmu.addQuery('discovery_model', grDM.getUniqueValue());
+		gmu.setValue('normalized_display_name', display);
+		gmu.setWorkflow(false);
+		gmu.updateMultiple();
+		DMsProcessed += 1;
+		if (stopWatch.getTime() >= C_TIMEOUT && grDM.hasNext()) {
+			var script = "SAMPremiumUtils.updateNormDisplayName('" + grDM.getUniqueValue() + "');";
+			GlideRunScriptJob.scheduleScript(script);
+			break;
+		}
+	}
+	jobLogUtil.stopJobLog(jobLogUtil.COMPLETED_STATUS, 'Discovery models processed - ' + DMsProcessed);
+};
+SAMPremiumUtils.calculateNormDisplayName = function(gr) {
+	var display = '';
+	var values = [gr.norm_publisher.getDisplayValue(), gr.norm_product.getDisplayValue(),
+		gr.norm_edition, gr.norm_version];
+	for (var i = 0; i < values.length; i++) {
+		if (!gs.nil(values[i])) {
+			display += ' ' + values[i];
+		}
+	}
+	display = display.trim();
+	return display;
+};
+
+/* Executes a given CDS Schedule Job immediately.
+   cdsJob: Name of the CDS Schedule Job to be executed.
+*/
+SAMPremiumUtils.executeCDSJob = function(cdsJob) {
+	var cdsJobRecord = new GlideRecord('cds_client_schedule');
+	var query = cdsJobRecord.get('name', cdsJob);
+	if (!query) {
+		gs.error('The requested CDS Schedule Job was not found');
+	} else {
+		gs.executeNow(cdsJobRecord);
+	}
+};
+
+SAMPremiumUtils.triggerScheduledJob = function(jobSysId) {
+	var job = new GlideRecord('sysauto_script');
+	job.get(jobSysId);
+	SncTriggerSynchronizer.executeNow(job);
+};
+// Adding Comments for User Approval from Mobile
+SAMPremiumUtils.addComments = function(obj, msg) {
+	obj.comments.setJournalEntry(msg);
+};
+SAMPremiumUtils.setWorkFlow = function(obj) {
+	obj.setWorkflow(false);
+};
+SAMPremiumUtils.deleteRecord = function (gr) {
+	return gr.deleteRecord();
+};
+
+SAMPremiumUtils.getCIRelations = function(parentClass, type, childClass, key, value) {
+	var ciRel = new GlideRecord(ReconciliationConstants.CMDB_REL_CI_TABLE);
+	ciRel.addQuery(key, value);
+	ciRel.addQuery('child.sys_class_name', childClass);
+	ciRel.addQuery('type', type);
+	ciRel.addQuery('parent.sys_class_name', parentClass);
+	ciRel.orderByDesc('sys_created_on');
+	ciRel.query();
+
+	return ciRel;
+};
+
+SAMPremiumUtils.updateLwbReportLastUpdated = function(tableName) {
+	if (GlidePluginManager.isActive('com.sn_sam_workspace') && GlidePluginManager.isActive('com.snc.samp')) {
+		var timestamp = new GlideDateTime();
+		new GlideQuery(ReconciliationConstants.SAMP_WORKBENCH_REPORT)
+			.where('table_name', tableName)
+			.updateMultiple({
+				last_updated: timestamp,
+			});
+	}
+};
+
+SAMPremiumUtils.verifyAndSetActiveRights = function(entitlement) {
+	// eslint-disable-next-line max-len
+	if (entitlement.rights.changes() || entitlement.purchased_rights.changes() || entitlement.install_status.changes() || entitlement.license_duration.changes() || global.AssetUtils.isPlaybookInReview(entitlement)) {
+		return true;
+	}
+	return false;
+};
+
+SAMPremiumUtils.getRequiredByColumn = function(table) {
+	var column;
+
+	var tableHierarchy = new TableUtils(table).getTables();
+
+	switch (true) {
+	case tableHierarchy.indexOf('cmdb_ci') > -1:
+		column = 'required_by_device';
+		break;
+
+	case tableHierarchy.indexOf('sys_user') > -1:
+		column = 'required_by_user';
+		break;
+
+	case tableHierarchy.indexOf(ReconciliationConstants.DISCOVERED_USER_TABLE) > -1:
+		column = 'required_by_discovered_user';
+		break;
+
+	case tableHierarchy.indexOf(ReconciliationConstants.SOFTWARE_SUBSCRIPTION_TABLE) > -1:
+		column = 'required_by_subscription';
+		break;
+
+	case tableHierarchy.indexOf(ReconciliationConstants.CLIENT_ACCESS_TABLE) > -1:
+		column = 'required_by_cal';
+		break;
+
+	case tableHierarchy.indexOf(sn_sam_saas.SAMSaasConstants.CONSUMPTION_SUMMARY_TABLE) > -1:
+		column = 'required_by_consumption';
+		break;
+
+	default:
+		throw new Error('Reference column for ' + table + ' does not exist in samp_licenses_required_by.');
+	}
+	return column;
+};
+
+/* vCenter utilities */
+
+SAMPremiumUtils.versionCompare = function(v1, v2) {
+	/*
+	** Input: Parameter1(String), Parameter2(String)
+	** Output: An int value: 0 if the string is equal to the other string
+	**         < 0 if parameter1 is less than the parameter2
+	**         > 0 if parameter1 is greater than the parameter1
+	**
+	** Example:
+	** 6.1.5 < 6.2 returns -1
+	** 6.2 > 6.1.5 returns 1
+	** 6.1.5 === 6.1.5 returns 0
+	*/
+	var v1parts = v1.split('.');
+	var v2parts = v2.split('.');
+	for (var i = 0; i < v1parts.length; ++i) {
+		if (v2parts.length === i) {
+			return 1;
+		}
+		if (Number(v1parts[i]) === Number(v2parts[i])) {
+			continue;
+		} else if (Number(v1parts[i]) > Number(v2parts[i])) {
+			return 1;
+		} else {
+			return -1;
+		}
+	}
+	if (v1parts.length !== v2parts.length) {
+		return -1;
+	}
+	return 0;
+};
+
+SAMPremiumUtils.hasHostAffinityRules = function(vCenterId, vCenterObj) {
+	// Check if installed VM (VM instances) and their hosts belong to mandatory host affinity rule
+	var relevantMembers = [];
+	var ciRelVcToDc = SAMPremiumUtils.getCIRelations(ReconciliationConstants.VCENTER_CLASS,
+		SAMPremiumUtils.searchForManagesRelationship(),
+		ReconciliationConstants.VCENTER_DATACENTER_CLASS,
+		'parent',
+		vCenterId);
+	while (ciRelVcToDc.next()) {
+		// For each datacenter
+		var datacenterId = ciRelVcToDc.getValue('child');
+		var ciRelDcToCl = SAMPremiumUtils.getCIRelations(ReconciliationConstants.VCENTER_DATACENTER_CLASS,
+			ReconciliationConstants.CI_RELATION_CONTAINED_BY,
+			ReconciliationConstants.VCENTER_CLUSTER_CLASS,
+			'parent',
+			datacenterId);
+		while (ciRelDcToCl.next()) {
+			// For each cluster
+			var clusterId = ciRelDcToCl.getValue('child');
+			var memberList = SAMPremiumUtils.processvCenterCluster(clusterId, {});
+			if (memberList.vcMembers.length !== 0) {
+				// members will store only hosts that are >= 5.1
+				relevantMembers.push.apply(relevantMembers, memberList.vcMembers);
+			}
+		}
+	}
+	return SAMPremiumUtils.checkMandatoryAffinityRules(vCenterId, vCenterObj, relevantMembers);
+};
+
+SAMPremiumUtils.checkMandatoryAffinityRules = function(vCenterId, vCenterStorageObj, relevantMembers) {
+	var hosts = relevantMembers;
+	// For each hosts >= 5.1
+	// check if the ESX/its VM has an install
+	var dbView = new GlideRecord('samp_virtual_machine_installs');
+	dbView.addQuery('rel_child', hosts);
+	dbView.addQuery('inst_norm_product', ReconciliationConstants.ORACLE_DATABASE_SYS_ID);
+	dbView.addQuery('inst_active', true);
+	dbView.query();
+	if (!dbView.hasNext()) {
+		return true;
+	}
+	while (dbView.next()) {
+		var vmGroupSysId;
+		var hostGroupSysId;
+		// Get instantiated vmware instance record from virtual machine
+		var vmRelGr = new GlideRecord('cmdb_rel_ci');
+		vmRelGr.addQuery('parent', dbView.getValue('rel_parent'));
+		vmRelGr.addQuery('type', ReconciliationConstants.CI_RELATION_INSTANTIATES);
+		vmRelGr.addQuery('child.sys_class_name', ReconciliationConstants.VMWARE_INSTANCE);
+		vmRelGr.orderByDesc('sys_created_on');
+		vmRelGr.query();
+		if (vmRelGr.next()) {
+			// Check vm group for the vm instances
+			var vmGroupGr = SAMPremiumUtils.getCIRelations(ReconciliationConstants.VMWARE_VM_GROUP,
+				ReconciliationConstants.CI_RELATION_CONTAINED_BY,
+				ReconciliationConstants.VMWARE_INSTANCE,
+				'child',
+				vmRelGr.getValue('child'));
+			if (vmGroupGr.next()) {
+				vmGroupSysId = vmGroupGr.getValue('parent');
+			} else {
+				return false;
+			}
+		} else {
+			return false;
+		}
+		// Check host group for the host
+		var hostGroupGr = SAMPremiumUtils.getCIRelations(ReconciliationConstants.VMWARE_HOST_GROUP,
+			ReconciliationConstants.CI_RELATION_CONTAINED_BY,
+			ReconciliationConstants.ESX_SERVER_CLASS,
+			'child',
+			dbView.getValue('rel_child'));
+		if (hostGroupGr.next()) {
+			hostGroupSysId = hostGroupGr.getValue('parent');
+		} else {
+			return false;
+		}
+		// check if vm group and host group belong to mandatory affinity rule
+		var affinityRuleGr = new GlideRecord(ReconciliationConstants.VM_HOST_AFFINITY_RULE_TABLE);
+		affinityRuleGr.addQuery('vm_group', vmGroupSysId);
+		affinityRuleGr.addQuery('host_group', hostGroupSysId);
+		affinityRuleGr.addQuery('active', true);
+		affinityRuleGr.addQuery('mandatory', true);
+		affinityRuleGr.addQuery('affinity', true);
+		affinityRuleGr.orderBy('sys_created_on');
+		affinityRuleGr.setLimit(1);
+		affinityRuleGr.query();
+		if (!affinityRuleGr.hasNext()) {
+			return false;
+		}
+	}
+	return true;
+};
+
+SAMPremiumUtils.processvCenterCluster = function(clusterId, processedHostDevices) {
+	var vcMembers = [];
+	var dcMembers = [];
+	var ciRelClToHost = SAMPremiumUtils.getCIRelations(ReconciliationConstants.VCENTER_CLUSTER_CLASS,
+		ReconciliationConstants.CI_RELATION_MEMBER_OF,
+		ReconciliationConstants.ESX_SERVER_CLASS,
+		'parent',
+		clusterId);
+	while (ciRelClToHost.next()) {
+		var esxVersion = SAMPremiumUtils.getESXVersion(ciRelClToHost.getValue('child'));
+		var isVersionValid = SAMPremiumUtils.isVersionValid(esxVersion);
+		if (isVersionValid && SAMPremiumUtils.versionCompare('5.1', esxVersion) !== 1) {
+			vcMembers.push(ciRelClToHost.getValue('child'));
+		} else {
+			dcMembers.push(ciRelClToHost.getValue('child'));
+		}
+		if (processedHostDevices) {
+			processedHostDevices[ciRelClToHost.getValue('child')] = true;
+		}
+	}
+	return {
+		vcMembers: vcMembers,
+		dcMembers: dcMembers,
+	};
+};
+
+SAMPremiumUtils.getESXVersion = function(esxId) {
+	/** Return ESX's OS version
+		* input: VMware ESXi <version> build-<build_version>
+		* output: {String} ex: 5.5, 5.5.0
+		* */
+	var esx = new GlideRecord(ReconciliationConstants.ESX_SERVER_CLASS);
+	if (esx.get(esxId)) {
+		var version = esx.getValue('os_version');
+		if (!gs.nil(version)) {
+			var strArray = esx.getValue('os_version').split(' ');
+			var isValid = SAMPremiumUtils.isVersionValid(strArray[2]);
+			if (isValid) {
+				return strArray[2];
+			}
+		}
+	}
+	return null;
+};
+
+SAMPremiumUtils.isVersionValid = function(str) {
+	var isValid = false;
+	// Contains only numbers and dots
+	if (!gs.nil(str)) {
+		isValid = /^[0-9.]*$/.test(str);
+	}
+	return isValid;
+};
+
+SAMPremiumUtils.getvCenterMembers = function(vCenter) {
+	var members = [];
+	var ciRelVcToDc = SAMPremiumUtils.getCIRelations(ReconciliationConstants.VCENTER_CLASS,
+		SAMPremiumUtils.searchForManagesRelationship(),
+		ReconciliationConstants.VCENTER_DATACENTER_CLASS,
+		'parent',
+		vCenter);
+	while (ciRelVcToDc.next()) {
+		var ciRelDcToCl = SAMPremiumUtils.getCIRelations(ReconciliationConstants.VCENTER_DATACENTER_CLASS,
+			ReconciliationConstants.CI_RELATION_CONTAINED_BY,
+			ReconciliationConstants.VCENTER_CLUSTER_CLASS,
+			'parent',
+			ciRelVcToDc.getValue('child'));
+		while (ciRelDcToCl.next()) {
+			var clusterId = ciRelDcToCl.getValue('child');
+			var ciRelClToHost = SAMPremiumUtils.getCIRelations(ReconciliationConstants.VCENTER_CLUSTER_CLASS,
+				ReconciliationConstants.CI_RELATION_MEMBER_OF,
+				ReconciliationConstants.ESX_SERVER_CLASS,
+				'parent',
+				clusterId);
+			while (ciRelClToHost.next()) {
+				var esxVersion = SAMPremiumUtils.getESXVersion(ciRelClToHost.getValue('child'));
+				var isVersionValid = SAMPremiumUtils.isVersionValid(esxVersion);
+				if (isVersionValid && SAMPremiumUtils.versionCompare('5.1', esxVersion) !== 1) {
+					// ESX version greater or equal to 5.1
+					members.push(ciRelClToHost.getValue('child'));
+				}
+			}
+		}
+	}
+	return members;
+};
+
+SAMPremiumUtils.getvCenterDatacenterMembers = function(datacenter) {
+	var members = [];
+	var ciRelDcToCl = SAMPremiumUtils.getCIRelations(ReconciliationConstants.VCENTER_DATACENTER_CLASS,
+		ReconciliationConstants.CI_RELATION_CONTAINED_BY,
+		ReconciliationConstants.VCENTER_CLUSTER_CLASS,
+		'parent',
+		datacenter);
+	while (ciRelDcToCl.next()) {
+		var clusterId = ciRelDcToCl.getValue('child');
+		var ciRelClToHost = SAMPremiumUtils.getCIRelations(ReconciliationConstants.VCENTER_CLUSTER_CLASS,
+			ReconciliationConstants.CI_RELATION_MEMBER_OF,
+			ReconciliationConstants.ESX_SERVER_CLASS,
+			'parent',
+			clusterId);
+		while (ciRelClToHost.next()) {
+			var esxVersion = SAMPremiumUtils.getESXVersion(ciRelClToHost.getValue('child'));
+			var isVersionValid = SAMPremiumUtils.isVersionValid(esxVersion);
+			if (isVersionValid && SAMPremiumUtils.versionCompare('5.1', esxVersion) > 0) {
+				// ESX version lesser than 5.1
+				members.push(ciRelClToHost.getValue('child'));
+			}
+		}
+	}
+	return members;
+};
+
+SAMPremiumUtils.isHostAffinityEnabledForvCenters6 = function() {
+	var vCenterHostAffinity = null;
+	var vCenterInfo = {};
+	var vCenterGr = new GlideRecord(ReconciliationConstants.VCENTER_CLASS);
+	vCenterGr.addQuery('api_version', 'STARTSWITH', '6');
+	vCenterGr.query();
+	while (vCenterGr.next()) {
+		var vCenterId = vCenterGr.getUniqueValue();
+		vCenterInfo[vCenterId] = vCenterInfo[vCenterId] || {};
+		vCenterInfo[vCenterId].sysId = vCenterId;
+		vCenterInfo[vCenterId].table = ReconciliationConstants.VCENTER_CLASS;
+		vCenterInfo[vCenterId].version = vCenterGr.getValue('api_version');
+		vCenterInfo[vCenterId].hostAffinity = SAMPremiumUtils.hasHostAffinityRules(vCenterId, {});
+	}
+	for (var i in vCenterInfo) {
+		if (vCenterInfo[i].hostAffinity === false) {
+			vCenterHostAffinity = false;
+			break;
+		}
+		vCenterHostAffinity = true;
+	}
+	return vCenterHostAffinity;
+};
+
+/* End of vCenter utilities */
+
+SAMPremiumUtils.getQueryToMarkProductHwmByModel = function(swModelGr) {
+	var editionOperator = swModelGr.getValue('edition_operator');
+	var edition = swModelGr.getValue('edition');
+	var prodSysId = swModelGr.getValue('product');
+	var query = 'product=' + prodSysId;
+	switch (editionOperator) {
+	case 'starts_with':
+		query += '^editionSTARTSWITH' + edition;
+		break;
+	case 'is_anything':
+		query += '^editionANYTHING';
+		break;
+	default:
+		query += '^edition=' + edition;
+	}
+	var productGr = new global.SampRecord(global.ReconciliationConstants.IBM_PRODUCT_USAGE_TABLE);
+	productGr.addEncodedQuery(query);
+	return productGr;
+};
+
+SAMPremiumUtils.getPublisherIdByProductId = function(productId) {
+	var productGr = new GlideRecord(ReconciliationConstants.SOFTWARE_PRODUCT_TABLE);
+	productGr.get(productId);
+
+	return productGr.publisher.manufacturer;
+};
+
+SAMPremiumUtils.fixInstallNormalizations = function() {
+	var jobLogUtil = new AssetJobLogUtil();
+	jobLogUtil.startJobLog('Fix normalised values for installs');
+	SAMPremiumUtils.clearNormFieldsForSaasInstalls();
+	SAMPremiumUtils.clearNormFieldsForNonLicensableInstalls();
+	jobLogUtil.stopJobLog(jobLogUtil.COMPLETED_STATUS);
+};
+
+SAMPremiumUtils.clearNormFieldsForSaasInstalls = function() {
+	var grDM = new GlideRecord('cmdb_sam_sw_discovery_model');
+	grDM.addQuery('norm_product.ignore_installs', true);
+	grDM.query();
+	while (grDM.next()) {
+		var gmu = new GlideMultipleUpdate('cmdb_sam_sw_install');
+		gmu.addQuery('discovery_model', grDM.getUniqueValue());
+		SAMPremiumUtils.clearNormFieldsForInstallGr(gmu);
+		gmu.execute();
+	}
+};
+
+// This covers both non-licensable and inactive installs
+SAMPremiumUtils.clearNormFieldsForNonLicensableInstalls = function() {
+	var gmu = new GlideMultipleUpdate('cmdb_sam_sw_install');
+	gmu.addNotNullQuery('product_result');
+	gmu.addNullQuery('norm_product');
+	SAMPremiumUtils.clearNormFieldsForInstallGr(gmu);
+	gmu.execute();
+};
+
+SAMPremiumUtils.clearNormFieldsForInstallGr = function(installGr) {
+	installGr.setValue('norm_product', '');
+	installGr.setValue('norm_publisher', '');
+	installGr.setValue('normalized_display_name', '');
+	SAMPremiumUtils.clearReconFieldsForInstallGr(installGr);
+};
+
+SAMPremiumUtils.clearReconFieldsForInstallGr = function(installGr) {
+	installGr.setValue('is_reconciled', false);
+	installGr.setValue('unlicensed_install', true);
+	installGr.setValue('is_allocated', false);
+	installGr.setValue('allocation_needed', false);
+	installGr.setValue('reconciliation_state', ReconciliationConstants.RECONCILIATION_STATE.DEFAULT + '');
+	installGr.setValue('license_metric_result', '');
+	installGr.setValue('software_model_result', '');
+	installGr.setValue('product_result', '');
+	installGr.setValue('inferred_suite_product', '');
+	installGr.setValue('inferred_suite', '');
+	installGr.setValue('inferred_suite_level', '0');
+	installGr.setValue('inference_calculated', 'false');
+	installGr.setValue('software_model', '');
+	installGr.setValue('software_model_source', '');
+};
+
+SAMPremiumUtils.updateNormFieldsOnInstallsByDM = function() {
+	var gmu;
+	var grDM = new GlideRecord('cmdb_sam_sw_discovery_model');
+	grDM.addQuery('norm_type', 'NSAMEAS', 'norm_product.product_type');
+	grDM.query();
+	while (grDM.next()) {
+		if (grDM.getValue('norm_type') === ReconciliationConstants.PRODUCT_TYPE_LICENSABLE_VALUE) {
+			gmu = new GlideMultipleUpdate('cmdb_sam_sw_install');
+			gmu.addQuery('discovery_model', grDM.getUniqueValue());
+			gmu.addNullQuery('norm_product');
+			gmu.setValue('norm_product', grDM.getValue('norm_product'));
+			gmu.setValue('norm_publisher', grDM.getValue('norm_publisher'));
+			gmu.setValue('normalized_display_name', SAMPremiumUtils.calculateNormDisplayName(grDM));
+			gmu.execute();
+		} else {
+			gmu = new GlideMultipleUpdate('cmdb_sam_sw_install');
+			gmu.addQuery('discovery_model', grDM.getUniqueValue());
+			gmu.addQuery('norm_product', grDM.getValue('norm_product'));
+			SAMPremiumUtils.clearNormFieldsForInstallGr(gmu);
+			gmu.execute();
+		}
+	}
+};
+
+SAMPremiumUtils.clearNullStringFromInstalls = function() {
+	var jobLogUtil = new AssetJobLogUtil();
+	jobLogUtil.startJobLog('Clear NULL string in cmdb_sam_sw_install');
+	var rec = new GlideMultipleUpdate('cmdb_sam_sw_install');
+	rec.addNotNullQuery('norm_publisher');
+	rec.addNullQuery('norm_publisher.sys_id');
+	rec.setValue('norm_publisher', '');
+	rec.setValue('norm_product', '');
+	rec.execute();
+	jobLogUtil.stopJobLog(jobLogUtil.COMPLETED_STATUS, 'Done clearing NULL string in cmdb_sam_sw_install');
+};
+
+SAMPremiumUtils.processInBatch = function(gr, batchSize, cols, processor) {
+	var batch = [];
+	var record;
+
+	while (gr.next()) {
+		record = {};
+		for (var i = 0; i < cols.length; i++) {
+			record[cols[i]] = gr.getValue(cols[i]);
+		}
+		batch.push(record);
+		if (batch.length === batchSize) {
+			processor(batch);
+			batch = [];
+		}
+	}
+	if (batch.length > 0) {
+		processor(batch);
+	}
+};
+
+SAMPremiumUtils.getFlowFromDecisionTable = function(decisionID, decisionInputs, defaultFlow) {
+	var flow = defaultFlow;
+	var dtApi = new sn_dt.DecisionTableAPI();
+	try {
+		var response = dtApi.getDecision(decisionID, decisionInputs);
+		flow = response.sys_scope.scope + '.' + response.internal_name;
+	} catch (err) {
+		gs.error(err);
+	}
+	return flow;
+};
+
+SAMPremiumUtils.triggerFlowAsyncronously = function(flowName, inputs) {
+	var flowContextID;
+	try {
+		flowContextID = sn_fd.FlowAPI.startFlow(flowName, inputs);
+	} catch (ex) {
+		gs.error(flowName + ': ' + ex.getMessage());
+	}
+	return flowContextID;
+};
+
+SAMPremiumUtils.getClassFromCISysId = function(ciSysId) {
+	var ciClass;
+	var cmdbCiGr = new GlideRecord(ReconciliationConstants.CMDB_CI);
+	if (cmdbCiGr.get(ciSysId)) {
+		ciClass = cmdbCiGr.getValue('sys_class_name');
+	}
+	return ciClass;
+};
+
+SAMPremiumUtils.deleteOracleExtensionPatternMapping = function() {
+	var legacyExtensionPatterns = ['30f10b3567201300e483cbb35685ef96', '06c58f7567201300e483cbb35685efd5'];
+	new global.GlideQuery('sa_pattern_extension')
+		.where('sys_id', 'IN', legacyExtensionPatterns)
+		.deleteMultiple();
+};
+
+SAMPremiumUtils.getConditionForReclamationNameGeneration = function(reclaimCandidate) {
+	var condition = gs.nil(reclaimCandidate.name) || reclaimCandidate.software_install.changes()
+	|| reclaimCandidate.user_subscription.changes() || reclaimCandidate.eng_app_license.changes()
+	|| reclaimCandidate.db_options.changes();
+	return condition;
+};
+
+SAMPremiumUtils.searchForManagesRelationship = function() {
+	var manageGr = new GlideRecord('cmdb_rel_type');
+	manageGr.addQuery('parent_descriptor', 'Manages');
+	manageGr.addQuery('child_descriptor', 'Managed by');
+	manageGr.addQuery('sys_scope', 'global');
+	manageGr.query();
+	if (manageGr.next()) {
+		return manageGr.getUniqueValue();
+	}
+	gs.error('No matching Manages : Managed by relationship type found');
+	return '';
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:34</sys_created_on>
+        <sys_id>01d5a96c47111110c859fee3846d43c6</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SAMPremiumUtils</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_01d5a96c47111110c859fee3846d43c6</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:34</sys_updated_on>
+    </sys_script_include>
+</record_update>

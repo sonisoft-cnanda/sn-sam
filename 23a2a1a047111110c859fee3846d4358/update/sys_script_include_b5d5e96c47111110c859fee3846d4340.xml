@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamLicenseCalculatorFactory</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>License Calculator Factory for the product level license calculators</description>
+        <name>SamLicenseCalculatorFactory</name>
+        <script><![CDATA[var SamLicenseCalculatorFactory = Class.create();
+SamLicenseCalculatorFactory.prototype = {
+	initialize: function() {
+	},
+
+	type: 'SamLicenseCalculatorFactory',
+};
+
+SamLicenseCalculatorFactory.populateCalculators = function () {
+	SamLicenseCalculatorFactory.calculators = {};
+	var registryGr = new GlideRecord('samp_license_calculator_registry');
+	registryGr.query();
+	while (registryGr.next()) {
+		var registrarName = registryGr.getValue('license_calculator_registrar');
+		var registrar = SamLicenseCalculatorFactory.getVariableFromName(registrarName);
+		registrar(SamLicenseCalculatorFactory.calculators);
+	}
+};
+
+SamLicenseCalculatorFactory.getVariableFromName = function (calculatorName) {
+	var calculatorNameArr = calculatorName.split('.');
+	var calculatorClass = global;
+	for (var i = 0; i < calculatorNameArr.length; i++) {
+		calculatorClass = calculatorClass[calculatorNameArr[i]];
+	}
+	return calculatorClass;
+};
+
+SamLicenseCalculatorFactory.build = function(metric, coreCompany, product, reconResult, singleLicenseMetric,
+	calculateRightsNeeded, config) {
+	var calculatorName;
+	var calculatorClass;
+	if (!SamLicenseCalculatorFactory.hasOwnProperty('calculators')) {
+		SamLicenseCalculatorFactory.populateCalculators();
+	}
+	calculatorName = SamLicenseCalculatorFactory.calculators[metric] || 'SamCustomLicenseCalculator';
+	if (typeof calculatorName === 'function') {
+		return calculatorName(coreCompany, product, reconResult, singleLicenseMetric, calculateRightsNeeded, config);
+	}
+	calculatorClass = SamLicenseCalculatorFactory.getVariableFromName(calculatorName);
+	// eslint-disable-next-line new-cap
+	return new calculatorClass(coreCompany, product, reconResult, singleLicenseMetric, calculateRightsNeeded, metric,
+		config);
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:36</sys_created_on>
+        <sys_id>b5d5e96c47111110c859fee3846d4340</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamLicenseCalculatorFactory</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_b5d5e96c47111110c859fee3846d4340</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:36</sys_updated_on>
+    </sys_script_include>
+</record_update>

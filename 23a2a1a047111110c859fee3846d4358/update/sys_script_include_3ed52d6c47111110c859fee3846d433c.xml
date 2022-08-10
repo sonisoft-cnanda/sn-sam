@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampBlacklistEngine</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SampBlacklistEngine</name>
+        <script><![CDATA[var SampBlacklistEngine = Class.create();
+var reclamationUtil = new sn_samp.SAMPReclamationUtil();
+
+SampBlacklistEngine.prototype = {
+	initialize: function() {
+	},
+
+	getBlacklistedSoftwareModels: function() {
+		var softwareModelGr = new GlideRecord(ReconciliationConstants.SOFTWARE_MODEL_TABLE);
+		softwareModelGr.addQuery('blacklisted', true);
+		softwareModelGr.query();
+		return softwareModelGr;
+	},
+
+	processForBlacklistedSoftwareModel: function(softwareModelGr) {
+		var dmIds = this.getDiscModels(softwareModelGr);
+
+		var installGr = new GlideRecord(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+		installGr.addActiveQuery();
+		installGr.addQuery('discovery_model', dmIds);
+
+		if (!gs.nil(softwareModelGr.getValue('install_condition'))) {
+			var fieldPrefix = '';
+			SampInstallConditionEngine.addQueryCondition(installGr, softwareModelGr.getValue('install_condition'), fieldPrefix);
+		}
+
+		installGr.query();
+
+		while (installGr.next()) {
+			var reclamationCandidateGr = new GlideRecord(SampBlacklistEngine.SW_RECLAMATION_CANDIDATE_TABLE);
+			reclamationCandidateGr.addQuery('software_install', installGr.sys_id);
+			reclamationCandidateGr.query();
+
+			if (!reclamationCandidateGr.next()) {
+				// if reclamation candidate is not present, create a reclamation candidate with justification blacklisted
+				this.createReclamationCandidate(installGr);
+			} else {
+				// if reclamation candidate is present, update justification to blacklisted and state to awaiting revocation
+				if (reclamationCandidateGr.justification != 'blacklisted' && reclamationCandidateGr.state != SampBlacklistEngine.RECLAMATION_CLOSED_COMPLETE_STATE) {
+					this.updateReclamationCandidate(reclamationCandidateGr);
+				}
+			}
+		}
+	},
+
+	process: function() {
+		var softwareModelGr = this.getBlacklistedSoftwareModels();
+		while (softwareModelGr.next()) {
+			this.processForBlacklistedSoftwareModel(softwareModelGr);
+		}
+	},
+
+	getDiscModels: function(softwareModelGr) {
+		var discModelGr = new GlideRecord(ReconciliationConstants.DISCOVERY_MODEL_TABLE);
+		discModelGr.addNotNullQuery('norm_product');
+		var discModelEncodedQuery = (new SNC.QueryBuilderScriptable()).getEncodedQueryForDiscoveryModel(softwareModelGr);
+		discModelGr.addEncodedQuery(discModelEncodedQuery);
+		discModelGr.query();
+
+		var dmIds = [];
+		while (discModelGr.next()) {
+			dmIds.push(discModelGr.getUniqueValue());
+		}
+		return dmIds;
+	},
+
+	createReclamationCandidate: function(installGr) {
+		var reclamationCandidateGr = new GlideRecord(SampBlacklistEngine.SW_RECLAMATION_CANDIDATE_TABLE);
+		reclamationCandidateGr.initialize();
+		reclamationCandidateGr.setValue('software_install', installGr.sys_id);
+		reclamationCandidateGr.setValue('assignment_group', SampProcessReclamation.ASSIGNMENT_GROUP_DEFAULT);
+		reclamationCandidateGr.setValue('justification', 'blacklisted');
+		reclamationCandidateGr.setValue('notify_user', false);
+
+		if (installGr.assigned_to) {
+			reclamationCandidateGr.setValue('user', installGr.assigned_to);
+		}
+
+		reclamationCandidateGr.setValue('state', SampBlacklistEngine.RECLAMATION_READY_STATE);
+
+		reclamationCandidateGr.insert();
+	},
+
+	updateReclamationCandidate: function(reclamationCandidateGr) {
+		// cancel any existing workflow
+		if (reclamationCandidateGr.state == SampBlacklistEngine.RECLAMATION_AWAITING_USER_STATE || reclamationCandidateGr.state == SampBlacklistEngine.RECLAMATION_AWAITING_APPROVAL_STATE) { reclamationUtil.cancelExistingWorkflow(reclamationCandidateGr); }
+
+		var publisher = reclamationCandidateGr.getDisplayValue('publisher');
+		var product = reclamationCandidateGr.getDisplayValue('product');
+		var ci = reclamationCandidateGr.getDisplayValue('cmdb_ci');
+		var desc = gs.getMessage('{0} {1} installed on the device, {2}, is not authorized for use on company owned property.', [publisher, product, ci]);
+
+		if (reclamationCandidateGr.state != SampBlacklistEngine.RECLAMATION_AWAITING_REVOCATION_STATE) { reclamationCandidateGr.setValue('state', SampBlacklistEngine.RECLAMATION_AWAITING_REVOCATION_STATE); }
+		reclamationCandidateGr.setValue('justification', 'blacklisted');
+		reclamationCandidateGr.setValue('description', desc);
+		reclamationCandidateGr.setValue('notify_user', false);
+		reclamationCandidateGr.update();
+	},
+
+	type: 'SampBlacklistEngine',
+};
+
+SampBlacklistEngine.SW_RECLAMATION_CANDIDATE_TABLE = 'samp_sw_reclamation_candidate';
+SampBlacklistEngine.RECLAMATION_READY_STATE = 11;
+SampBlacklistEngine.RECLAMATION_AWAITING_USER_STATE = 12;
+SampBlacklistEngine.RECLAMATION_AWAITING_APPROVAL_STATE = 13;
+SampBlacklistEngine.RECLAMATION_AWAITING_REVOCATION_STATE = 14;
+SampBlacklistEngine.RECLAMATION_CLOSED_COMPLETE_STATE = 15;]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:41</sys_created_on>
+        <sys_id>3ed52d6c47111110c859fee3846d433c</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampBlacklistEngine</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_3ed52d6c47111110c859fee3846d433c</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:41</sys_updated_on>
+    </sys_script_include>
+</record_update>

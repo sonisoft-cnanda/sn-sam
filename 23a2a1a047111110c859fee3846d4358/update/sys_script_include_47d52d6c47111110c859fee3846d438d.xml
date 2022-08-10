@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamPublisherCalculatorCitrix</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamPublisherCalculatorCitrix</name>
+        <script><![CDATA[var SamPublisherCalculatorCitrix = Class.create();
+SamPublisherCalculatorCitrix.prototype = Object.extendsObject(SamPublisherCalculator, {
+	initialize: function(reconEngine, coreCompanyId) {
+		SamPublisherCalculator.prototype.initialize.call(this, reconEngine, coreCompanyId);
+	},
+
+	prepare: function() {
+		SamPublisherCalculator.prototype.prepare.call(this);
+		this.ignoreCitrixXenInstalls();
+	},
+
+	ignoreCitrixXenInstalls: function () {
+		// Ignore Citrix XenApp and XenDesktop installs from Recon as they are licensed using client access records.
+		var prodIds = [ReconciliationConstants.XENDESKTOP_SYS_ID, ReconciliationConstants.XENAPP_SYS_ID];
+		var grInstalls = GlideRecord(ReconciliationConstants.LICENSABLE_SOFTWARE_INSTALL_TABLE);
+		grInstalls.addQuery('norm_product', prodIds);
+		this.reconcileIgnoredInstalls(grInstalls);
+	},
+
+	type: 'SamPublisherCalculatorCitrix',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:42</sys_created_on>
+        <sys_id>47d52d6c47111110c859fee3846d438d</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamPublisherCalculatorCitrix</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_47d52d6c47111110c859fee3846d438d</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:42</sys_updated_on>
+    </sys_script_include>
+</record_update>

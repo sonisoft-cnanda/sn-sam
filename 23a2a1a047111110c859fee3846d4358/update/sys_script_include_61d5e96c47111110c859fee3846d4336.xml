@@ -1,0 +1,342 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampProductCalculator</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SampProductCalculator</name>
+        <script><![CDATA[var SampProductCalculator = Class.create();
+SampProductCalculator.prototype = Object.extendsObject(SamsProductCalculator, {
+	initialize: function(publisherCalculator, product) {
+		SamsProductCalculator.prototype.initialize.call(this, publisherCalculator, product);
+		this.dedCloudInstallsExist = new GlideQuery('samp_vm_installs_on_dedicated_cloud')
+			.where('inst_norm_product', this.fProduct)
+			.where('inst_is_reconciled', false)
+			.selectOne('inst_norm_product')
+			.isPresent();
+	},
+
+	checkProductEntitlementsExistsQuery: function(onCloud) {
+		var entitlement = SamsProductCalculator.prototype.checkProductEntitlementsExistsQuery.call(this, onCloud);
+		entitlement.addNullQuery('model.ref_cmdb_software_product_model.license_under_management')
+			.addOrCondition('model.ref_cmdb_software_product_model.license_under_management', true);
+		return entitlement;
+	},
+
+	updateSubscriptionsWithProductResult: function (productResultId, softwareModelResultIds) {
+		// Update the subscription table linked to the software model
+		var subscriptionsGr = new GlideRecord(ReconciliationConstants.SOFTWARE_SUBSCRIPTION_TABLE);
+		subscriptionsGr.addQuery('publisher', this.coreCompanyId);
+		subscriptionsGr.addQuery('product', this.fProduct);
+		this.updateEntitiesWithProductResult(subscriptionsGr, productResultId, softwareModelResultIds);
+
+		var smrGr = GlideRecord(ReconciliationConstants.SOFTWARE_MODEL_RESULT_TABLE);
+		smrGr.addQuery('sys_id', softwareModelResultIds);
+		smrGr.query();
+
+		while (smrGr.next()) {
+			var softwareModelId = smrGr.getValue('software_model');
+			var suiteGr = new GlideRecord('cmdb_m2m_suite_model');
+			suiteGr.addQuery('suite_parent', softwareModelId);
+			suiteGr.setLimit(1);
+			suiteGr.query();
+
+			if (suiteGr.next() || SAMPremiumUtils.isSingleAppModel(softwareModelId)) {
+				// Update the subscriptions linked to the software model's suite
+				var suiteSubscGr = new GlideRecord(ReconciliationConstants.SOFTWARE_SUBSCRIPTION_TABLE);
+				suiteSubscGr.addQuery('publisher', this.coreCompanyId);
+				suiteSubscGr.addQuery('inferred_suite_product', this.fProduct);
+				this.updateEntitiesWithProductResult(suiteSubscGr, productResultId, smrGr.getUniqueValue());
+			}
+		}
+	},
+
+	updateCALsWithProductResult: function (productResultId, softwareModelResultIds) {
+		var calGr = new GlideRecord(ReconciliationConstants.CLIENT_ACCESS_TABLE);
+		calGr.addQuery('software_model.manufacturer', this.coreCompanyId);
+		calGr.addQuery('software_model.product', this.fProduct);
+		calGr.addQuery('sys_class_name', 'samp_sw_client_access');
+		this.updateEntitiesWithProductResult(calGr, productResultId, softwareModelResultIds);
+
+		var calBreakdownGr = new GlideRecord(ReconciliationConstants.CLIENT_ACCESS_BREAKDOWN_TABLE);
+		calBreakdownGr.addQuery('client_access.software_model.manufacturer', this.coreCompanyId);
+		calBreakdownGr.addQuery('client_access.software_model.product', this.fProduct);
+		calBreakdownGr.addQuery('client_access.sys_class_name', 'samp_sw_client_access');
+		this.updateEntitiesWithProductResult(calBreakdownGr, productResultId, softwareModelResultIds);
+	},
+
+	updateProductResult: function (productResultId, softwareModelResultIds) {
+		SamsProductCalculator.prototype.updateProductResult.call(this, productResultId, softwareModelResultIds);
+		this.updateSubscriptionsWithProductResult(productResultId, softwareModelResultIds);
+		this.updateOptionsWithProductResult(productResultId, softwareModelResultIds);
+		this.updateHwmProductsWithProductResult(productResultId, softwareModelResultIds);
+		this.updateNamedUserWithProductResult(productResultId, softwareModelResultIds);
+		this.updateConsumptionsWithProductResult(productResultId, softwareModelResultIds);
+	},
+
+	getProductEntitlementsQuery: function (entitlement) {
+		var downgradeModelsGa = SamsProductCalculator.prototype.getProductEntitlementsQuery.call(this, entitlement);
+		downgradeModelsGa.addNullQuery('license.software_model.license_under_management')
+			.addOrCondition('license.software_model.license_under_management', true);
+		return downgradeModelsGa;
+	},
+
+	getUnorderedProductEntitlementsQuery: function (cloudSupportedMetrics) {
+		var swLicense = SamsProductCalculator.prototype.getUnorderedProductEntitlementsQuery.call(
+			this, cloudSupportedMetrics
+		);
+		swLicense.addNullQuery('model.ref_cmdb_software_product_model.license_under_management')
+			.addOrCondition('model.ref_cmdb_software_product_model.license_under_management', true);
+		return swLicense;
+	},
+
+	licenseMetricResultsQuery: function () {
+		var softwareModelLicenseMetrics = SamsProductCalculator.prototype.licenseMetricResultsQuery.call(this);
+		softwareModelLicenseMetrics.addNullQuery('model.ref_cmdb_software_product_model.license_under_management')
+			.addOrCondition('model.ref_cmdb_software_product_model.license_under_management', true);
+		return softwareModelLicenseMetrics;
+	},
+
+	updateUnlicensedEntities: function (productResultId) {
+		SamsProductCalculator.prototype.updateUnlicensedEntities.call(this, productResultId);
+
+		// Update Unlicensed Subscriptions not part of a suite and for the same product
+		var licensableSubscriptionGr = new SampRecord(ReconciliationConstants.SOFTWARE_SUBSCRIPTION_TABLE);
+		licensableSubscriptionGr.addQuery('publisher', this.coreCompanyId);
+		licensableSubscriptionGr.addQuery('product', this.fProduct);
+		licensableSubscriptionGr.addNullQuery('software_model_result');
+		licensableSubscriptionGr.addNullQuery('product_result');
+		licensableSubscriptionGr.addQuery('unlicensed_subscription', true);
+		licensableSubscriptionGr.addNullQuery('inferred_suite');
+		licensableSubscriptionGr.addQuery('is_reconciled', false);
+		this.reconcileLeftoverEntities(licensableSubscriptionGr, productResultId);
+
+		// Check For Unlicensed Subscription for subscription products
+		var productGr = new GlideRecord(ReconciliationConstants.SOFTWARE_PRODUCT_TABLE);
+		productGr.get(this.fProduct);
+		if (productGr.subscription_software) {
+			this.checkForUnlicensedSubscription(productResultId);
+		}
+
+		// Update Unlicensed Options for the DB Server product
+		if (GlidePluginManager.isActive('com.snc.samp.oracle')) {
+			var licensableOptionsGr = new SampRecord(ReconciliationConstants.ORACLE_INSTANCE_OPTION_TABLE);
+			licensableOptionsGr.addQuery('instance.software_install.norm_publisher', this.coreCompanyId);
+			licensableOptionsGr.addQuery('instance.software_install.norm_product', this.fProduct);
+			licensableOptionsGr.addNullQuery('software_model_result');
+			licensableOptionsGr.addNullQuery('product_result');
+			licensableOptionsGr.addQuery('unlicensed_option', true);
+			licensableOptionsGr.addQuery('is_reconciled', false);
+			this.reconcileLeftoverEntities(licensableOptionsGr, productResultId);
+		}
+
+		// Check For Unlicensed Option for DB Server product
+		if (GlidePluginManager.isActive('com.snc.samp.oracle')) {
+			if (this.fProduct === ReconciliationConstants.ORACLE_DATABASE_SYS_ID) {
+				this.checkForUnlicensedOption(productResultId);
+			}
+		}
+
+		// Update Unlicensed Product Usage for the IBM
+		if (GlideApplicationProperty.getValue('com.snc.samp.ibm.use_samp_ibm_licensing') === 'true') {
+			var productsGr = new SampRecord(ReconciliationConstants.IBM_PRODUCT_USAGE_TABLE);
+			productsGr.addQuery('product', this.fProduct);
+			productsGr.addNullQuery('software_model_result');
+			productsGr.addNullQuery('product_result');
+			productsGr.addQuery('unlicensed_product', true);
+			productsGr.addQuery('is_reconciled', false);
+			productsGr.addQuery('license_metric', ReconciliationConstants.PVU_FOR_IBM).addOrCondition('license_metric', ReconciliationConstants.RVU_FOR_IBM);
+			this.reconcileLeftoverEntities(productsGr, productResultId);
+		}
+
+		// Check For Unlicensed Product Usage for the IBM
+		if (GlideApplicationProperty.getValue('com.snc.samp.ibm.use_samp_ibm_licensing') === 'true') {
+			this.checkForUnlicensedProduct(productResultId);
+		}
+
+		// Update Unlicensed Consumptions
+		if (GlidePluginManager.isActive('sn_sam_saas')) {
+			var consumptionGr = new SampRecord(sn_sam_saas.SAMSaasConstants.CONSUMPTION_SUMMARY_TABLE);
+			consumptionGr.addQuery('software_model.manufacturer', this.coreCompanyId);
+			consumptionGr.addQuery('software_model.product', this.fProduct);
+			consumptionGr.addNullQuery('software_model_result');
+			consumptionGr.addNullQuery('product_result');
+			consumptionGr.addQuery('unlicensed_consumption', true);
+			consumptionGr.addQuery('is_reconciled', false);
+			this.reconcileLeftoverEntities(consumptionGr, productResultId);
+		}
+
+		// Update Unlicensed CALs / Related Breakdowns
+		if (GlidePluginManager.isActive('com.snc.samp.core')) {
+			var calGr = new SampRecord(ReconciliationConstants.CLIENT_ACCESS_TABLE);
+			calGr.addQuery('software_model.manufacturer', this.coreCompanyId);
+			calGr.addQuery('software_model.product', this.fProduct);
+			calGr.addQuery('sys_class_name', 'samp_sw_client_access');
+			calGr.addNullQuery('software_model_result');
+			calGr.addNullQuery('product_result');
+			calGr.addQuery('unlicensed_client_access', true);
+			calGr.addQuery('is_reconciled', false);
+			this.reconcileLeftoverEntities(calGr, productResultId);
+
+			var calBreakdownGr = new SampRecord(ReconciliationConstants.CLIENT_ACCESS_BREAKDOWN_TABLE);
+			calBreakdownGr.addQuery('client_access.software_model.manufacturer', this.coreCompanyId);
+			calBreakdownGr.addQuery('client_access.software_model.product', this.fProduct);
+			calBreakdownGr.addQuery('client_access.sys_class_name', 'samp_sw_client_access');
+			calBreakdownGr.addNullQuery('software_model_result');
+			calBreakdownGr.addNullQuery('product_result');
+			calBreakdownGr.addQuery('unlicensed_client_access_breakdown', true);
+			calBreakdownGr.addQuery('is_reconciled', false);
+			this.reconcileLeftoverEntities(calBreakdownGr, productResultId);
+		}
+
+		this.checkForUnlicensedCAL(productResultId);
+	},
+
+	checkForUnlicensedSubscription: function (productResultId) {
+		var licensableSubscriptionGr = new GlideRecord(ReconciliationConstants.SOFTWARE_SUBSCRIPTION_TABLE);
+		licensableSubscriptionGr.addQuery('product_result', productResultId);
+		licensableSubscriptionGr.addQuery('unlicensed_subscription', true);
+		licensableSubscriptionGr.setLimit(1);
+		licensableSubscriptionGr.query();
+		if (licensableSubscriptionGr.hasNext()) {
+			var productResultGr = new GlideRecord(ReconciliationConstants.SOFTWARE_PRODUCT_RESULT_TABLE);
+			productResultGr.addQuery('sys_id', productResultId);
+			productResultGr.setValue('status',
+				ReconciliationConstants.SOFTWARE_MODEL_RESULT_STATUS.SOFTWARE_MODEL_RESULT_NOT_COMPLIANT_STATUS);
+			productResultGr.setWorkflow(false);
+			productResultGr.updateMultiple();
+		}
+	},
+
+	checkForUnlicensedOption: function (productResultId) {
+		var licensableOptionGr = new GlideRecord(ReconciliationConstants.ORACLE_INSTANCE_OPTION_TABLE);
+		licensableOptionGr.addQuery('product_result', productResultId);
+		licensableOptionGr.addQuery('unlicensed_option', true);
+		licensableOptionGr.setLimit(1);
+		licensableOptionGr.query();
+		if (licensableOptionGr.hasNext()) {
+			var productResultGr = new GlideRecord(ReconciliationConstants.SOFTWARE_PRODUCT_RESULT_TABLE);
+			productResultGr.addQuery('sys_id', productResultId);
+			productResultGr.setValue('status',
+				ReconciliationConstants.SOFTWARE_MODEL_RESULT_STATUS.SOFTWARE_MODEL_RESULT_NOT_COMPLIANT_STATUS);
+			productResultGr.setWorkflow(false);
+			productResultGr.updateMultiple();
+		}
+	},
+
+	checkForUnlicensedProduct: function (productResultId) {
+		var productsGr = new GlideRecord(ReconciliationConstants.IBM_PRODUCT_USAGE_TABLE);
+		productsGr.addQuery('product_result', productResultId);
+		productsGr.addQuery('unlicensed_product', true);
+		productsGr.addQuery('license_metric', ReconciliationConstants.PVU_FOR_IBM).addOrCondition('license_metric', ReconciliationConstants.RVU_FOR_IBM);
+		productsGr.setLimit(1);
+		productsGr.query();
+		if (productsGr.hasNext()) {
+			var productResultGr = new GlideRecord(ReconciliationConstants.SOFTWARE_PRODUCT_RESULT_TABLE);
+			productResultGr.addQuery('sys_id', productResultId);
+			productResultGr.setValue('status',
+				ReconciliationConstants.SOFTWARE_MODEL_RESULT_STATUS.SOFTWARE_MODEL_RESULT_NOT_COMPLIANT_STATUS);
+			productResultGr.setWorkflow(false);
+			productResultGr.updateMultiple();
+		}
+	},
+
+	checkForUnlicensedCAL: function (productResultId) {
+		var licensableCALGr = new GlideRecord(ReconciliationConstants.CLIENT_ACCESS_TABLE);
+		licensableCALGr.addQuery('product_result', productResultId);
+		licensableCALGr.addQuery('unlicensed_client_access', true);
+		licensableCALGr.addQuery('sys_class_name', 'samp_sw_client_access');
+		licensableCALGr.setLimit(1);
+		licensableCALGr.query();
+		if (licensableCALGr.hasNext()) {
+			var productResultGr = new GlideRecord(ReconciliationConstants.SOFTWARE_PRODUCT_RESULT_TABLE);
+			productResultGr.addQuery('sys_id', productResultId);
+			productResultGr.setValue('status',
+				ReconciliationConstants.SOFTWARE_MODEL_RESULT_STATUS.SOFTWARE_MODEL_RESULT_NOT_COMPLIANT_STATUS);
+			productResultGr.setWorkflow(false);
+			productResultGr.updateMultiple();
+		}
+	},
+
+	getLMRAttributes: function (entitlements) {
+		var attr = SamsProductCalculator.prototype.getLMRAttributes.call(this, entitlements);
+		attr.reserve = entitlements.gr.reserve_entitlement;
+		return attr;
+	},
+
+	updateHwmProductsWithProductResult: function (productResultId, softwareModelResultIds) {
+		if (GlideApplicationProperty.getValue('com.snc.samp.ibm.use_samp_ibm_licensing') === 'true') {
+			// Update the hwm usage table linked to the software model
+			var productsGr = new GlideRecord(ReconciliationConstants.IBM_PRODUCT_USAGE_TABLE);
+			productsGr.addQuery('product', this.fProduct);
+			productsGr.addQuery('license_metric', ReconciliationConstants.PVU_FOR_IBM).addOrCondition('license_metric', ReconciliationConstants.RVU_FOR_IBM);
+			this.updateEntitiesWithProductResult(productsGr, productResultId, softwareModelResultIds);
+		}
+	},
+
+	updateOptionsWithProductResult: function (productResultId, softwareModelResultIds) {
+		if (GlidePluginManager.isActive('com.snc.samp.oracle')) {
+			// Update the subscription table linked to the software model
+			var optionsGr = new GlideRecord(ReconciliationConstants.ORACLE_INSTANCE_OPTION_TABLE);
+			optionsGr.addQuery('instance.software_install.norm_publisher', this.coreCompanyId);
+			optionsGr.addQuery('instance.software_install.norm_product', this.fProduct);
+			this.updateEntitiesWithProductResult(optionsGr, productResultId, softwareModelResultIds);
+		}
+	},
+
+	updateNamedUserWithProductResult: function (productResultId, softwareModelResultIds) {
+		if (GlidePluginManager.isActive('com.sn_samp_sap')
+			&& this.fProduct === ReconciliationConstants.SAP_NAMED_USER_PRODUCT_SYS_ID) {
+			var sapUsersGr = new GlideRecord(ReconciliationConstants.SAP_SYSTEM_USER_TABLE);
+			this.updateEntitiesWithProductResult(sapUsersGr, productResultId, softwareModelResultIds);
+		}
+	},
+
+	updateConsumptionsWithProductResult: function(productResultId, softwareModelResultIds) {
+		if (GlidePluginManager.isActive('sn_sam_saas')) {
+			var consumptionGr = new GlideRecord(sn_sam_saas.SAMSaasConstants.CONSUMPTION_SUMMARY_TABLE);
+			consumptionGr.addQuery('software_model.manufacturer', this.coreCompanyId);
+			consumptionGr.addQuery('software_model.product', this.fProduct);
+			this.updateEntitiesWithProductResult(consumptionGr, productResultId, softwareModelResultIds);
+		}
+	},
+
+	updateEntitiesWithProductResult: function(gr, productResultId, softwareModelResultIds) {
+		gr.addNotNullQuery('software_model_result');
+		gr.addNullQuery('product_result');
+		gr.addQuery('software_model_result', softwareModelResultIds);
+		gr.setValue('product_result', productResultId);
+		gr.autoSysFields(false);
+		gr.setWorkflow(false);
+		gr.updateMultiple();
+	},
+
+	type: 'SampProductCalculator',
+});
+
+SampProductCalculator.getReserveEntitlementCost = function (queryCol, resultId) {
+	var entGa = new SampAggregate(ReconciliationConstants.ENTITLEMENT_TABLE);
+	entGa.addQuery(queryCol, resultId);
+	entGa.addQuery('reserve_entitlement', true);
+	entGa.addQuery('rights', '>', 0);
+	entGa.addAggregate('SUM', 'cost');
+	entGa.setGroup(false);
+	entGa.query();
+	return entGa.next() ? parseFloat(entGa.getAggregate('SUM', 'cost') || 0.00) : 0.00;
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:36</sys_created_on>
+        <sys_id>61d5e96c47111110c859fee3846d4336</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampProductCalculator</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_61d5e96c47111110c859fee3846d4336</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:36</sys_updated_on>
+    </sys_script_include>
+</record_update>

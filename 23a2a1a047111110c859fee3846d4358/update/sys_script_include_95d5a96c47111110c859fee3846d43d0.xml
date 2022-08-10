@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamSAPImportDataJob</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamSAPImportDataJob</name>
+        <script><![CDATA[var SamSAPImportDataJob = Class.create();
+SamSAPImportDataJob.prototype = Object.extendsObject(global.AssetManagementPerGlideRecordBaseJob, {
+	initialize: function() {
+		this.sapImportWorker = new SAPImportWorker();
+	},
+	getRecords: function() {
+		var connectionRecord = new GlideRecord('samp_sap_connection');
+		connectionRecord.addActiveQuery();
+		connectionRecord.addNotNullQuery('soap_message');
+		connectionRecord.query();
+		return connectionRecord;
+	},
+	getDomains: function() {
+		return this.getDomainsGeneric();
+	},
+	runJobForRecord: function(connectionRecord) {
+		this.sapImportWorker.importDataForConnection(connectionRecord);
+	},
+	postRunJobOnSuccess: function() {
+		// Create the software model
+		this.sapImportWorker.createSAPSoftwareModels();
+
+		// For SAP Engines: Create SM, Create/Update CAL, Update discovered status
+		this.sapImportWorker.runAfterPullJobsForLicenseMetricMeasurements();
+
+		// Normalize system user with latest cds content
+		this.sapImportWorker.normalizeNamedUserTypeOnSystemUser();
+		// Resolve non mapped discovered users
+		this.sapImportWorker.resolveDanglingDiscoveredUsers();
+		// Update discovered user aggregate values based on sap users
+		this.sapImportWorker.updateDiscoveredUserAggregateFields();
+	},
+	type: 'SamSAPImportDataJob',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:34</sys_created_on>
+        <sys_id>95d5a96c47111110c859fee3846d43d0</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamSAPImportDataJob</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_95d5a96c47111110c859fee3846d43d0</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:34</sys_updated_on>
+    </sys_script_include>
+</record_update>

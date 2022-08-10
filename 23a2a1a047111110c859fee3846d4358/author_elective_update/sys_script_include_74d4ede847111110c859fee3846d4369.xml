@@ -1,0 +1,555 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="DELETE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamCommonServerLicenseCalculator</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamCommonServerLicenseCalculator</name>
+        <script><![CDATA[var SamCommonServerLicenseCalculator = Class.create();
+SamCommonServerLicenseCalculator.prototype = Object.extendsObject(SamLicenseCalculator, {
+	initialize: function(metric, coreCompany, product, reconResult, singleLicenseMetric, calculateRightsNeeded) {
+		var entitlementConfig = {
+			parent: 'swModel',
+			children: 'downgradeModels',
+			mode: ReconciliationConstants.ENTITLEMENT_MAP_MODE.NO_GROUPING,
+		};
+		SamLicenseCalculator.prototype.initialize.call(this, metric, ReconciliationConstants.COMMON_METRIC_GROUP,
+			coreCompany, product, reconResult, entitlementConfig, singleLicenseMetric, calculateRightsNeeded);
+		this.allocationCol = 'allocated_to';
+	},
+
+	runAllocatedPass: function() {
+		var allocatedDeviceGr = this.getConsumersWithAllocation();
+		var currDevice;
+		var entitlementSetsAlloc;
+		var entitlementMapAlloc;
+		var installModels;
+		var groups;
+		var rightsUsage;
+		var modelComboLicensedBy;
+		var deviceInfo;
+
+		while (allocatedDeviceGr.next()) {
+			rightsUsage = {};
+			modelComboLicensedBy = {};
+			currDevice = allocatedDeviceGr.getValue('allocated_to');
+			deviceInfo = {
+				sysId: currDevice,
+				virtual: null,
+				table: 'cmdb_ci_computer',
+			};
+
+			entitlementSetsAlloc = this.getAllocatedEntitlementSet(currDevice);
+			this.initRightsUsage(rightsUsage, entitlementSetsAlloc);
+
+			this.installs = this.getInstallsOnDevice(currDevice, true);
+			installModels = Object.keys(this.installs);
+			this.debug('Allocated pass', 'Consumer: ' + currDevice, 'Installs: ' + JSON.stringify(this.installs));
+
+			if (installModels.length !== 0) {
+				groups = this.findRelated(installModels.sort());
+				this.debug('Allocated pass', 'Consumer: ' + currDevice, 'Related groups: ' + JSON.stringify(groups));
+
+				entitlementMapAlloc = this.generateEntitlementMap(entitlementSetsAlloc);
+				this.debug('Allocated pass', 'Consumer: ' + currDevice,
+					'Allocated entitlement sets: ' + JSON.stringify(entitlementSetsAlloc));
+				this.debug('Allocated pass', 'Consumer: ' + currDevice,
+					'Unallocated entitlement sets: ' + JSON.stringify(this.entitlementSets));
+
+				this.consumeRights(groups, deviceInfo, rightsUsage, modelComboLicensedBy, true,
+					entitlementSetsAlloc, entitlementMapAlloc);
+				this.debug('Allocated pass', 'Consumer: ' + currDevice,
+					'Allocated entitlement map: ' + JSON.stringify(entitlementMapAlloc.map));
+				this.debug('Allocated pass', 'Consumer: ' + currDevice,
+					'Unallocated entitlement map: ' + JSON.stringify(this.entitlementMap.map));
+				this.debug('Allocated pass', 'Consumer: ' + currDevice, 'Rights usage: ' + JSON.stringify(rightsUsage));
+
+				this.updateDowngradeRightsUsage(rightsUsage);
+				this.markInstallsAfterAssignment(modelComboLicensedBy);
+			}
+			this.generateRightsUsedByForConsumer(rightsUsage, deviceInfo, false);
+		}
+	},
+
+	runUnallocatedPass: function() {
+		var currDevice;
+		var installModels;
+		var groups;
+		var rightsUsage;
+		var rightsNeeded;
+		var modelComboLicensedBy;
+		var deviceInfo;
+
+		var unlicensedInstalls = this.getUnlicensedInstallsByDevice();
+		while (unlicensedInstalls.next()) {
+			rightsUsage = {};
+			modelComboLicensedBy = {};
+			currDevice = unlicensedInstalls.getValue('installed_on');
+			deviceInfo = {
+				sysId: currDevice,
+				virtual: null,
+				table: 'cmdb_ci_computer',
+			};
+
+			this.installs = this.getInstallsOnDevice(currDevice, false);
+			installModels = Object.keys(this.installs);
+			this.debug('Unallocated pass', 'Consumer: ' + currDevice, 'Installs: ' + JSON.stringify(this.installs));
+
+			groups = this.findRelated(installModels.sort());
+			this.debug('Unallocated pass', 'Consumer: ' + currDevice, 'Related groups: ' + JSON.stringify(groups));
+			this.debug('Unallocated pass', 'Consumer: ' + currDevice,
+				'Unallocated entitlement sets: ' + JSON.stringify(this.entitlementSets));
+
+			// Using unallocated entitlements ONLY
+			var cachedDevice = this.allocatedNotInUseByDevice.hasOwnProperty(currDevice);
+			if (cachedDevice) {
+				var entitlementSetsAlloc = this.allocatedNotInUseByDevice[currDevice].entitlementSets;
+				var entitlementMapAlloc = this.allocatedNotInUseByDevice[currDevice].entitlementMap;
+				// Needs to initiate rights usage for allocation of cached device
+				this.initRightsUsage(rightsUsage, entitlementSetsAlloc);
+				rightsNeeded = this.consumeRights(groups, deviceInfo, rightsUsage, modelComboLicensedBy, false,
+					entitlementSetsAlloc, entitlementMapAlloc);
+			} else {
+				rightsNeeded = this.consumeRights(groups, deviceInfo, rightsUsage, modelComboLicensedBy, false);
+			}
+			this.debug('Unallocated pass', 'Consumer: ' + currDevice,
+				'Entitlement map: ' + JSON.stringify(this.entitlementMap.map));
+
+			if (Object.keys(rightsUsage).length !== 0) {
+				this.updateDowngradeRightsUsage(rightsUsage);
+				this.generateRightsUsedByForConsumer(rightsUsage, deviceInfo, cachedDevice);
+				this.markInstallsAfterAssignment(modelComboLicensedBy);
+				this.debug('Unallocated pass', 'Consumer: ' + currDevice,
+					'Rights usage: ' + JSON.stringify(rightsUsage));
+			}
+
+			if (Object.keys(rightsNeeded).length !== 0) {
+				this.generateRightsNeededByForConsumer(rightsNeeded, deviceInfo);
+				this.markUnlicensedInstallsAfterAssignment(rightsNeeded);
+				this.debug('Unallocated pass', 'Consumer: ' + currDevice,
+					'Rights needed: ' + JSON.stringify(rightsNeeded));
+			}
+		}
+	},
+
+	consumeRights: function(swModelComboGroup, deviceInfo, rightsUsage, modelComboLicensedBy, allocatedPass,
+		entitlementSetsAlloc, entitlementMapAlloc) {
+		var swModelCombo;
+		var swModelComboStr;
+		var entitlementSet;
+		var coreRights;
+		var remainder;
+		var compliant = true;
+		var rightsNeeded = {};
+		var device = deviceInfo.sysId;
+
+		// Get Device cpu count and core count
+		var cpuCount = 1;
+		var corePerCpuCount = 1;
+		var deviceGr = new GlideRecord('cmdb_ci_computer');
+		if (deviceGr.get(device)) {
+			cpuCount = gs.nil(deviceGr.getValue('cpu_count')) ? cpuCount : parseInt(deviceGr.getValue('cpu_count'), 10);
+			corePerCpuCount = gs.nil(deviceGr.getValue('cpu_core_count'))
+				? corePerCpuCount
+				: parseInt(deviceGr.getValue('cpu_core_count'), 10);
+			deviceInfo.virtual = deviceGr.virtual;
+		}
+
+		for (var i = 0; i < swModelComboGroup.length; i++) {
+			swModelCombo = swModelComboGroup[i];
+			swModelComboStr = swModelCombo.join(',');
+
+			coreRights = this.calculateCoreRightsNeeded(cpuCount, swModelCombo, corePerCpuCount, deviceInfo);
+
+			// Calculating total available rights (allocated and unallocated)
+			var totalAllocatedRights = 0;
+			if (entitlementSetsAlloc) {
+				totalAllocatedRights = entitlementMapAlloc.getTotalRights(swModelComboStr);
+			}
+
+			this.entitlementMap.cleanUpEntry(swModelComboStr);
+			var totalUnallocatedRights = this.entitlementMap.getTotalRights(swModelComboStr);
+
+			if (totalAllocatedRights + totalUnallocatedRights < coreRights) {
+				compliant = false;
+				// Calculate rights needed
+				if (!allocatedPass && this.calculateRightsNeeded) {
+					entitlementSet = this.entitlementMap.cheapest[swModelComboStr];
+					rightsNeeded[entitlementSet] = {
+						rights: coreRights - totalAllocatedRights,
+						swModelCombo: swModelComboStr,
+					};
+				}
+				continue;
+			}
+
+			modelComboLicensedBy[swModelComboStr] = {
+				useAllocationOnly: true,
+				entitlementSets: [],
+			};
+
+			remainder = coreRights;
+			if (entitlementSetsAlloc) {
+				var entitlementOptionsAlloc = entitlementMapAlloc.get(swModelComboStr) || [];
+				remainder = this.consumeAllocatedRightsForModelCombo(swModelComboStr, entitlementOptionsAlloc,
+					entitlementSetsAlloc, rightsUsage, modelComboLicensedBy, coreRights).remainder;
+			}
+
+			// Adding unallocated rights
+			if (remainder > 0) {
+				var entitlementOptions = this.entitlementMap.get(swModelComboStr) || [];
+				modelComboLicensedBy[swModelComboStr].useAllocationOnly = false;
+				this.consumeUnallocatedRightsForModelCombo(swModelComboStr, entitlementOptions, rightsUsage,
+					modelComboLicensedBy, remainder);
+			}
+		}
+
+		if (allocatedPass && !compliant) {
+			this.allocatedNotInUseByDevice[device] = {
+				entitlementSets: entitlementSetsAlloc,
+				entitlementMap: entitlementMapAlloc,
+			};
+		}
+
+		return rightsNeeded;
+	},
+
+	calculateProjectedRights: function(ci, ciConfiguration, dependentCisConfigurations, licensedInstalls,
+		swModelComboStr, softwareModelResult, licenseMetricResult) {
+		var projectedRightsInstalls = {
+			installs: 0,
+			rights: 0,
+		};
+
+		var installCount = 0;
+		var coreRights;
+
+		var swModels = swModelComboStr.split(',');
+		var installs = this.getReconciledInstallsByCi(ci, licensedInstalls, softwareModelResult, licenseMetricResult,
+			swModels);
+		installs.query();
+		if (installs.next()) {
+			installCount = parseInt(installs.getAggregate(ReconciliationConstants.COUNT_AGGREGATION, 'installed_on'),
+				10);
+		}
+
+		if (installCount === 0) {
+			return projectedRightsInstalls;
+		}
+
+		var cpuCount = ciConfiguration.cpuCount;
+		var corePerCpuCount = ciConfiguration.cpuCoreCount;
+		coreRights = this.calculateCoreRightsNeeded(cpuCount, swModels, corePerCpuCount);
+
+		projectedRightsInstalls.installs = installCount;
+		projectedRightsInstalls.rights = coreRights;
+
+		return projectedRightsInstalls;
+	},
+
+	type: 'SamCommonServerLicenseCalculator',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:50:10</sys_created_on>
+        <sys_id>74d4ede847111110c859fee3846d4369</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamCommonServerLicenseCalculator</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_74d4ede847111110c859fee3846d4369</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:50:10</sys_updated_on>
+    </sys_script_include>
+    <sys_update_version action="INSERT_OR_UPDATE">
+        <action>DELETE</action>
+        <application display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</application>
+        <file_path/>
+        <instance_id>4e2646e7dbf513888264f70fbf96195b</instance_id>
+        <instance_name>dev58455</instance_name>
+        <name>sys_script_include_74d4ede847111110c859fee3846d4369</name>
+        <payload>&lt;?xml version="1.0" encoding="UTF-8"?&gt;&lt;record_update table="sys_script_include"&gt;&lt;sys_script_include action="INSERT_OR_UPDATE"&gt;&lt;access&gt;public&lt;/access&gt;&lt;active&gt;true&lt;/active&gt;&lt;api_name&gt;x_807586_sam_scrip.SamCommonServerLicenseCalculator&lt;/api_name&gt;&lt;caller_access/&gt;&lt;client_callable&gt;false&lt;/client_callable&gt;&lt;description/&gt;&lt;name&gt;SamCommonServerLicenseCalculator&lt;/name&gt;&lt;script&gt;&lt;![CDATA[var SamCommonServerLicenseCalculator = Class.create();
+SamCommonServerLicenseCalculator.prototype = Object.extendsObject(SamLicenseCalculator, {
+	initialize: function(metric, coreCompany, product, reconResult, singleLicenseMetric, calculateRightsNeeded) {
+		var entitlementConfig = {
+			parent: 'swModel',
+			children: 'downgradeModels',
+			mode: ReconciliationConstants.ENTITLEMENT_MAP_MODE.NO_GROUPING,
+		};
+		SamLicenseCalculator.prototype.initialize.call(this, metric, ReconciliationConstants.COMMON_METRIC_GROUP,
+			coreCompany, product, reconResult, entitlementConfig, singleLicenseMetric, calculateRightsNeeded);
+		this.allocationCol = 'allocated_to';
+	},
+
+	runAllocatedPass: function() {
+		var allocatedDeviceGr = this.getConsumersWithAllocation();
+		var currDevice;
+		var entitlementSetsAlloc;
+		var entitlementMapAlloc;
+		var installModels;
+		var groups;
+		var rightsUsage;
+		var modelComboLicensedBy;
+		var deviceInfo;
+
+		while (allocatedDeviceGr.next()) {
+			rightsUsage = {};
+			modelComboLicensedBy = {};
+			currDevice = allocatedDeviceGr.getValue('allocated_to');
+			deviceInfo = {
+				sysId: currDevice,
+				virtual: null,
+				table: 'cmdb_ci_computer',
+			};
+
+			entitlementSetsAlloc = this.getAllocatedEntitlementSet(currDevice);
+			this.initRightsUsage(rightsUsage, entitlementSetsAlloc);
+
+			this.installs = this.getInstallsOnDevice(currDevice, true);
+			installModels = Object.keys(this.installs);
+			this.debug('Allocated pass', 'Consumer: ' + currDevice, 'Installs: ' + JSON.stringify(this.installs));
+
+			if (installModels.length !== 0) {
+				groups = this.findRelated(installModels.sort());
+				this.debug('Allocated pass', 'Consumer: ' + currDevice, 'Related groups: ' + JSON.stringify(groups));
+
+				entitlementMapAlloc = this.generateEntitlementMap(entitlementSetsAlloc);
+				this.debug('Allocated pass', 'Consumer: ' + currDevice,
+					'Allocated entitlement sets: ' + JSON.stringify(entitlementSetsAlloc));
+				this.debug('Allocated pass', 'Consumer: ' + currDevice,
+					'Unallocated entitlement sets: ' + JSON.stringify(this.entitlementSets));
+
+				this.consumeRights(groups, deviceInfo, rightsUsage, modelComboLicensedBy, true,
+					entitlementSetsAlloc, entitlementMapAlloc);
+				this.debug('Allocated pass', 'Consumer: ' + currDevice,
+					'Allocated entitlement map: ' + JSON.stringify(entitlementMapAlloc.map));
+				this.debug('Allocated pass', 'Consumer: ' + currDevice,
+					'Unallocated entitlement map: ' + JSON.stringify(this.entitlementMap.map));
+				this.debug('Allocated pass', 'Consumer: ' + currDevice, 'Rights usage: ' + JSON.stringify(rightsUsage));
+
+				this.updateDowngradeRightsUsage(rightsUsage);
+				this.markInstallsAfterAssignment(modelComboLicensedBy);
+			}
+			this.generateRightsUsedByForConsumer(rightsUsage, deviceInfo, false);
+		}
+	},
+
+	runUnallocatedPass: function() {
+		var currDevice;
+		var installModels;
+		var groups;
+		var rightsUsage;
+		var rightsNeeded;
+		var modelComboLicensedBy;
+		var deviceInfo;
+
+		var unlicensedInstalls = this.getUnlicensedInstallsByDevice();
+		while (unlicensedInstalls.next()) {
+			rightsUsage = {};
+			modelComboLicensedBy = {};
+			currDevice = unlicensedInstalls.getValue('installed_on');
+			deviceInfo = {
+				sysId: currDevice,
+				virtual: null,
+				table: 'cmdb_ci_computer',
+			};
+
+			this.installs = this.getInstallsOnDevice(currDevice, false);
+			installModels = Object.keys(this.installs);
+			this.debug('Unallocated pass', 'Consumer: ' + currDevice, 'Installs: ' + JSON.stringify(this.installs));
+
+			groups = this.findRelated(installModels.sort());
+			this.debug('Unallocated pass', 'Consumer: ' + currDevice, 'Related groups: ' + JSON.stringify(groups));
+			this.debug('Unallocated pass', 'Consumer: ' + currDevice,
+				'Unallocated entitlement sets: ' + JSON.stringify(this.entitlementSets));
+
+			// Using unallocated entitlements ONLY
+			var cachedDevice = this.allocatedNotInUseByDevice.hasOwnProperty(currDevice);
+			if (cachedDevice) {
+				var entitlementSetsAlloc = this.allocatedNotInUseByDevice[currDevice].entitlementSets;
+				var entitlementMapAlloc = this.allocatedNotInUseByDevice[currDevice].entitlementMap;
+				// Needs to initiate rights usage for allocation of cached device
+				this.initRightsUsage(rightsUsage, entitlementSetsAlloc);
+				rightsNeeded = this.consumeRights(groups, deviceInfo, rightsUsage, modelComboLicensedBy, false,
+					entitlementSetsAlloc, entitlementMapAlloc);
+			} else {
+				rightsNeeded = this.consumeRights(groups, deviceInfo, rightsUsage, modelComboLicensedBy, false);
+			}
+			this.debug('Unallocated pass', 'Consumer: ' + currDevice,
+				'Entitlement map: ' + JSON.stringify(this.entitlementMap.map));
+
+			if (Object.keys(rightsUsage).length !== 0) {
+				this.updateDowngradeRightsUsage(rightsUsage);
+				this.generateRightsUsedByForConsumer(rightsUsage, deviceInfo, cachedDevice);
+				this.markInstallsAfterAssignment(modelComboLicensedBy);
+				this.debug('Unallocated pass', 'Consumer: ' + currDevice,
+					'Rights usage: ' + JSON.stringify(rightsUsage));
+			}
+
+			if (Object.keys(rightsNeeded).length !== 0) {
+				this.generateRightsNeededByForConsumer(rightsNeeded, deviceInfo);
+				this.markUnlicensedInstallsAfterAssignment(rightsNeeded);
+				this.debug('Unallocated pass', 'Consumer: ' + currDevice,
+					'Rights needed: ' + JSON.stringify(rightsNeeded));
+			}
+		}
+	},
+
+	consumeRights: function(swModelComboGroup, deviceInfo, rightsUsage, modelComboLicensedBy, allocatedPass,
+		entitlementSetsAlloc, entitlementMapAlloc) {
+		var swModelCombo;
+		var swModelComboStr;
+		var entitlementSet;
+		var coreRights;
+		var remainder;
+		var compliant = true;
+		var rightsNeeded = {};
+		var device = deviceInfo.sysId;
+
+		// Get Device cpu count and core count
+		var cpuCount = 1;
+		var corePerCpuCount = 1;
+		var deviceGr = new GlideRecord('cmdb_ci_computer');
+		if (deviceGr.get(device)) {
+			cpuCount = gs.nil(deviceGr.getValue('cpu_count')) ? cpuCount : parseInt(deviceGr.getValue('cpu_count'), 10);
+			corePerCpuCount = gs.nil(deviceGr.getValue('cpu_core_count'))
+				? corePerCpuCount
+				: parseInt(deviceGr.getValue('cpu_core_count'), 10);
+			deviceInfo.virtual = deviceGr.virtual;
+		}
+
+		for (var i = 0; i &lt; swModelComboGroup.length; i++) {
+			swModelCombo = swModelComboGroup[i];
+			swModelComboStr = swModelCombo.join(',');
+
+			coreRights = this.calculateCoreRightsNeeded(cpuCount, swModelCombo, corePerCpuCount, deviceInfo);
+
+			// Calculating total available rights (allocated and unallocated)
+			var totalAllocatedRights = 0;
+			if (entitlementSetsAlloc) {
+				totalAllocatedRights = entitlementMapAlloc.getTotalRights(swModelComboStr);
+			}
+
+			this.entitlementMap.cleanUpEntry(swModelComboStr);
+			var totalUnallocatedRights = this.entitlementMap.getTotalRights(swModelComboStr);
+
+			if (totalAllocatedRights + totalUnallocatedRights &lt; coreRights) {
+				compliant = false;
+				// Calculate rights needed
+				if (!allocatedPass &amp;&amp; this.calculateRightsNeeded) {
+					entitlementSet = this.entitlementMap.cheapest[swModelComboStr];
+					rightsNeeded[entitlementSet] = {
+						rights: coreRights - totalAllocatedRights,
+						swModelCombo: swModelComboStr,
+					};
+				}
+				continue;
+			}
+
+			modelComboLicensedBy[swModelComboStr] = {
+				useAllocationOnly: true,
+				entitlementSets: [],
+			};
+
+			remainder = coreRights;
+			if (entitlementSetsAlloc) {
+				var entitlementOptionsAlloc = entitlementMapAlloc.get(swModelComboStr) || [];
+				remainder = this.consumeAllocatedRightsForModelCombo(swModelComboStr, entitlementOptionsAlloc,
+					entitlementSetsAlloc, rightsUsage, modelComboLicensedBy, coreRights).remainder;
+			}
+
+			// Adding unallocated rights
+			if (remainder &gt; 0) {
+				var entitlementOptions = this.entitlementMap.get(swModelComboStr) || [];
+				modelComboLicensedBy[swModelComboStr].useAllocationOnly = false;
+				this.consumeUnallocatedRightsForModelCombo(swModelComboStr, entitlementOptions, rightsUsage,
+					modelComboLicensedBy, remainder);
+			}
+		}
+
+		if (allocatedPass &amp;&amp; !compliant) {
+			this.allocatedNotInUseByDevice[device] = {
+				entitlementSets: entitlementSetsAlloc,
+				entitlementMap: entitlementMapAlloc,
+			};
+		}
+
+		return rightsNeeded;
+	},
+
+	calculateProjectedRights: function(ci, ciConfiguration, dependentCisConfigurations, licensedInstalls,
+		swModelComboStr, softwareModelResult, licenseMetricResult) {
+		var projectedRightsInstalls = {
+			installs: 0,
+			rights: 0,
+		};
+
+		var installCount = 0;
+		var coreRights;
+
+		var swModels = swModelComboStr.split(',');
+		var installs = this.getReconciledInstallsByCi(ci, licensedInstalls, softwareModelResult, licenseMetricResult,
+			swModels);
+		installs.query();
+		if (installs.next()) {
+			installCount = parseInt(installs.getAggregate(ReconciliationConstants.COUNT_AGGREGATION, 'installed_on'),
+				10);
+		}
+
+		if (installCount === 0) {
+			return projectedRightsInstalls;
+		}
+
+		var cpuCount = ciConfiguration.cpuCount;
+		var corePerCpuCount = ciConfiguration.cpuCoreCount;
+		coreRights = this.calculateCoreRightsNeeded(cpuCount, swModels, corePerCpuCount);
+
+		projectedRightsInstalls.installs = installCount;
+		projectedRightsInstalls.rights = coreRights;
+
+		return projectedRightsInstalls;
+	},
+
+	type: 'SamCommonServerLicenseCalculator',
+});]]&gt;&lt;/script&gt;&lt;sys_class_name&gt;sys_script_include&lt;/sys_class_name&gt;&lt;sys_created_by&gt;admin&lt;/sys_created_by&gt;&lt;sys_created_on&gt;2022-08-10 15:50:10&lt;/sys_created_on&gt;&lt;sys_id&gt;74d4ede847111110c859fee3846d4369&lt;/sys_id&gt;&lt;sys_mod_count&gt;0&lt;/sys_mod_count&gt;&lt;sys_name&gt;SamCommonServerLicenseCalculator&lt;/sys_name&gt;&lt;sys_package display_value="SAM Scripts" source="x_807586_sam_scrip"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_package&gt;&lt;sys_policy&gt;protected&lt;/sys_policy&gt;&lt;sys_scope display_value="SAM Scripts"&gt;23a2a1a047111110c859fee3846d4358&lt;/sys_scope&gt;&lt;sys_update_name&gt;sys_script_include_74d4ede847111110c859fee3846d4369&lt;/sys_update_name&gt;&lt;sys_updated_by&gt;admin&lt;/sys_updated_by&gt;&lt;sys_updated_on&gt;2022-08-10 15:50:10&lt;/sys_updated_on&gt;&lt;/sys_script_include&gt;&lt;/record_update&gt;</payload>
+        <payload_hash>-559356546</payload_hash>
+        <record_name>SamCommonServerLicenseCalculator</record_name>
+        <reverted_from/>
+        <source>6ea42de847111110c859fee3846d434c</source>
+        <source_table>sys_update_set</source_table>
+        <state>previous</state>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:50:10</sys_created_on>
+        <sys_id>b0d4ede847111110c859fee3846d436b</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_recorded_at>1828872f3020000001</sys_recorded_at>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:50:10</sys_updated_on>
+        <type>Script Include</type>
+        <update_guid>f8d4ede821111110fd068359e110756a</update_guid>
+        <update_guid_history>f8d4ede821111110fd068359e110756a:-559356546</update_guid_history>
+    </sys_update_version>
+    <sys_metadata_delete action="INSERT_OR_UPDATE">
+        <sys_audit_delete/>
+        <sys_class_name>sys_metadata_delete</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:52:23</sys_created_on>
+        <sys_db_object display_value="" name="sys_script_include">sys_script_include</sys_db_object>
+        <sys_id>0d21a2bb2a5642fc87bb5dffef1ad510</sys_id>
+        <sys_metadata>74d4ede847111110c859fee3846d4369</sys_metadata>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamCommonServerLicenseCalculator</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_parent/>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_scope_delete display_value="">0011b6f5266e481c80012473557b6490</sys_scope_delete>
+        <sys_update_name>sys_script_include_74d4ede847111110c859fee3846d4369</sys_update_name>
+        <sys_update_version display_value="sys_script_include_74d4ede847111110c859fee3846d4369">b0d4ede847111110c859fee3846d436b</sys_update_version>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:52:23</sys_updated_on>
+    </sys_metadata_delete>
+</record_update>

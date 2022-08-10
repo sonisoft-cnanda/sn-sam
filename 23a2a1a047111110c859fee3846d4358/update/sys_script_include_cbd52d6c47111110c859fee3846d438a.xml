@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SamIdentifyingNewReclamationCandidates</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>SamIdentifyingNewReclamationCandidates</name>
+        <script><![CDATA[var SamIdentifyingNewReclamationCandidates = Class.create();
+SamIdentifyingNewReclamationCandidates.prototype = Object.extendsObject(global.AssetManagementPerGlideRecordBaseJob, {
+	initialize: function() {
+	},
+
+	getRecords: function() {
+		return new SAMPReclamationUtil().getM2mRuleProductRecords();
+	},
+
+	getDomains: function() {
+		return this.getDomainsGeneric();
+	},
+
+	runJobForRecord: function(m2mGr) {
+		new SAMPReclamationUtil().generateReclamationCandidatesForM2mRuleProductRecord(m2mGr);
+	},
+
+	type: 'SamIdentifyingNewReclamationCandidates',
+});]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:42</sys_created_on>
+        <sys_id>cbd52d6c47111110c859fee3846d438a</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SamIdentifyingNewReclamationCandidates</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_cbd52d6c47111110c859fee3846d438a</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:42</sys_updated_on>
+    </sys_script_include>
+</record_update>

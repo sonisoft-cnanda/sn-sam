@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampPluginManager</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>This handles the plugin capabilities for Software Asset Management</description>
+        <name>SampPluginManager</name>
+        <script><![CDATA[var SampPluginManager = Class.create();
+SampPluginManager.prototype = {
+	RECON_JOB_NAME: 'SAM - Software License Reconciliation',
+
+	USER: {
+		ABEL_TUTER: '62826bf03710200044e0bfc8bcbe5df1',
+		BETH_ANGLIN: '46d44a23a9fe19810012d100cca80666',
+		CARLA_HUMBLE: 'a6826bf03710200044e0bfc8bcbe5def',
+	},
+
+	initialize: function(plugin, runRecon, paJobList, scheduleJobList) {
+		this.plugin = plugin;
+		this.runRecon = runRecon;
+		this.paJobList = paJobList;
+		this.scheduleJobList = scheduleJobList;
+	},
+
+	loadPluginDemoData: function(plugin) {
+		switch (plugin) {
+		case 'com.sn_samp_master':
+			GlidePluginManager.loadPluginData('com.snc.samp', 'unload.demo');
+			GlidePluginManager.loadPluginData('com.sn_samp_adobe', 'unload.demo');
+			GlidePluginManager.loadPluginData('com.sn_samp_citrix', 'unload.demo');
+			GlidePluginManager.loadPluginData('com.sn_samp_ibm', 'unload.demo');
+			GlidePluginManager.loadPluginData('com.sn_samp_sap', 'unload.demo');
+			GlidePluginManager.loadPluginData('com.sn_samp_vmware', 'unload.demo');
+			GlidePluginManager.loadPluginData('com.snc.samp.microsoft', 'unload.demo');
+			GlidePluginManager.loadPluginData('com.snc.samp.oracle', 'unload.demo');
+			GlidePluginManager.loadPluginData('com.sn_samp_eng_app', 'unload.demo');
+			new SampDemoData().onload();
+			new SAPDemoData().onload();
+			new CitrixDemoData().onload();
+			new EngAppDemoData().onload();
+			break;
+		case 'com.sn_samp_sap':
+			new SAPDemoData().onload();
+			break;
+		case 'com.sn_samp_citrix':
+			new CitrixDemoData().onload();
+			break;
+		case 'com.snc.samp.core':
+		case 'com.sn_samp':
+			new SampDemoData().onload();
+			break;
+		case 'com.snc.samp.microsoft':
+		case 'com.snc.samp.oracle':
+			GlidePluginManager.loadPluginData('com.snc.samp', 'unload.demo');
+			break;
+		case 'com.sn_sam_spend':
+			new SpendDemoData().onload();
+			break;
+		case 'com.sn_samp_eng_app':
+			new EngAppDemoData().onload();
+			break;
+		case 'com.sn_sam_saas_int':
+			GlidePluginManager.loadPluginData('com.sn_sam_saas', 'unload.demo');
+			break;
+		default:
+			break;
+		}
+	},
+
+	updateManufacturer: function() {
+		var coreCompany = new GlideRecord('core_company');
+
+		// Add normalization clause if the normalization plugin is active
+		var pluginMngr = new GlidePluginManager();
+		var normalizationPluginActive = pluginMngr.isActive('com.glide.data_services_canonicalization.client');
+		if (normalizationPluginActive) {
+			// Sort the companies to have the canonical one listed first
+			coreCompany.orderByDesc('canonical');
+		}
+		coreCompany.query();
+
+		while (coreCompany.next()) {
+			var publisher = new GlideRecord('samp_sw_publisher');
+			publisher.addQuery('name', coreCompany.name);
+			publisher.query();
+
+			if (publisher.next() && publisher.manufacturer.nil()) {
+				publisher.manufacturer = coreCompany.sys_id;
+				publisher.update();
+			}
+		}
+	},
+
+	// Need to get the cost fields to generate fx_currency_instance for price fields
+	// This is a workaround for PRB: PRB1371547
+	touchCostFieldsForEntitlements: function() {
+		var licGr = new GlideRecord('alm_license');
+		licGr.query();
+		while (licGr.next()) {
+			licGr.getValue('cost');
+			licGr.getValue('unit_cost');
+		}
+	},
+
+	run: function() {
+		this.loadPluginDemoData(this.plugin);
+		this.touchCostFieldsForEntitlements();
+		this.updateSoftwareModelOwners();
+		this.updateManufacturer();
+
+		if (!gs.nil(this.runRecon)) { this.runReconJob(); }
+
+		if (!gs.nil(this.paJobList)) { this.runPAJobs(this.paJobList); }
+
+		if (!gs.nil(this.scheduleJobList)) { this.runScheduleJobs(this.scheduleJobList); }
+	},
+
+	updateSoftwareModelOwners: function() {
+		this.updateModelOwner(this.PUBLISHER.MICROSOFT, this.USER.ABEL_TUTER);
+		this.updateModelOwner(this.PUBLISHER.ORACLE, this.USER.BETH_ANGLIN);
+		this.updateModelOwner(this.PUBLISHER.CITRIX, this.USER.CARLA_HUMBLE);
+	},
+
+	updateModelOwner: function(publisher, modelOwner) {
+		var softwareModelGr = new GlideRecord('cmdb_software_product_model');
+		softwareModelGr.addQuery('product.publisher', publisher);
+		softwareModelGr.setValue('owner', modelOwner);
+		softwareModelGr.setWorkflow(false);
+		softwareModelGr.updateMultiple();
+	},
+
+	runReconJob: function() {
+		this.runScheduleJob(this.RECON_JOB_NAME);
+	},
+
+	runPAJobs: function(paJobList) {
+		for (var pa in paJobList) { this.runPAJob(paJobList[pa]); }
+	},
+
+	runPAJob: function(name) {
+		var rec = new GlideRecord('sysauto_pa');
+		rec.get('name', name);
+		gs.executeNow(rec);
+	},
+
+	runScheduleJobs: function(scheduleJobList) {
+		for (var job in scheduleJobList) {
+			this.runScheduleJob(scheduleJobList[job]);
+		}
+	},
+
+	runScheduleJob: function(name) {
+		var rec = new GlideRecord('sysauto_script');
+		rec.get('name', name);
+		gs.executeNow(rec);
+	},
+
+	type: 'SampPluginManager',
+};
+
+SampPluginManager.builder = function() {
+	return {
+		setPlugin: function(plugin) {
+			this.plugin = plugin;
+			return this;
+		},
+
+		setRecon: function(flag) {
+			this.runRecon = flag;
+			return this;
+		},
+
+		setPAJob: function(job) {
+			if (gs.nil(this.paJobList)) { this.paJobList = []; }
+
+			this.paJobList.push(job);
+			return this;
+		},
+
+		setPAJobList: function(jobs) {
+			this.paJobList = jobs;
+			return this;
+		},
+
+		setScheduleJob: function(job) {
+			if (gs.nil(this.scheduleJobList)) { this.scheduleJobList = []; }
+
+			this.scheduleJobList.push(job);
+			return this;
+		},
+
+		setScheduleJobList: function(jobList) {
+			this.scheduleJobList = jobList;
+			return this;
+		},
+
+		build: function() {
+			return new SampPluginManager(this.plugin, this.runRecon, this.paJobList, this.scheduleJobList);
+		},
+	};
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:37</sys_created_on>
+        <sys_id>f5d5e96c47111110c859fee3846d4354</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampPluginManager</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_f5d5e96c47111110c859fee3846d4354</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:37</sys_updated_on>
+    </sys_script_include>
+</record_update>

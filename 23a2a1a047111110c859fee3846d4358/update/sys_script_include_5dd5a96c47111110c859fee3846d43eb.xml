@@ -1,0 +1,257 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_807586_sam_scrip.SampCMDBUtil</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description>This class contains useful utility functions for interacting with the CMDB API for identification and reconciliation.</description>
+        <name>SampCMDBUtil</name>
+        <script><![CDATA[/* global SncSerialNumber */
+
+function SampCMDBUtil() {}
+
+var json = new JSON(); // eslint-disable-line no-new-wrappers
+var cmdbApi = SNC.IdentificationEngineScriptableApi;
+var lookupTableCache = {};
+
+SampCMDBUtil.useCMDBIdentifiers = function() {
+	return (JSUtil.toBoolean(gs.getProperty('glide.discovery.use_cmdb_identifiers', 'false'))
+			|| GlidePluginManager.isRegistered('com.snc.service-mapping'));
+};
+
+SampCMDBUtil.validateSerialNumber = function(sNum) {
+	// Return true if u_hardware_serial_number doesn't begin with TLM_VM and doesn't contain a '.'
+	if (!sNum.startsWith('TLM_') && !sNum.includes('.')) { return true; }
+	return false;
+};
+
+SampCMDBUtil.checkLegacyIdentifer = function(serialNumber) {
+	// Find the serial number
+	var gr = new GlideRecord('cmdb_ci_computer');
+	gr.addQuery('serial_number', serialNumber);
+	gr.query();
+	if (gr.next()) { return gr.getUniqueValue(); }
+	return null;
+};
+
+SampCMDBUtil.generateIDPayload = function(ciData, enableReclassification) {
+	var data = ciData.getData();
+	var className = data.sys_class_name;
+
+	// Make sure that we coerce java strings to javascript
+	function valuesToJson(obj) {
+		var values = {};
+		for (var fieldName in obj) { values[fieldName] = obj[fieldName] + ''; }
+
+		return values;
+	}
+
+	function itemsToJson(objs, table) {
+		var items = [];
+
+		objs.forEach(function(o) {
+			if (JSUtil.nil(o)) { return; }
+
+			items.push({ className: table, values: valuesToJson(o) });
+		});
+
+		return items;
+	}
+
+	/*
+ 	* Currently we rely on lookups on cmdb_serial_number and cmdb_ci_network_adapter
+ 	* tables for device identification, so we need to build the lookup payload accordingly
+ 	*/
+	function lookupValuesToJson() {
+		var lookups = [];
+
+		/*
+ 		* Checks if the given lookup table has an active corresponding lookup rule entry for the given class
+ 		*/
+		function isActiveLookupRule(lookupTable) {
+			if (!lookupTableCache[className]) {
+				lookupTableCache[className] = {};
+				j2js(cmdbApi.getLookupRuleTablesForClass(className)).forEach(function(curLookupTable) {
+					lookupTableCache[className][curLookupTable] = true;
+				});
+			}
+
+			return lookupTableCache[className][lookupTable] || false;
+		}
+
+		/*
+ 		* Serial numbers must be checked for validity before used for lookup
+ 		* We only want to send valid serial numbers for the lookup & CI reconciliation
+ 		* But we still want the intact list of serial numbers for cleaning up absent/invalid
+ 		*/
+		function processSerialNumbers() {
+			var validSNs = [];
+			var serialNumbers = ciData.getRelatedList('cmdb_serial_number', 'cmdb_ci');
+			for (var i = 0; i < serialNumbers.length; i++) {
+				var srl = serialNumbers[i];
+				var sn = new SncSerialNumber();
+				if (sn.isValid(srl.serial_number)) { validSNs.push(srl); }
+			}
+
+			return itemsToJson(validSNs, 'cmdb_serial_number');
+		}
+
+		if (isActiveLookupRule('cmdb_serial_number')) { lookups = lookups.concat(processSerialNumbers()); }
+
+		return lookups;
+	}
+
+	var payload = {
+		items: [
+			{
+				className: className,
+				values: valuesToJson(data),
+				lookup: lookupValuesToJson(),
+			},
+		],
+	};
+
+	// Setting classDowngrade to true will temporarily enable reclassification of CI
+	if (enableReclassification) {
+		payload.items[0].classDowngrade = true;
+	}
+
+	return json.encode(payload);
+};
+
+SampCMDBUtil.logIDAttempts = function(attempts, logger) {
+	if (JSUtil.nil(attempts)) { return; }
+
+	var resultMap = {
+		MATCHED: 'Match',
+		NO_MATCH: 'No Match',
+		MULTI_MATCH: 'Multi-Match Error',
+		SKIPPED: 'Skipped Identifier Entry',
+	};
+
+	attempts.forEach(function(attempt, i) {
+		var identifier = attempt.identifierName !== null ? attempt.identifierName : '';
+		var result = resultMap[attempt.attemptResult];
+		var table = attempt.searchOnTable !== null ? attempt.searchOnTable : '';
+		var attributes = attempt.attributes !== null ? attempt.attributes.join(', ') : '';
+
+		var logMsg = 'Rule ' + (i + 1) + ': Searched on <' + table + '> for attributes: ' + attributes + ': ' + result;
+
+		if (result === resultMap.MULTI_MATCH) { logger.warn(logMsg, 'Identifier: ' + identifier); } else { logger.info(logMsg, 'Identifier: ' + identifier); }
+	});
+};
+
+SampCMDBUtil.parseIDResult = function(result, logger) {
+	var idResultObj = {
+		success: false,
+		insert: false,
+		sysId: null,
+		className: null,
+		logContextId: null,
+		attempts: [],
+	};
+
+	// Set the log context ID if there is one
+	idResultObj.logContextId = result.logContextId;
+
+	if (JSUtil.nil(result) || JSUtil.nil(result.items) || !result.items.length || result.items.length > 1) {
+		return idResultObj;
+	}
+
+	// There should be only one item returned
+	var item = result.items[0];
+
+	if (item.errors) {
+		if (logger) {
+			// Log attempts in case of multi-match error to see which failed
+			SampCMDBUtil.logIDAttempts(item.identificationAttempts, logger);
+			item.errors.forEach(function(error) {
+				// These are redundant to log since any error will cause an 'ABANDONED' msg
+				// and we already specifically logged the multi-match attempt
+				if (error.error !== 'MULTI_MATCH' && error.error !== 'ABANDONED') {
+					logger.error('CMDB Identification Error: ' + error.message);
+
+					if (g_device) {
+						if (GlidePluginManager.isActive('com.snc.discovery.ip_based')) {
+							var logLastError = new SNC.DiscoveryErrorMessagesHandler();
+							logLastError.createOrUpdate(g_device.source, error.message, 'Configuration', 'identification', '');
+						}
+					}
+				}
+			});
+		}
+		return idResultObj;
+	}
+
+	idResultObj.success = true;
+	idResultObj.insert = item.operation === 'INSERT';
+	idResultObj.sysId = item.sysId || null; // will be undefined if its a check call which returns insert
+	idResultObj.className = item.className;
+	idResultObj.attempts = item.identificationAttempts;
+
+	return idResultObj;
+};
+
+SampCMDBUtil.checkInsertOrUpdate = function(ciData, logger) {
+	// Since identifyCI API doesn't update and just finds the CI based on payload,
+	// we are temporarily enabling reclassification
+	var payload = SampCMDBUtil.generateIDPayload(ciData, true);
+	var result = json.decode(cmdbApi.identifyCI(payload));
+	return SampCMDBUtil.parseIDResult(result, logger);
+};
+
+SampCMDBUtil.insertOrUpdate = function(ciData, logger, source) {
+	var payload = SampCMDBUtil.generateIDPayload(ciData);
+	var result = json.decode(cmdbApi.createOrUpdateCI(source, payload));
+	return SampCMDBUtil.parseIDResult(result, logger);
+};
+
+// Given serverID of the record on the imp_samp_ilmt_license_usage table,
+// returns discovery source attribute of the corresponding connection record.
+SampCMDBUtil.getDiscoverySourceInfo = function(serverID) {
+	if (!gs.nil(serverID)) {
+		var gr = new GlideRecord('sys_variable_value');
+		gr.addQuery('document', 'http_connection');
+		gr.addQuery('variable', 'd72596040b700300e51c650d37673afd'); // Attribute = 'IBM Server checksum'
+		gr.addQuery('value', serverID);
+		gr.query();
+		if (gr.next()) {
+			var connectionRecord = gr.getValue('document_key') + '';
+			gr.initialize();
+			gr.addQuery('document', 'http_connection');
+			gr.addQuery('variable', '9397adfa67eb030061b452e457415a25'); // Attribute = 'Source'
+			gr.addQuery('document_key', connectionRecord);
+			gr.query();
+			if (gr.next()) {
+				var source = gr.getValue('value') + '';
+				if (!gs.nil(source)) { return source; }
+			}
+		}
+	}
+	return 'ILMT'; // defaulting to ILMT
+};
+
+// Possible value of ieDebugLevel and serviceCacheDebugLevel: Info, Warn, Error, Debug, DebugVerbose, DebugObnoxious
+SampCMDBUtil.rerunIDWithLogContext = function(logContextId, ieDebugLevel, serviceCacheDebugLevel, logger) {
+	var runId = cmdbApi.runIdentificationContext(logContextId, ieDebugLevel, serviceCacheDebugLevel);
+	var gr = new GlideRecord('cmdb_ie_run');
+	gr.get(runId);
+	var result = json.decode(gr.getValue('output_payload'));
+	result.logContextId = logContextId;
+	return SampCMDBUtil.parseIDResult(result, logger);
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2022-08-10 15:54:34</sys_created_on>
+        <sys_id>5dd5a96c47111110c859fee3846d43eb</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>SampCMDBUtil</sys_name>
+        <sys_package display_value="SAM Scripts" source="x_807586_sam_scrip">23a2a1a047111110c859fee3846d4358</sys_package>
+        <sys_policy>protected</sys_policy>
+        <sys_scope display_value="SAM Scripts">23a2a1a047111110c859fee3846d4358</sys_scope>
+        <sys_update_name>sys_script_include_5dd5a96c47111110c859fee3846d43eb</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2022-08-10 15:54:34</sys_updated_on>
+    </sys_script_include>
+</record_update>
